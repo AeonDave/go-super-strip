@@ -1,56 +1,88 @@
 # Go-SStrip
 
-Go-SStrip è una riscrittura in Go del progetto sstrip (Super Strip) che rimuove stringhe e tutto il possibile da un file ELF senza influenzare l'immagine di memoria del file.
+Go-SStrip is a Go rewrite of the sstrip (Super Strip) project, designed to remove as much non-essential data as possible from ELF files without affecting their memory image.
 
-## Struttura del Progetto
+## Features
 
-Il progetto è organizzato nei seguenti file:
+- Remove all non-essential information from ELF executables
+- Optionally remove trailing zero bytes
+- Modular structure for easy extension with new stripping/obfuscation techniques
+- Compatible with Linux (and potentially other platforms)
+- Fine-grained CLI: each stripping/cleaning/obfuscation function can be enabled via a short or long flag
+- Automated test suite to verify which flags may break ELF files
 
-- `main.go`: Contiene la logica principale del programma, inclusa la gestione degli argomenti della riga di comando.
-- `elfrw/read.go`: Implementa le funzioni per la lettura dei file ELF.
-- `elfrw/write.go`: Implementa le funzioni per la scrittura delle intestazioni ELF modificate.
-- `elfrw/strip.go`: Contiene le funzioni di stripping e altre utilità per la manipolazione dei file ELF.
-- `elfrw/utils.go`: Contiene funzioni di utilità per lavorare con i file ELF.
+## Stripping and Obfuscation Functions
 
-## Funzionalità
+Implemented in `elfrw/strip.go`:
 
-- Rimozione di tutte le informazioni non essenziali dai file ELF eseguibili
-- Opzione per rimuovere anche i byte zero finali
-- Struttura modulare che permette facile espansione con nuove tecniche di stripping
-- Compatibilità con Linux e potenzialmente con Windows
+- **StripSectionTable**: Removes the ELF section header table references
+- **StripNonLoadable**: Removes non-loadable segments
+- **RandomizeSectionNames**: Randomizes section names in the section header string table
+- **StripSectionsByNames**: Generic function to remove sections by name or prefix
+- **StripAllMetadata**: Removes all metadata (symbols, strings, debug, build info, profiling, exception, arch, PLT/reloc)
+- **StripDynamicLinking**: Removes dynamic linking sections
+- **ZeroFill**: Overwrites section data with zeros
+- **ReadBytes**: Reads raw bytes from the ELF file
 
-## Requisiti
+### Section Groups (for fine-grained stripping)
+- **SymbolsSectionsExact**: Symbol tables
+- **StringSectionsExact**: String tables
+- **DebugSectionsExact/Prefix**: Debug info
+- **BuildInfoSectionsExact/Prefix**: Build/toolchain info
+- **ProfilingSectionsExact**: Profiling/statistics
+- **ExceptionSectionsExact**: Exception/stack unwinding
+- **ArchSectionsPrefix**: Architecture-specific
+- **PLTRelocSectionsExact/Prefix**: PLT/relocation
 
-- Go 1.20 o superiore
-- La libreria `github.com/yalue/elf_reader` per la lettura dei file ELF
+## Requirements
 
-## Installazione
+- Go 1.20 or newer
+- The `github.com/yalue/elf_reader` library for ELF parsing
 
-1. Clona il repository
-2. Assicurati di avere Go installato
-3. Installa la dipendenza: `go get github.com/yalue/elf_reader`
-4. Compila il progetto: `go build -o go-sstrip`
+## Installation
 
-## Utilizzo
+1. Clone the repository
+2. Ensure Go is installed
+3. Install the dependency: `go get github.com/yalue/elf_reader`
+4. Build the project: `go build -o go-sstrip`
+
+## Usage
 
 ```
-go-sstrip [OPZIONI] FILE...
-
-Opzioni:
-  -z, --zeroes        Rimuove anche i byte zero finali
-      --help          Mostra l'aiuto ed esce
-      --version       Mostra le informazioni sulla versione ed esce
+go-sstrip [OPTIONS] FILE...
 ```
 
-## Estensione
+Options:
 
-Il progetto è stato progettato per essere facilmente estendibile. Per aggiungere nuove tecniche di stripping:
+```
+  -z, --zeroes        Also remove trailing zero bytes
+  -s, --stripSectionTable   Remove the section table (header)
+  -d, --stripDebug          Remove debug sections
+  -y, --stripSymbols        Remove symbol tables
+  -t, --stripStrings        Remove string tables
+  -n, --stripNonLoadable    Remove non-loadable segments
+  -r, --randomizeNames      Randomize section names
+  -b, --stripBuildInfo      Remove build/toolchain info sections
+  -p, --stripProfiling      Remove profiling/statistics sections
+  -e, --stripException      Remove exception/stack unwinding sections
+  -a, --stripArch           Remove architecture-specific sections
+  -l, --stripPLTReloc       Remove PLT/relocation sections
+  -A, --stripAll            Apply all stripping techniques
+      --help          Show help and exit
+      --version       Show version information and exit
+```
 
-1. Aggiungi nuove funzioni nel file `elfrw/strip.go`
-2. Integra le nuove funzioni nel flusso principale in `main.go`
+## Testing
 
-## Note sull'Implementazione
+Automated tests are provided in `test/TestStrippingFlags_test.go`:
+- Place working ELF binaries in `test_bins/`
+- Run `go test ./test`
+- Each stripping function is applied to each binary, and the result is checked for ELF validity
+- Output files are saved in `test_out/` with a suffix indicating the flag used
 
-- L'implementazione utilizza la libreria `github.com/yalue/elf_reader` per la lettura dei file ELF
-- La scrittura delle intestazioni ELF è gestita manualmente per garantire la massima flessibilità
-- Sono state predisposte funzioni segnaposto per future estensioni (StripDebugInfo, StripSymbols, ecc.)
+## Extending
+
+To add new stripping or obfuscation techniques:
+1. Add new functions in `elfrw/strip.go`
+2. Integrate them into the CLI in `main.go`
+3. Optionally, add new tests in `test/TestStrippingFlags_test.go`
