@@ -5,42 +5,6 @@ import (
 	"fmt"
 )
 
-// Ehdr32 ELF Type-Specific Headers
-type Ehdr32 struct {
-	Ident     [16]byte
-	Type      uint16
-	Machine   uint16
-	Version   uint32
-	Entry     uint32
-	Phoff     uint32
-	Shoff     uint32
-	Flags     uint32
-	Ehsize    uint16
-	Phentsize uint16
-	Phnum     uint16
-	Shentsize uint16
-	Shnum     uint16
-	Shstrndx  uint16
-}
-
-// Ehdr64 ELF Type-Specific Headers
-type Ehdr64 struct {
-	Ident     [16]byte
-	Type      uint16
-	Machine   uint16
-	Version   uint32
-	Entry     uint64
-	Phoff     uint64
-	Shoff     uint64
-	Flags     uint32
-	Ehsize    uint16
-	Phentsize uint16
-	Phnum     uint16
-	Shentsize uint16
-	Shnum     uint16
-	Shstrndx  uint16
-}
-
 // Ehdr Unified ELF Header
 type Ehdr struct {
 	Class     elf.Class
