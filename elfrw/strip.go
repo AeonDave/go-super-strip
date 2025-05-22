@@ -73,8 +73,6 @@ func (e *ELFFile) StripDebugInfo() error {
 				if err != nil {
 					return err
 				}
-
-				// Aggiorna anche la struttura Section
 				for j := range e.Sections {
 					if e.Sections[j].Index == i {
 						e.Sections[j].Offset = 0
@@ -93,78 +91,59 @@ func (e *ELFFile) StripSymbols() error {
 	for i, section := range e.Sections {
 		for _, symSection := range symbolSections {
 			if section.Name == symSection {
-				// Azzera il contenuto della sezione
 				if section.Offset > 0 && section.Size > 0 {
 					err := e.ZeroFill(section.Offset, int(section.Size))
 					if err != nil {
 						return err
 					}
 				}
-
-				// Aggiorna la struttura Section
 				section.Offset = 0
 				section.Size = 0
 				e.Sections[i] = section
 			}
 		}
 	}
-
-	// Aggiorna i dati raw
 	return e.UpdateSectionHeaders()
 }
 
 func (e *ELFFile) StripNonLoadable() error {
 	for i, segment := range e.Segments {
 		if !segment.Loadable {
-			// Azzera il contenuto del segmento
 			if segment.Offset > 0 && segment.Size > 0 {
 				err := e.ZeroFill(segment.Offset, int(segment.Size))
 				if err != nil {
 					return err
 				}
 			}
-
-			// Aggiorna la struttura Segment
 			segment.Offset = 0
 			segment.Size = 0
 			e.Segments[i] = segment
 		}
 	}
-
-	// Aggiorna i dati raw
 	return e.UpdateProgramHeaders()
 }
 
 func (e *ELFFile) StripStrings() error {
-	// Rimuove solo .strtab, evita di modificare .rodata
 	stringSections := []string{".strtab"}
 	for i, section := range e.Sections {
 		for _, strSection := range stringSections {
 			if section.Name == strSection {
-				// Azzera il contenuto della sezione
 				if section.Offset > 0 && section.Size > 0 {
 					err := e.ZeroFill(section.Offset, int(section.Size))
 					if err != nil {
 						return err
 					}
 				}
-
-				// Aggiorna la struttura Section
 				section.Offset = 0
 				section.Size = 0
 				e.Sections[i] = section
 			}
 		}
 	}
-
-	// Aggiorna i dati raw
 	return e.UpdateSectionHeaders()
 }
 
-// RandomizeSectionNames rinomina le sezioni in modo randomico
 func (e *ELFFile) RandomizeSectionNames() error {
-	// Trova l'indice della tabella delle stringhe delle sezioni
-	// Questo valore è nell'header ELF a offset 62 (ELF64) o 50 (ELF32)
 	var shStrNdxPos int
 	if e.Is64Bit {
 		shStrNdxPos = 62
@@ -180,63 +159,40 @@ func (e *ELFFile) RandomizeSectionNames() error {
 	} else {
 		shstrtabIndex = binary.BigEndian.Uint16(e.RawData[shStrNdxPos : shStrNdxPos+2])
 	}
-
-	// Ottieni il contenuto della tabella delle stringhe
 	shstrtabContent, err := e.ELF.GetSectionContent(shstrtabIndex)
 	if err != nil {
 		return fmt.Errorf("impossibile leggere la tabella delle stringhe: %w", err)
 	}
-
-	// Ottieni l'header della tabella delle stringhe
 	shstrtabHeader, err := e.ELF.GetSectionHeader(shstrtabIndex)
 	if err != nil {
 		return fmt.Errorf("impossibile leggere l'header della tabella delle stringhe: %w", err)
 	}
-
-	// Crea una nuova tabella delle stringhe
 	newShstrtab := make([]byte, 0, len(shstrtabContent))
-	newShstrtab = append(newShstrtab, 0) // Il primo byte deve essere 0
-
-	// Mappa per tenere traccia dei nuovi offset dei nomi
+	newShstrtab = append(newShstrtab, 0)
 	nameOffsets := make(map[string]uint32)
-
-	// Genera nomi casuali per ogni sezione e aggiornali nella tabella
 	for i := range e.Sections {
 		if e.Sections[i].Name == "" {
 			continue
 		}
-
-		// Genera un nome casuale (mantieni il punto iniziale per convenzione)
 		randomName := fmt.Sprintf(".s%d", rand.Intn(10000))
-
-		// Aggiungi il nome alla nuova tabella delle stringhe
 		nameOffsets[e.Sections[i].Name] = uint32(len(newShstrtab))
 		newShstrtab = append(newShstrtab, []byte(randomName)...)
-		newShstrtab = append(newShstrtab, 0) // Terminatore null
-
-		// Aggiorna il nome nella struttura Section
+		newShstrtab = append(newShstrtab, 0)
 		e.Sections[i].Name = randomName
 	}
-
-	// Aggiorna la tabella delle stringhe nei dati raw
 	shstrtabOffset := shstrtabHeader.GetFileOffset()
 	copy(e.RawData[shstrtabOffset:shstrtabOffset+uint64(len(newShstrtab))], newShstrtab)
-
-	// Se la nuova tabella è più piccola, riempi il resto con zeri
 	if len(newShstrtab) < len(shstrtabContent) {
 		for i := len(newShstrtab); i < len(shstrtabContent); i++ {
 			e.RawData[shstrtabOffset+uint64(i)] = 0
 		}
 	}
-
-	// Trova l'offset della tabella delle sezioni
 	var shoffPos int
 	if e.Is64Bit {
 		shoffPos = 40
 	} else {
 		shoffPos = 32
 	}
-
 	var sectionHeaderOffset uint64
 	if e.Is64Bit {
 		if endianness == binary.LittleEndian {
@@ -251,35 +207,25 @@ func (e *ELFFile) RandomizeSectionNames() error {
 			sectionHeaderOffset = uint64(binary.BigEndian.Uint32(e.RawData[shoffPos : shoffPos+4]))
 		}
 	}
-
-	// Calcola la dimensione dell'entry della tabella delle sezioni
 	var shentsizePos int
 	if e.Is64Bit {
 		shentsizePos = 58
 	} else {
 		shentsizePos = 46
 	}
-
 	var sectionHeaderEntrySize uint16
 	if endianness == binary.LittleEndian {
 		sectionHeaderEntrySize = binary.LittleEndian.Uint16(e.RawData[shentsizePos : shentsizePos+2])
 	} else {
 		sectionHeaderEntrySize = binary.BigEndian.Uint16(e.RawData[shentsizePos : shentsizePos+2])
 	}
-
-	// Aggiorna gli offset dei nomi nella tabella delle sezioni
 	for i := uint16(0); i < e.ELF.GetSectionCount(); i++ {
 		oldName, err := e.ELF.GetSectionName(i)
 		if err != nil {
 			continue
 		}
-
-		// Calcola l'offset del campo name nell'header della sezione
 		nameOffset := sectionHeaderOffset + uint64(i)*uint64(sectionHeaderEntrySize)
-
-		// Il campo name è il primo campo nell'header della sezione
 		if newOffset, ok := nameOffsets[oldName]; ok {
-			// Aggiorna l'offset del nome nei dati raw
 			err := WriteAtOffset(e.RawData, nameOffset, endianness, newOffset)
 			if err != nil {
 				return err

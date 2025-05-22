@@ -3,9 +3,9 @@ package main
 import (
 	"flag"
 	"fmt"
+	"gosstrip/elfrw"
 	"os"
 	"path/filepath"
-	"sstrip/elfrw"
 )
 
 const (
