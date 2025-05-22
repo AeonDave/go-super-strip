@@ -5,34 +5,75 @@ import (
 	"fmt"
 )
 
+// Ehdr32 ELF Type-Specific Headers
+type Ehdr32 struct {
+	Ident     [16]byte
+	Type      uint16
+	Machine   uint16
+	Version   uint32
+	Entry     uint32
+	Phoff     uint32
+	Shoff     uint32
+	Flags     uint32
+	Ehsize    uint16
+	Phentsize uint16
+	Phnum     uint16
+	Shentsize uint16
+	Shnum     uint16
+	Shstrndx  uint16
+}
+
+// Ehdr64 ELF Type-Specific Headers
+type Ehdr64 struct {
+	Ident     [16]byte
+	Type      uint16
+	Machine   uint16
+	Version   uint32
+	Entry     uint64
+	Phoff     uint64
+	Shoff     uint64
+	Flags     uint32
+	Ehsize    uint16
+	Phentsize uint16
+	Phnum     uint16
+	Shentsize uint16
+	Shnum     uint16
+	Shstrndx  uint16
+}
+
+// Ehdr Unified ELF Header
 type Ehdr struct {
-	Ident     [16]byte // ELF identification
-	Type      uint16   // Object file type
-	Machine   uint16   // Architecture
-	Version   uint32   // Object file version
-	Entry     uint64   // Entry point virtual address
-	Phoff     uint64   // Program header table file offset
-	Shoff     uint64   // Section header table file offset
-	Flags     uint32   // Processor-specific flags
-	Ehsize    uint16   // ELF header size in bytes
-	Phentsize uint16   // Program header table entry size
-	Phnum     uint16   // Program header table entry count
-	Shentsize uint16   // Section header table entry size
-	Shnum     uint16   // Section header table entry count
-	Shstrndx  uint16   // Section header string table index
+	Class     elf.Class
+	Data      elf.Data
+	Ident     [16]byte
+	Type      elf.Type
+	Machine   elf.Machine
+	Version   uint32
+	Entry     uint64
+	Phoff     uint64
+	Shoff     uint64
+	Flags     uint32
+	Ehsize    uint16
+	Phentsize uint16
+	Phnum     uint16
+	Shentsize uint16
+	Shnum     uint16
+	Shstrndx  uint16
 }
 
+// Phdr Program Header
 type Phdr struct {
-	Type   uint32 // Segment type
-	Flags  uint32 // Segment flags
-	Off    uint64 // Segment file offset
-	Vaddr  uint64 // Segment virtual address
-	Paddr  uint64 // Segment physical address
-	Filesz uint64 // Segment size in file
-	Memsz  uint64 // Segment size in memory
-	Align  uint64 // Segment alignment
+	Type   elf.ProgType
+	Flags  elf.ProgFlag
+	Off    uint64
+	Vaddr  uint64
+	Paddr  uint64
+	Filesz uint64
+	Memsz  uint64
+	Align  uint64
 }
 
+// ELFInfo ELF Metadata Container
 type ELFInfo struct {
 	Header *Ehdr
 	Class  elf.Class
@@ -40,26 +81,20 @@ type ELFInfo struct {
 	Phdrs  []*Phdr
 }
 
-// String implementa l'interfaccia Stringer per Ehdr
 func (e *Ehdr) String() string {
-	return fmt.Sprintf("ELF Header:\n"+
-		"  Type: %d, Machine: %d, Version: %d\n"+
-		"  Entry: 0x%x, Phoff: 0x%x, Shoff: 0x%x\n"+
-		"  Flags: 0x%x, Ehsize: %d\n"+
-		"  Phnum: %d, Shnum: %d",
-		e.Type, e.Machine, e.Version,
-		e.Entry, e.Phoff, e.Shoff,
-		e.Flags, e.Ehsize,
-		e.Phnum, e.Shnum)
+	return fmt.Sprintf("ELF Header [%s-%s]:\n"+
+		"Type: %s\nMachine: %s\nVersion: %d\nEntry: 0x%x\n"+
+		"Program Headers: %d @ 0x%x\nSection Headers: %d @ 0x%x",
+		e.Class, e.Data,
+		e.Type, e.Machine, e.Version, e.Entry,
+		e.Phnum, e.Phoff, e.Shnum, e.Shoff)
 }
 
-// String implementa l'interfaccia Stringer per Phdr
 func (p *Phdr) String() string {
-	return fmt.Sprintf("Program Header:\n"+
-		"  Type: %d, Flags: 0x%x\n"+
-		"  Off: 0x%x, Vaddr: 0x%x, Paddr: 0x%x\n"+
-		"  Filesz: %d, Memsz: %d, Align: %d",
+	return fmt.Sprintf("PHDR: %s (%s)\n"+
+		"Offset: 0x%x-0x%x\nVirtual: 0x%x-0x%x\nAlign: %d",
 		p.Type, p.Flags,
-		p.Off, p.Vaddr, p.Paddr,
-		p.Filesz, p.Memsz, p.Align)
+		p.Off, p.Off+p.Filesz,
+		p.Vaddr, p.Vaddr+p.Memsz,
+		p.Align)
 }

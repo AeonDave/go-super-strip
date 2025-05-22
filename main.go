@@ -1,22 +1,75 @@
-package gosstrip
+package main
 
 import (
 	"debug/elf"
+	"errors"
 	"flag"
 	"fmt"
-	"io" // Added for io.EOF and io.SeekStart
+	"io"
 	"os"
+	"path/filepath"
 	"sstrip/elfrw"
+	"sync"
+)
+
+// Configurazione del programma
+type Config struct {
+	ZeroTrunc   bool
+	Verbose     bool
+	Parallel    bool
+	MaxWorkers  int
+	ShowHelp    bool
+	ShowVersion bool
+}
+
+// Statistiche di elaborazione
+type ProcessStats struct {
+	mu            sync.Mutex
+	Processed     int
+	Failed        int
+	TotalReduced  int64
+	OriginalSizes []int64
+	NewSizes      []int64
+}
+
+const (
+	versionString  = "Go sstrip, version 0.2 (optimized version based on sstrip 2.1)"
+	readBufferSize = 8192 // Buffer più grande per migliori performance I/O
 )
 
 var (
-	doZeroTrunc = flag.Bool("z", false, "Also discard trailing zero bytes (alias for --zeroes).")
-	doZeroes    = flag.Bool("zeroes", false, "Also discard trailing zero bytes.")
-	showHelp    = flag.Bool("help", false, "Display this help and exit.")
-	showVersion = flag.Bool("version", false, "Display version information and exit.")
+	config = &Config{}
+	stats  = &ProcessStats{}
+
+	// Flag di comando
+	doZeroTrunc = flag.Bool("z", false, "Also discard trailing zero bytes (alias for --zeroes)")
+	doZeroes    = flag.Bool("zeroes", false, "Also discard trailing zero bytes")
+	verbose     = flag.Bool("v", false, "Enable verbose output")
+	parallel    = flag.Bool("j", false, "Process files in parallel")
+	maxWorkers  = flag.Int("workers", 4, "Maximum number of parallel workers (default: 4)")
+	showHelp    = flag.Bool("help", false, "Display this help and exit")
+	showVersion = flag.Bool("version", false, "Display version information and exit")
 )
 
-const versionString = "Go sstrip, version 0.1 (based on sstrip 2.1)"
+// Errori personalizzati
+var (
+	ErrNotExecutable     = errors.New("not an executable or shared library")
+	ErrNoProgramHeaders  = errors.New("no program header table found")
+	ErrCompletelyBlank   = errors.New("file would be completely blank after processing")
+	ErrInvalidFileFormat = errors.New("invalid ELF file format")
+)
+
+// ProcessResult rappresenta il risultato dell'elaborazione di un file
+type ProcessResult struct {
+	Filename     string
+	OriginalSize int64
+	NewSize      int64
+	Error        error
+}
+
+func init() {
+	flag.Usage = customUsage
+}
 
 func customUsage() {
 	_, _ = fmt.Fprintf(os.Stderr, "Usage: %s [OPTIONS] FILE...\n", os.Args[0])
@@ -24,219 +77,411 @@ func customUsage() {
 	_, _ = fmt.Fprintln(os.Stderr, "")
 	_, _ = fmt.Fprintln(os.Stderr, "Options:")
 	flag.PrintDefaults()
+	_, _ = fmt.Fprintln(os.Stderr, "")
+	_, _ = fmt.Fprintln(os.Stderr, "Examples:")
+	_, _ = fmt.Fprintf(os.Stderr, "  %s -z /usr/bin/program     # Strip with zero truncation\n", os.Args[0])
+	_, _ = fmt.Fprintf(os.Stderr, "  %s -j -workers=8 *.so     # Parallel processing with 8 workers\n", os.Args[0])
+	_, _ = fmt.Fprintf(os.Stderr, "  %s -v file1 file2         # Verbose output\n", os.Args[0])
 }
 
-func processFile(filename string, zeroTrunc bool) error {
-	file, err := os.OpenFile(filename, os.O_RDWR, 0) // 0 for perm means don't change if exists
+func parseFlags() {
+	flag.Parse()
+
+	config.ZeroTrunc = *doZeroTrunc || *doZeroes
+	config.Verbose = *verbose
+	config.Parallel = *parallel
+	config.MaxWorkers = *maxWorkers
+	config.ShowHelp = *showHelp
+	config.ShowVersion = *showVersion
+
+	// Validazione parametri
+	if config.MaxWorkers < 1 {
+		config.MaxWorkers = 1
+	}
+	if config.MaxWorkers > 16 {
+		config.MaxWorkers = 16 // Limite ragionevole
+	}
+}
+
+func processFile(filename string) *ProcessResult {
+	result := &ProcessResult{Filename: filename}
+
+	// Verifica esistenza e permessi del file
+	fileInfo, err := os.Stat(filename)
 	if err != nil {
-		return fmt.Errorf("failed to open file: %w", err)
+		result.Error = fmt.Errorf("cannot access file: %w", err)
+		return result
+	}
+
+	if !fileInfo.Mode().IsRegular() {
+		result.Error = fmt.Errorf("not a regular file")
+		return result
+	}
+
+	result.OriginalSize = fileInfo.Size()
+
+	file, err := os.OpenFile(filename, os.O_RDWR, 0)
+	if err != nil {
+		result.Error = fmt.Errorf("failed to open file: %w", err)
+		return result
 	}
 	defer func(file *os.File) {
 		_ = file.Close()
 	}(file)
 
+	// Elabora il file ELF
+	newSize, err := processELFFile(file)
+	if err != nil {
+		result.Error = err
+		return result
+	}
+
+	result.NewSize = newSize
+	return result
+}
+
+func processELFFile(file *os.File) (int64, error) {
+	// Parse ELF file
 	elfFile, err := elf.NewFile(file)
 	if err != nil {
-		return fmt.Errorf("not a valid ELF file: %w", err)
+		return 0, fmt.Errorf("%w: %v", ErrInvalidFileFormat, err)
 	}
-	// elfFile.Close() is not needed here as elf.NewFile does not take ownership of the os.File for closing.
 
-	ehdr, elfClass, elfData, err := elfrw.ReadEhdr(elfFile)
+	// Legge le informazioni ELF
+	elfInfo, err := elfrw.ReadELFInfo(elfFile)
 	if err != nil {
-		return fmt.Errorf("failed to read ELF header: %w", err)
+		return 0, fmt.Errorf("failed to read ELF info: %w", err)
 	}
 
-	if elf.Type(ehdr.Type) != elf.ET_EXEC && elf.Type(ehdr.Type) != elf.ET_DYN {
-		return fmt.Errorf("not an executable or shared-object library (type: %s)", elf.Type(ehdr.Type).String())
+	ehdr := elfInfo.Header
+	phdrs := elfInfo.Phdrs
+
+	// Verifica che sia un file eseguibile o libreria condivisa
+	if ehdr.Type != elf.ET_EXEC && ehdr.Type != elf.ET_DYN {
+		return 0, fmt.Errorf("%w (type: %s)", ErrNotExecutable, ehdr.Type.String())
 	}
 
-	if ehdr.Phoff == 0 || ehdr.Phnum == 0 {
-		return fmt.Errorf("ELF file has no program header table (Phoff: %d, Phnum: %d)", ehdr.Phoff, ehdr.Phnum)
+	// Verifica presenza program headers
+	if ehdr.Phoff == 0 || ehdr.Phnum == 0 || len(phdrs) == 0 {
+		return 0, ErrNoProgramHeaders
 	}
 
-	phdrs, err := elfrw.ReadPhdrs(elfFile)
-	if err != nil {
-		return fmt.Errorf("failed to read program headers: %w", err)
+	if config.Verbose {
+		logELFInfo(file.Name(), ehdr, len(phdrs))
 	}
 
-	if len(phdrs) == 0 { // ehdr.Phnum might be non-zero, but no headers parsed.
-		return fmt.Errorf("ELF file has no program header table (phdrs slice empty despite Phnum=%d)", ehdr.Phnum)
+	// Calcola la nuova dimensione
+	newSize := calculateNewSize(ehdr, phdrs)
+
+	// Applica zero truncation se richiesta
+	if config.ZeroTrunc {
+		newSize, err = applyZeroTruncation(file, newSize)
+		if err != nil {
+			return 0, err
+		}
 	}
 
-	fmt.Printf("Successfully read ELF info for %s:\n", filename)
-	fmt.Printf("  Class: %s, Data: %s\n", elfClass, elfData)
-	fmt.Printf("  ELF Header Type: %s, Machine: %s\n", elf.Type(ehdr.Type), elf.Machine(ehdr.Machine))
-	fmt.Printf("  Num Program Headers: %d (from ehdr) / %d (read)\n", ehdr.Phnum, len(phdrs))
+	// Modifica le strutture ELF
+	modifyELFStructures(ehdr, phdrs, newSize)
 
-	newsize := ehdr.Phoff + (uint64(ehdr.Phnum) * uint64(ehdr.Phentsize))
-	if newsize < uint64(ehdr.Ehsize) {
-		newsize = uint64(ehdr.Ehsize)
+	// Scrive le modifiche
+	if err := commitChanges(file, ehdr, phdrs, newSize); err != nil {
+		return 0, fmt.Errorf("failed to commit changes: %w", err)
 	}
 
+	return int64(newSize), nil
+}
+
+func calculateNewSize(ehdr *elfrw.Ehdr, phdrs []*elfrw.Phdr) uint64 {
+	// Dimensione minima: header + program headers
+	newSize := ehdr.Phoff + (uint64(ehdr.Phnum) * uint64(ehdr.Phentsize))
+	if newSize < uint64(ehdr.Ehsize) {
+		newSize = uint64(ehdr.Ehsize)
+	}
+
+	// Trova la fine dell'ultimo segmento non-NULL
 	for _, phdr := range phdrs {
-		if elf.ProgType(phdr.Type) != elf.PT_NULL {
+		if phdr.Type != elf.PT_NULL && phdr.Filesz > 0 {
 			segmentEnd := phdr.Off + phdr.Filesz
-			if segmentEnd > newsize {
-				newsize = segmentEnd
+			if segmentEnd > newSize {
+				newSize = segmentEnd
 			}
 		}
 	}
 
-	fmt.Printf("  Calculated initial newsize: %d (0x%x)\n", newsize, newsize)
+	return newSize
+}
 
-	if zeroTrunc {
-		readBuf := make([]byte, 1024)
+func applyZeroTruncation(file *os.File, currentSize uint64) (uint64, error) {
+	if currentSize == 0 {
+		return 0, ErrCompletelyBlank
+	}
+
+	readBuf := make([]byte, readBufferSize)
+	newSize := currentSize
+
+	// Legge dal fondo del file verso l'inizio
+	for newSize > 0 {
+		readSize := min(readBufferSize, int(newSize))
+		offset := int64(newSize) - int64(readSize)
+
+		n, err := file.ReadAt(readBuf[:readSize], offset)
+		if err != nil && err != io.EOF {
+			return 0, fmt.Errorf("failed to read for zero truncation: %w", err)
+		}
+
+		// Trova l'ultimo byte non-zero
 		foundNonZero := false
-	outerLoop:
-		for {
-			readN := int64(len(readBuf))
-			if readN > int64(newsize) {
-				readN = int64(newsize)
-			}
-
-			if readN == 0 {
-				break // Nothing left to check
-			}
-
-			readOffset := int64(newsize) - readN
-			n, errRead := file.ReadAt(readBuf[:readN], readOffset)
-
-			if errRead != nil && errRead != io.EOF {
-				return fmt.Errorf("failed to read for zero truncation: %w", errRead)
-			}
-
-			if n == 0 && readN > 0 && errRead != io.EOF {
+		for i := n - 1; i >= 0; i-- {
+			if readBuf[i] != 0 {
+				newSize = uint64(offset) + uint64(i) + 1
+				foundNonZero = true
 				break
 			}
-			if n == 0 && errRead == io.EOF {
-				break
-			}
-
-			for j := n - 1; j >= 0; j-- {
-				if readBuf[j] != 0 {
-					newsize = uint64(readOffset) + uint64(j) + 1
-					foundNonZero = true
-					break outerLoop
-				}
-			}
-
-			newsize = uint64(readOffset)
-			if newsize == 0 {
-				break outerLoop
-			}
-			if n == 0 || errRead == io.EOF {
-				break outerLoop
-			}
 		}
-		_ = foundNonZero // To be used if we need to log if anything was truncated.
 
-		if newsize == 0 {
-			return fmt.Errorf("ELF file would be completely blank after zero truncation")
+		if foundNonZero {
+			break
 		}
-		fmt.Printf("  After zero truncation, newsize: %d (0x%x)\n", newsize, newsize)
+
+		newSize = uint64(offset)
 	}
 
-	// Modify ELF Header (ehdr)
-	if ehdr.Shoff >= newsize {
-		fmt.Printf("  Section header table is being truncated (original shoff: %d).\n", ehdr.Shoff)
+	if newSize == 0 {
+		return 0, ErrCompletelyBlank
+	}
+
+	return newSize, nil
+}
+
+func modifyELFStructures(ehdr *elfrw.Ehdr, phdrs []*elfrw.Phdr, newSize uint64) {
+	// Modifica ELF header se necessario
+	if ehdr.Shoff >= newSize {
+		if config.Verbose {
+			fmt.Printf("  Section header table truncated (offset: %d)\n", ehdr.Shoff)
+		}
 		ehdr.Shoff = 0
 		ehdr.Shnum = 0
 		ehdr.Shstrndx = 0
 	}
 
-	// Modify Program Headers (phdrs)
-	fmt.Println("  Modifying program headers based on newsize:")
+	// Modifica program headers
 	for i, phdr := range phdrs {
-		originalFilesz := phdr.Filesz // For logging
-		originalOff := phdr.Off       // For logging
+		originalFilesz := phdr.Filesz
 
-		if phdr.Off >= newsize {
-			if originalFilesz > 0 { // Log only if it actually contained something
-				fmt.Printf("    PHDR %d: Segment completely truncated (offset %d >= newsize %d). Filesz %d -> 0.\n", i, originalOff, newsize, originalFilesz)
+		if phdr.Off >= newSize {
+			if originalFilesz > 0 && config.Verbose {
+				fmt.Printf("  PHDR %d: Segment completely truncated\n", i)
 			}
-			phdr.Off = newsize // As per sstrip.c
+			phdr.Off = newSize
 			phdr.Filesz = 0
-		} else if phdr.Off+phdr.Filesz > newsize {
-			fmt.Printf("    PHDR %d: Segment partially truncated (offset %d + filesz %d > newsize %d). Filesz %d -> %d.\n", i, originalOff, originalFilesz, newsize, originalFilesz, newsize-phdr.Off)
-			phdr.Filesz = newsize - phdr.Off
+		} else if phdr.Off+phdr.Filesz > newSize {
+			if config.Verbose {
+				fmt.Printf("  PHDR %d: Segment partially truncated (%d -> %d bytes)\n",
+					i, originalFilesz, newSize-phdr.Off)
+			}
+			phdr.Filesz = newSize - phdr.Off
 		}
 	}
+}
 
-	// Commit Changes (commitchanges logic)
-	fmt.Println("  Committing changes to file...")
+func commitChanges(file *os.File, ehdr *elfrw.Ehdr, phdrs []*elfrw.Phdr, newSize uint64) error {
+	// Crea ELFInfo per la scrittura
+	elfInfo := &elfrw.ELFInfo{
+		Header: ehdr,
+		Class:  ehdr.Class,
+		Data:   ehdr.Data,
+		Phdrs:  phdrs,
+	}
+
+	// Rewind e scrivi le strutture modificate
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return fmt.Errorf("could not rewind file: %w", err)
-	}
-	if err := elfrw.WriteEhdr(file, ehdr, elfClass, elfData); err != nil {
-		return fmt.Errorf("could not write modified ELF header: %w", err)
+		return fmt.Errorf("cannot rewind file: %w", err)
 	}
 
-	if ehdr.Phoff == 0 && ehdr.Phnum > 0 {
-		return fmt.Errorf("cannot write program headers: Phoff is 0 but Phnum is %d", ehdr.Phnum)
-	}
-	if ehdr.Phnum > 0 {
-		if _, err := file.Seek(int64(ehdr.Phoff), io.SeekStart); err != nil {
-			return fmt.Errorf("could not seek to program header table at offset %d: %w", ehdr.Phoff, err)
-		}
-		if err := elfrw.WritePhdrs(file, phdrs, elfClass, elfData); err != nil {
-			return fmt.Errorf("could not write modified program headers: %w", err)
-		}
+	if err := elfrw.WriteELFInfo(file, elfInfo); err != nil {
+		return fmt.Errorf("cannot write ELF structures: %w", err)
 	}
 
-	programHeadersEnd := ehdr.Phoff + (uint64(ehdr.Phnum) * uint64(ehdr.Phentsize))
-	if ehdr.Phnum == 0 {
-		programHeadersEnd = uint64(ehdr.Ehsize)
-		if ehdr.Phoff > programHeadersEnd {
-			programHeadersEnd = ehdr.Phoff
-		}
-	}
-
-	if newsize < programHeadersEnd {
-		fmt.Printf("  Warning: newsize (%d) is less than end of program header table (%d). Adjusting newsize.\n", newsize, programHeadersEnd)
-		newsize = programHeadersEnd
-	}
-
-	fmt.Printf("  Truncating file to newsize: %d (0x%x)\n", newsize, newsize)
-	if err := file.Truncate(int64(newsize)); err != nil {
-		return fmt.Errorf("could not truncate file: %w", err)
+	// Truncate il file alla nuova dimensione
+	if err := file.Truncate(int64(newSize)); err != nil {
+		return fmt.Errorf("cannot truncate file: %w", err)
 	}
 
 	return nil
 }
 
-func main() {
-	flag.Usage = customUsage
-	flag.Parse()
+func logELFInfo(filename string, ehdr *elfrw.Ehdr, phdrCount int) {
+	fmt.Printf("Processing %s:\n", filepath.Base(filename))
+	fmt.Printf("  Class: %s, Data: %s\n", ehdr.Class, ehdr.Data)
+	fmt.Printf("  Type: %s, Machine: %s\n", ehdr.Type, ehdr.Machine)
+	fmt.Printf("  Program Headers: %d\n", phdrCount)
+}
 
-	if *showHelp {
+func processFilesSequential(filenames []string) []ProcessResult {
+	results := make([]ProcessResult, 0, len(filenames))
+
+	for _, filename := range filenames {
+		result := processFile(filename)
+		results = append(results, *result)
+
+		if config.Verbose {
+			printResult(result)
+		}
+	}
+
+	return results
+}
+
+func processFilesParallel(filenames []string) []ProcessResult {
+	jobs := make(chan string, len(filenames))
+	results := make(chan ProcessResult, len(filenames))
+
+	// Avvia i worker
+	var wg sync.WaitGroup
+	for i := 0; i < config.MaxWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for filename := range jobs {
+				result := processFile(filename)
+				results <- *result
+			}
+		}()
+	}
+
+	// Invia i job
+	go func() {
+		for _, filename := range filenames {
+			jobs <- filename
+		}
+		close(jobs)
+	}()
+
+	// Chiudi il canale dei risultati quando tutti i worker finiscono
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// Raccogli i risultati
+	var allResults []ProcessResult
+	for result := range results {
+		allResults = append(allResults, result)
+
+		if config.Verbose {
+			printResult(&result)
+		}
+	}
+
+	return allResults
+}
+
+func printResult(result *ProcessResult) {
+	if result.Error != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "  ❌ %s: %v\n", filepath.Base(result.Filename), result.Error)
+	} else {
+		reduction := result.OriginalSize - result.NewSize
+		percentage := float64(reduction) / float64(result.OriginalSize) * 100
+		fmt.Printf("  ✅ %s: %d -> %d bytes (%.1f%% reduction)\n",
+			filepath.Base(result.Filename), result.OriginalSize, result.NewSize, percentage)
+	}
+}
+
+func updateStats(results []ProcessResult) {
+	stats.mu.Lock()
+	defer stats.mu.Unlock()
+
+	for _, result := range results {
+		stats.Processed++
+		if result.Error != nil {
+			stats.Failed++
+		} else {
+			reduction := result.OriginalSize - result.NewSize
+			stats.TotalReduced += reduction
+			stats.OriginalSizes = append(stats.OriginalSizes, result.OriginalSize)
+			stats.NewSizes = append(stats.NewSizes, result.NewSize)
+		}
+	}
+}
+
+func printSummary() {
+	if stats.Processed == 0 {
+		return
+	}
+
+	fmt.Printf("\nSummary:\n")
+	fmt.Printf("  Files processed: %d\n", stats.Processed)
+	fmt.Printf("  Successful: %d\n", stats.Processed-stats.Failed)
+	fmt.Printf("  Failed: %d\n", stats.Failed)
+
+	if stats.TotalReduced > 0 {
+		fmt.Printf("  Total space saved: %d bytes\n", stats.TotalReduced)
+
+		if len(stats.OriginalSizes) > 0 {
+			var totalOriginal, totalNew int64
+			for i, original := range stats.OriginalSizes {
+				totalOriginal += original
+				totalNew += stats.NewSizes[i]
+			}
+
+			if totalOriginal > 0 {
+				percentage := float64(stats.TotalReduced) / float64(totalOriginal) * 100
+				fmt.Printf("  Average reduction: %.1f%%\n", percentage)
+			}
+		}
+	}
+}
+
+func main() {
+	parseFlags()
+
+	if config.ShowHelp {
 		flag.Usage()
 		os.Exit(0)
 	}
 
-	if *showVersion {
+	if config.ShowVersion {
 		fmt.Println(versionString)
 		os.Exit(0)
 	}
 
-	if flag.NArg() < 1 {
+	filenames := flag.Args()
+	if len(filenames) == 0 {
 		flag.Usage()
 		os.Exit(0)
 	}
 
-	actualDoZeroTrunc := *doZeroTrunc || *doZeroes
-	failureCount := 0
+	// Elabora i file
+	var results []ProcessResult
+	if config.Parallel && len(filenames) > 1 {
+		if config.Verbose {
+			fmt.Printf("Processing %d files with %d workers...\n", len(filenames), config.MaxWorkers)
+		}
+		results = processFilesParallel(filenames)
+	} else {
+		results = processFilesSequential(filenames)
+	}
 
-	for _, filename := range flag.Args() {
-		err := processFile(filename, actualDoZeroTrunc)
-		if err != nil {
-			progName := os.Args[0]
-			_, _ = fmt.Fprintf(os.Stderr, "%s: %s: %v\n", progName, filename, err)
-			failureCount++
+	// Aggiorna le statistiche
+	updateStats(results)
+
+	// Stampa errori non verbose
+	if !config.Verbose {
+		for _, result := range results {
+			if result.Error != nil {
+				_, _ = fmt.Fprintf(os.Stderr, "%s: %s: %v\n", os.Args[0], result.Filename, result.Error)
+			}
 		}
 	}
 
-	if failureCount > 0 {
+	// Stampa sommario se più di un file o se verbose
+	if len(filenames) > 1 || config.Verbose {
+		printSummary()
+	}
+
+	// Exit con codice appropriato
+	if stats.Failed > 0 {
 		os.Exit(1)
 	}
-	os.Exit(0)
 }
