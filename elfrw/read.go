@@ -2,9 +2,8 @@ package elfrw
 
 import (
 	"fmt"
-	"os"
-
 	"github.com/yalue/elf_reader"
+	"os"
 )
 
 type Section struct {
@@ -79,8 +78,18 @@ func ReadELF(file *os.File) (*ELFFile, error) {
 			Offset: header.GetFileOffset(),
 			Size:   header.GetSize(),
 			Type:   uint32(header.GetType()),
-			Flags:  0, // Converti le flags in base al tipo
+			Flags:  0,
 			Index:  i,
+		}
+		flags := header.GetFlags()
+		if flags.Executable() {
+			section.Flags |= 0x4 // SHF_EXECINSTR
+		}
+		if flags.Allocated() {
+			section.Flags |= 0x2 // SHF_ALLOC
+		}
+		if flags.Writable() {
+			section.Flags |= 0x1 // SHF_WRITE
 		}
 		ef.Sections = append(ef.Sections, section)
 	}
