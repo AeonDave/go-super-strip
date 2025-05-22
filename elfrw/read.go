@@ -1,264 +1,193 @@
 package elfrw
 
 import (
-	"bytes"
-	"debug/elf"
-	"encoding/binary"
-	"errors"
 	"fmt"
-	"io"
-	"reflect"
-	"unsafe"
+	"os"
+
+	"github.com/yalue/elf_reader"
 )
 
-var (
-	ErrInvalidELF      = errors.New("invalid ELF file")
-	ErrUnsupportedType = errors.New("unsupported ELF type")
-	ErrReadError       = errors.New("failed to read ELF data")
-)
-
-const (
-	elf32HeaderSize = 52
-	elf64HeaderSize = 64
-	elfIdentSize    = 16
-)
-
-// ReadEhdr legge l'header ELF con strategia di fallback ottimizzata
-func ReadEhdr(elfFile *elf.File) (*Ehdr, error) {
-	if elfFile == nil {
-		return nil, ErrInvalidELF
-	}
-
-	// Tentativo di lettura diretta tramite reflection (più completo)
-	if ehdr, err := readEhdrDirect(elfFile); err == nil {
-		return ehdr, nil
-	}
-
-	// Fallback sicuro usando solo API pubbliche
-	return readEhdrSafe(elfFile)
+// Section rappresenta una sezione ELF
+type Section struct {
+	Name   string
+	Offset uint64
+	Size   uint64
+	Type   uint32
+	Flags  uint64
+	Index  uint16
 }
 
-// readEhdrDirect usa reflection per accedere al ReaderAt interno
-func readEhdrDirect(elfFile *elf.File) (*Ehdr, error) {
-	// Usa unsafe pointer per accesso diretto più efficiente
-	fileValue := reflect.ValueOf(elfFile).Elem()
-	readerField := fileValue.FieldByName("r")
-
-	if !readerField.IsValid() || readerField.IsNil() {
-		return nil, fmt.Errorf("cannot access internal reader")
-	}
-
-	readerAt := (*io.ReaderAt)(unsafe.Pointer(readerField.UnsafeAddr()))
-	return parseHeaderFromReader(*readerAt, elfFile.Class, elfFile.Data)
+// Segment rappresenta un segmento ELF
+type Segment struct {
+	Offset   uint64
+	Size     uint64
+	Type     uint32
+	Flags    uint32
+	Loadable bool
+	Index    uint16
 }
 
-// readEhdrSafe usa solo API pubbliche (metodo di fallback)
-func readEhdrSafe(elfFile *elf.File) (*Ehdr, error) {
-	header := &elfFile.FileHeader
-
-	ehdr := &Ehdr{
-		Class:   elfFile.Class,
-		Data:    elfFile.Data,
-		Type:    header.Type,
-		Machine: header.Machine,
-		Version: uint32(header.Version),
-		Entry:   header.Entry,
-		Phnum:   uint16(len(elfFile.Progs)),
-		Shnum:   uint16(len(elfFile.Sections)),
-	}
-
-	// Costruisce identificatore ELF
-	ehdr.Ident = [16]byte{
-		0x7F, 'E', 'L', 'F',
-		byte(elfFile.Class), byte(elfFile.Data), byte(header.Version),
-		byte(header.OSABI), header.ABIVersion,
-		0, 0, 0, 0, 0, 0, 0, // padding
-	}
-
-	// Imposta dimensioni specifiche per architettura
-	if elfFile.Class == elf.ELFCLASS32 {
-		ehdr.Ehsize = elf32HeaderSize
-		ehdr.Phentsize = 32
-		ehdr.Shentsize = 40
-	} else {
-		ehdr.Ehsize = elf64HeaderSize
-		ehdr.Phentsize = 56
-		ehdr.Shentsize = 64
-	}
-
-	return ehdr, nil
+// ELFFile rappresenta un file ELF con le sue strutture principali
+type ELFFile struct {
+	File     *os.File
+	RawData  []byte
+	ELF      elf_reader.ELFFile
+	Is64Bit  bool
+	FileName string
+	Sections []Section
+	Segments []Segment
 }
 
-// parseHeaderFromReader decodifica l'header completo da ReaderAt
-func parseHeaderFromReader(r io.ReaderAt, class elf.Class, data elf.Data) (*Ehdr, error) {
-	var headerSize int64
-	if class == elf.ELFCLASS32 {
-		headerSize = elf32HeaderSize
-	} else {
-		headerSize = elf64HeaderSize
-	}
-
-	buf := make([]byte, headerSize)
-	if _, err := r.ReadAt(buf, 0); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrReadError, err)
-	}
-
-	var byteOrder binary.ByteOrder
-	switch data {
-	case elf.ELFDATA2LSB:
-		byteOrder = binary.LittleEndian
-	case elf.ELFDATA2MSB:
-		byteOrder = binary.BigEndian
-	default:
-		return nil, fmt.Errorf("%w: unsupported data encoding %v", ErrUnsupportedType, data)
-	}
-
-	return decodeHeader(buf, class, data, byteOrder)
-}
-
-// decodeHeader decodifica i byte dell'header in struct Ehdr
-func decodeHeader(buf []byte, class elf.Class, data elf.Data, bo binary.ByteOrder) (*Ehdr, error) {
-	if len(buf) < elfIdentSize {
-		return nil, ErrReadError
-	}
-
-	ehdr := &Ehdr{
-		Class: class,
-		Data:  data,
-	}
-
-	copy(ehdr.Ident[:], buf[:elfIdentSize])
-	reader := bytes.NewReader(buf[elfIdentSize:])
-
-	// Decodifica campi comuni
-	commonFields := []interface{}{
-		&ehdr.Type, &ehdr.Machine, &ehdr.Version,
-	}
-
-	for _, field := range commonFields {
-		if err := binary.Read(reader, bo, field); err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrReadError, err)
-		}
-	}
-
-	// Decodifica campi specifici per architettura
-	if class == elf.ELFCLASS32 {
-		if err := decode32Fields(reader, bo, ehdr); err != nil {
-			return nil, err
-		}
-	} else {
-		if err := decode64Fields(reader, bo, ehdr); err != nil {
-			return nil, err
-		}
-	}
-
-	// Decodifica campi finali
-	finalFields := []interface{}{
-		&ehdr.Flags, &ehdr.Ehsize, &ehdr.Phentsize,
-		&ehdr.Phnum, &ehdr.Shentsize, &ehdr.Shnum, &ehdr.Shstrndx,
-	}
-
-	for _, field := range finalFields {
-		if err := binary.Read(reader, bo, field); err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrReadError, err)
-		}
-	}
-
-	return ehdr, nil
-}
-
-// decode32Fields decodifica campi specifici ELF32
-func decode32Fields(reader *bytes.Reader, bo binary.ByteOrder, ehdr *Ehdr) error {
-	var entry, phoff, shoff uint32
-
-	fields := []interface{}{&entry, &phoff, &shoff}
-	for _, field := range fields {
-		if err := binary.Read(reader, bo, field); err != nil {
-			return fmt.Errorf("%w: %v", ErrReadError, err)
-		}
-	}
-
-	ehdr.Entry = uint64(entry)
-	ehdr.Phoff = uint64(phoff)
-	ehdr.Shoff = uint64(shoff)
-
-	return nil
-}
-
-// decode64Fields decodifica campi specifici ELF64
-func decode64Fields(reader *bytes.Reader, bo binary.ByteOrder, ehdr *Ehdr) error {
-	fields := []interface{}{&ehdr.Entry, &ehdr.Phoff, &ehdr.Shoff}
-
-	for _, field := range fields {
-		if err := binary.Read(reader, bo, field); err != nil {
-			return fmt.Errorf("%w: %v", ErrReadError, err)
-		}
-	}
-
-	return nil
-}
-
-// ReadPhdrs legge i program headers
-func ReadPhdrs(elfFile *elf.File) ([]*Phdr, error) {
-	if elfFile == nil {
-		return nil, ErrInvalidELF
-	}
-
-	if len(elfFile.Progs) == 0 {
-		return []*Phdr{}, nil
-	}
-
-	phdrs := make([]*Phdr, 0, len(elfFile.Progs))
-
-	for _, prog := range elfFile.Progs {
-		if prog == nil {
-			continue // Skip nil entries instead of failing
-		}
-
-		phdrs = append(phdrs, &Phdr{
-			Type:   prog.Type,
-			Flags:  prog.Flags,
-			Off:    prog.Off,
-			Vaddr:  prog.Vaddr,
-			Paddr:  prog.Paddr,
-			Filesz: prog.Filesz,
-			Memsz:  prog.Memsz,
-			Align:  prog.Align,
-		})
-	}
-
-	return phdrs, nil
-}
-
-// ReadELFInfo legge header e program headers in una operazione
-func ReadELFInfo(elfFile *elf.File) (*ELFInfo, error) {
-	if elfFile == nil {
-		return nil, ErrInvalidELF
-	}
-
-	ehdr, err := ReadEhdr(elfFile)
+// ReadELF legge un file ELF e restituisce una struttura ELFFile
+func ReadELF(file *os.File) (*ELFFile, error) {
+	// Ottiene le informazioni sul file
+	fileInfo, err := file.Stat()
 	if err != nil {
-		return nil, fmt.Errorf("failed to read ELF header: %w", err)
+		return nil, fmt.Errorf("impossibile ottenere informazioni sul file: %w", err)
 	}
 
-	phdrs, err := ReadPhdrs(elfFile)
+	// Legge l'intero file in memoria
+	rawData := make([]byte, fileInfo.Size())
+	_, err = file.Seek(0, 0)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read program headers: %w", err)
+		return nil, fmt.Errorf("impossibile riposizionare il file: %w", err)
 	}
 
-	return &ELFInfo{
-		Header: ehdr,
-		Class:  ehdr.Class,
-		Data:   ehdr.Data,
-		Phdrs:  phdrs,
-	}, nil
+	_, err = file.Read(rawData)
+	if err != nil {
+		return nil, fmt.Errorf("impossibile leggere il file: %w", err)
+	}
+
+	// Determina se il file è ELF a 32 o 64 bit
+	is64Bit := false
+	if len(rawData) > 4 && rawData[4] == 2 { // ELFCLASS64
+		is64Bit = true
+	}
+
+	// Analizza il file ELF
+	elfFile, parseErr := elf_reader.ParseELFFile(rawData)
+	if parseErr != nil {
+		return nil, fmt.Errorf("impossibile analizzare il file ELF: %w", parseErr)
+	}
+
+	ef := &ELFFile{
+		File:     file,
+		RawData:  rawData,
+		ELF:      elfFile,
+		Is64Bit:  is64Bit,
+		FileName: fileInfo.Name(),
+		Sections: []Section{},
+		Segments: []Segment{},
+	}
+
+	// Popola le sezioni
+	sectionCount := ef.ELF.GetSectionCount()
+	for i := uint16(0); i < sectionCount; i++ {
+		header, err := ef.ELF.GetSectionHeader(i)
+		if err != nil {
+			continue
+		}
+
+		name, _ := ef.ELF.GetSectionName(i)
+
+		section := Section{
+			Name:   name,
+			Offset: header.GetFileOffset(),
+			Size:   header.GetSize(),
+			Type:   uint32(header.GetType()),
+			Flags:  0, // Converti le flags in base al tipo
+			Index:  i,
+		}
+
+		ef.Sections = append(ef.Sections, section)
+	}
+
+	// Popola i segmenti
+	segmentCount := ef.ELF.GetSegmentCount()
+	for i := uint16(0); i < segmentCount; i++ {
+		phdr, err := ef.ELF.GetProgramHeader(i)
+		if err != nil {
+			continue
+		}
+
+		segment := Segment{
+			Offset:   phdr.GetFileOffset(),
+			Size:     phdr.GetFileSize(),
+			Type:     uint32(phdr.GetType()),
+			Flags:    uint32(phdr.GetFlags()),
+			Loadable: phdr.GetType() == elf_reader.ProgramHeaderType(1), // PT_LOAD = 1
+			Index:    i,
+		}
+
+		ef.Segments = append(ef.Segments, segment)
+	}
+
+	return ef, nil
 }
 
-// ReadEhdrFromReaderAt legge direttamente da ReaderAt (funzione di utilità)
-func ReadEhdrFromReaderAt(r io.ReaderAt, class elf.Class, data elf.Data) (*Ehdr, error) {
-	if r == nil {
-		return nil, ErrInvalidELF
+// IsExecutableOrShared verifica se il file è un eseguibile o una libreria condivisa
+func (e *ELFFile) IsExecutableOrShared() bool {
+	fileType := e.ELF.GetFileType()
+	// Confronta con le costanti ELFTypeExecutable (2) e ELFTypeSharedObject (3)
+	return fileType == elf_reader.ELFFileType(2) || fileType == elf_reader.ELFFileType(3)
+}
+
+// CalculateMemorySize determina l'offset dell'ultimo byte del file
+// che è referenziato da una voce nella tabella delle intestazioni di programma
+func (e *ELFFile) CalculateMemorySize() (uint64, error) {
+	// Inizia impostando la dimensione per includere l'header ELF e
+	// la tabella completa delle intestazioni di programma
+	var size uint64
+
+	// Ottiene il numero di segmenti (program headers)
+	segmentCount := e.ELF.GetSegmentCount()
+
+	// Calcola la dimensione iniziale includendo l'header ELF e la tabella dei program header
+	// Poiché GetHeaderSize non esiste, usiamo valori standard: 52 per ELF32, 64 per ELF64
+	var headerSize uint64
+	if e.Is64Bit {
+		headerSize = 64
+	} else {
+		headerSize = 52
+	}
+	size = headerSize
+
+	// Estende la dimensione per includere qualsiasi dato a cui fa riferimento
+	// la tabella delle intestazioni di programma
+	for i := uint16(0); i < segmentCount; i++ {
+		phdr, err := e.ELF.GetProgramHeader(i)
+		if err != nil {
+			return 0, fmt.Errorf("impossibile leggere l'intestazione di programma %d: %w", i, err)
+		}
+
+		// Salta i segmenti di tipo NULL (0)
+		if phdr.GetType() == elf_reader.ProgramHeaderType(0) {
+			continue
+		}
+
+		// Calcola la fine del segmento nel file
+		segmentEnd := phdr.GetFileOffset() + phdr.GetFileSize()
+		if segmentEnd > size {
+			size = segmentEnd
+		}
 	}
 
-	return parseHeaderFromReader(r, class, data)
+	return size, nil
+}
+
+// TruncateZeros esamina i byte alla fine della dimensione del file
+// e riduce la dimensione per escludere eventuali byte zero finali
+func (e *ELFFile) TruncateZeros(size uint64) (uint64, error) {
+	// Verifica che la dimensione non superi la dimensione del file
+	if size > uint64(len(e.RawData)) {
+		return size, fmt.Errorf("dimensione specificata maggiore della dimensione del file")
+	}
+
+	// Esamina i byte dalla fine della dimensione specificata
+	// e riduce la dimensione per escludere eventuali byte zero finali
+	for size > 0 && e.RawData[size-1] == 0 {
+		size--
+	}
+
+	return size, nil
 }
