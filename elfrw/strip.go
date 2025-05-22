@@ -18,7 +18,26 @@ func (e *ELFFile) GetEndian() binary.ByteOrder {
 	return binary.BigEndian
 }
 
-func (e *ELFFile) StripSections() error {
+func (e *ELFFile) ReadBytes(offset uint64, size int) ([]byte, error) {
+	if offset+uint64(size) > uint64(len(e.RawData)) {
+		return nil, fmt.Errorf("read beyond file limits: offset %d, size %d", offset, size)
+	}
+	result := make([]byte, size)
+	copy(result, e.RawData[offset:offset+uint64(size)])
+	return result, nil
+}
+
+func (e *ELFFile) ZeroFill(offset uint64, size int) error {
+	if offset+uint64(size) > uint64(len(e.RawData)) {
+		return fmt.Errorf("write beyond file limits: offset %d, size %d")
+	}
+	for i := uint64(0); i < uint64(size); i++ {
+		e.RawData[offset+i] = 0
+	}
+	return nil
+}
+
+func (e *ELFFile) StripSectionTable() error {
 	endianness := e.GetEndian()
 	var shoffPos, shNumPos, shStrNdxPos int
 	if e.Is64Bit {
@@ -55,57 +74,6 @@ func (e *ELFFile) StripSections() error {
 	return nil
 }
 
-func (e *ELFFile) StripDebugInfo() error {
-	sectionCount := e.ELF.GetSectionCount()
-	for i := uint16(0); i < sectionCount; i++ {
-		name, err := e.ELF.GetSectionName(i)
-		if err != nil {
-			continue
-		}
-
-		if strings.HasPrefix(name, ".debug_") {
-			header, err := e.ELF.GetSectionHeader(i)
-			if err != nil {
-				continue
-			}
-			if offset := header.GetFileOffset(); offset > 0 {
-				err := e.ZeroFill(offset, int(header.GetSize()))
-				if err != nil {
-					return err
-				}
-				for j := range e.Sections {
-					if e.Sections[j].Index == i {
-						e.Sections[j].Offset = 0
-						e.Sections[j].Size = 0
-						break
-					}
-				}
-			}
-		}
-	}
-	return nil
-}
-
-func (e *ELFFile) StripSymbols() error {
-	symbolSections := []string{".symtab", ".dynsym"}
-	for i, section := range e.Sections {
-		for _, symSection := range symbolSections {
-			if section.Name == symSection {
-				if section.Offset > 0 && section.Size > 0 {
-					err := e.ZeroFill(section.Offset, int(section.Size))
-					if err != nil {
-						return err
-					}
-				}
-				section.Offset = 0
-				section.Size = 0
-				e.Sections[i] = section
-			}
-		}
-	}
-	return e.UpdateSectionHeaders()
-}
-
 func (e *ELFFile) StripNonLoadable() error {
 	for i, segment := range e.Segments {
 		if !segment.Loadable {
@@ -121,26 +89,6 @@ func (e *ELFFile) StripNonLoadable() error {
 		}
 	}
 	return e.UpdateProgramHeaders()
-}
-
-func (e *ELFFile) StripStrings() error {
-	stringSections := []string{".strtab"}
-	for i, section := range e.Sections {
-		for _, strSection := range stringSections {
-			if section.Name == strSection {
-				if section.Offset > 0 && section.Size > 0 {
-					err := e.ZeroFill(section.Offset, int(section.Size))
-					if err != nil {
-						return err
-					}
-				}
-				section.Offset = 0
-				section.Size = 0
-				e.Sections[i] = section
-			}
-		}
-	}
-	return e.UpdateSectionHeaders()
 }
 
 func (e *ELFFile) RandomizeSectionNames() error {
@@ -236,21 +184,168 @@ func (e *ELFFile) RandomizeSectionNames() error {
 	return nil
 }
 
-func (e *ELFFile) ReadBytes(offset uint64, size int) ([]byte, error) {
-	if offset+uint64(size) > uint64(len(e.RawData)) {
-		return nil, fmt.Errorf("read beyond file limits: offset %d, size %d", offset, size)
+func (e *ELFFile) StripSectionsByNames(names []string, prefix bool) error {
+	for i, section := range e.Sections {
+		for _, name := range names {
+			if (prefix && strings.HasPrefix(section.Name, name)) || (!prefix && section.Name == name) {
+				if section.Offset > 0 && section.Size > 0 {
+					err := e.ZeroFill(section.Offset, int(section.Size))
+					if err != nil {
+						return err
+					}
+				}
+				section.Offset = 0
+				section.Size = 0
+				e.Sections[i] = section
+			}
+		}
 	}
-	result := make([]byte, size)
-	copy(result, e.RawData[offset:offset+uint64(size)])
-	return result, nil
+	return e.UpdateSectionHeaders()
 }
 
-func (e *ELFFile) ZeroFill(offset uint64, size int) error {
-	if offset+uint64(size) > uint64(len(e.RawData)) {
-		return fmt.Errorf("write beyond file limits: offset %d, size %d", offset, size)
+func (e *ELFFile) ModifyELFHeader() error {
+	endianness := e.GetEndian()
+	var timestampOffset int
+	if e.Is64Bit {
+		timestampOffset = 16
+		for i := 0; i < 8; i++ {
+			e.RawData[timestampOffset+i] = byte(rand.Intn(256))
+		}
+	} else {
+		timestampOffset = 16
+		for i := 0; i < 4; i++ {
+			e.RawData[timestampOffset+i] = byte(rand.Intn(256))
+		}
 	}
-	for i := uint64(0); i < uint64(size); i++ {
-		e.RawData[offset+i] = 0
+
+	var flagsOffset int
+	if e.Is64Bit {
+		flagsOffset = 48
+		err := WriteAtOffset(e.RawData, uint64(flagsOffset), endianness, uint32(rand.Intn(0x10)))
+		if err != nil {
+			return err
+		}
+	} else {
+		flagsOffset = 36
+		err := WriteAtOffset(e.RawData, uint64(flagsOffset), endianness, uint32(rand.Intn(0x10)))
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (e *ELFFile) StripDynamicLinking() error {
+	return e.StripSectionsByNames([]string{".dynamic", ".dynstr", ".dynsym"}, false)
+}
+
+var (
+	SymbolsSectionsExact = []string{
+		".symtab",
+		".dynsym",
+	}
+	StringSectionsExact = []string{
+		".strtab",
+	}
+	DebugSectionsExact = []string{
+		".debug",
+		".stab",
+		".stabstr",
+		".gdb_index",
+		".line",
+		".zdebug_",
+	}
+	DebugSectionsPrefix = []string{
+		".debug_",
+		".zdebug_",
+	}
+	BuildInfoSectionsExact = []string{
+		".gnu.build.attributes",
+		".gnu.version",
+		".gnu.version_r",
+		".gnu.version_d",
+		".gnu.warning",
+		".note.gnu.build-id",
+		".note.ABI-tag",
+		".note.gnu.property",
+		".comment",
+		".buildid",
+		".SUNW_",
+		".gnu.liblist",
+		".gnu.conflict",
+		".gnu.prelink_undo",
+	}
+	BuildInfoSectionsPrefix = []string{
+		".note",
+	}
+	ProfilingSectionsExact = []string{
+		".gmon",
+		".profile",
+	}
+	ExceptionSectionsExact = []string{
+		".eh_frame",
+		".eh_frame_hdr",
+		".gcc_except_table",
+		".pdr",
+		".mdebug",
+	}
+	ArchSectionsPrefix = []string{
+		".ARM.",
+		".MIPS.",
+		".xtensa.",
+	}
+	PLTRelocSectionsExact = []string{
+		".plt.got",
+		".plt.sec",
+	}
+	PLTRelocSectionsPrefix = []string{
+		".rel",
+		".rela",
+	}
+)
+
+func (e *ELFFile) StripAllMetadata() error {
+	// Symbols
+	if err := e.StripSectionsByNames(SymbolsSectionsExact, false); err != nil {
+		return err
+	}
+	// Strings
+	if err := e.StripSectionsByNames(StringSectionsExact, false); err != nil {
+		return err
+	}
+	// Debug
+	if err := e.StripSectionsByNames(DebugSectionsExact, false); err != nil {
+		return err
+	}
+	if err := e.StripSectionsByNames(DebugSectionsPrefix, true); err != nil {
+		return err
+	}
+	// Build info/toolchain
+	if err := e.StripSectionsByNames(BuildInfoSectionsExact, false); err != nil {
+		return err
+	}
+	if err := e.StripSectionsByNames(BuildInfoSectionsPrefix, true); err != nil {
+		return err
+	}
+	// Profiling
+	if err := e.StripSectionsByNames(ProfilingSectionsExact, false); err != nil {
+		return err
+	}
+	// Exception/stack unwinding
+	if err := e.StripSectionsByNames(ExceptionSectionsExact, false); err != nil {
+		return err
+	}
+	// Arch
+	if err := e.StripSectionsByNames(ArchSectionsPrefix, true); err != nil {
+		return err
+	}
+	// PLT/relocation
+	if err := e.StripSectionsByNames(PLTRelocSectionsExact, false); err != nil {
+		return err
+	}
+	if err := e.StripSectionsByNames(PLTRelocSectionsPrefix, true); err != nil {
+		return err
 	}
 	return nil
 }
