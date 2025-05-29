@@ -19,7 +19,7 @@ var (
 		".reloc",
 	}
 	NonEssentialSectionsExact = []string{
-		".comment", ".note", ".drectve",
+		".comment", ".note", ".drectve", ".rsrc",
 	}
 	ExceptionSectionsExact = []string{
 		".pdata", ".xdata",
@@ -85,16 +85,6 @@ func (p *PEFile) StripNonEssentialData() error {
 	return p.StripSectionsByNames(NonEssentialSectionsExact, false)
 }
 
-// StripRSRC modifies or removes non-essential resources.
-func (p *PEFile) StripRSRC() error {
-	for i, section := range p.Sections {
-		if section.Name == ".rsrc" {
-			p.Sections[i] = section
-		}
-	}
-	return nil
-}
-
 // StripExceptionHandling removes exception handling information.
 func (p *PEFile) StripExceptionHandling() error {
 	return p.StripSectionsByNames(ExceptionSectionsExact, false)
@@ -125,9 +115,6 @@ func (p *PEFile) StripAllMetadata() error {
 		return err
 	}
 	if err := p.StripBuildInfo(); err != nil {
-		return err
-	}
-	if err := p.StripRSRC(); err != nil {
 		return err
 	}
 	return p.RandomizeSectionNames()
