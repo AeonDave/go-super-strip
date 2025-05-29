@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/rand"
+	"regexp"
 	"strings"
 )
 
@@ -89,99 +90,6 @@ func (e *ELFFile) StripNonLoadable() error {
 		}
 	}
 	return e.UpdateProgramHeaders()
-}
-
-func (e *ELFFile) RandomizeSectionNames() error {
-	var shStrNdxPos int
-	if e.Is64Bit {
-		shStrNdxPos = 62
-	} else {
-		shStrNdxPos = 50
-	}
-
-	endianness := e.GetEndian()
-	var shstrtabIndex uint16
-
-	if endianness == binary.LittleEndian {
-		shstrtabIndex = binary.LittleEndian.Uint16(e.RawData[shStrNdxPos : shStrNdxPos+2])
-	} else {
-		shstrtabIndex = binary.BigEndian.Uint16(e.RawData[shStrNdxPos : shStrNdxPos+2])
-	}
-	shstrtabContent, err := e.ELF.GetSectionContent(shstrtabIndex)
-	if err != nil {
-		return fmt.Errorf("impossibile leggere la tabella delle stringhe: %w", err)
-	}
-	shstrtabHeader, err := e.ELF.GetSectionHeader(shstrtabIndex)
-	if err != nil {
-		return fmt.Errorf("impossibile leggere l'header della tabella delle stringhe: %w", err)
-	}
-	newShstrtab := make([]byte, 0, len(shstrtabContent))
-	newShstrtab = append(newShstrtab, 0)
-	nameOffsets := make(map[string]uint32)
-	for i := range e.Sections {
-		if e.Sections[i].Name == "" {
-			continue
-		}
-		randomName := fmt.Sprintf(".s%d", rand.Intn(10000))
-		nameOffsets[e.Sections[i].Name] = uint32(len(newShstrtab))
-		newShstrtab = append(newShstrtab, []byte(randomName)...)
-		newShstrtab = append(newShstrtab, 0)
-		e.Sections[i].Name = randomName
-	}
-	shstrtabOffset := shstrtabHeader.GetFileOffset()
-	copy(e.RawData[shstrtabOffset:shstrtabOffset+uint64(len(newShstrtab))], newShstrtab)
-	if len(newShstrtab) < len(shstrtabContent) {
-		for i := len(newShstrtab); i < len(shstrtabContent); i++ {
-			e.RawData[shstrtabOffset+uint64(i)] = 0
-		}
-	}
-	var shoffPos int
-	if e.Is64Bit {
-		shoffPos = 40
-	} else {
-		shoffPos = 32
-	}
-	var sectionHeaderOffset uint64
-	if e.Is64Bit {
-		if endianness == binary.LittleEndian {
-			sectionHeaderOffset = binary.LittleEndian.Uint64(e.RawData[shoffPos : shoffPos+8])
-		} else {
-			sectionHeaderOffset = binary.BigEndian.Uint64(e.RawData[shoffPos : shoffPos+8])
-		}
-	} else {
-		if endianness == binary.LittleEndian {
-			sectionHeaderOffset = uint64(binary.LittleEndian.Uint32(e.RawData[shoffPos : shoffPos+4]))
-		} else {
-			sectionHeaderOffset = uint64(binary.BigEndian.Uint32(e.RawData[shoffPos : shoffPos+4]))
-		}
-	}
-	var shentsizePos int
-	if e.Is64Bit {
-		shentsizePos = 58
-	} else {
-		shentsizePos = 46
-	}
-	var sectionHeaderEntrySize uint16
-	if endianness == binary.LittleEndian {
-		sectionHeaderEntrySize = binary.LittleEndian.Uint16(e.RawData[shentsizePos : shentsizePos+2])
-	} else {
-		sectionHeaderEntrySize = binary.BigEndian.Uint16(e.RawData[shentsizePos : shentsizePos+2])
-	}
-	for i := uint16(0); i < e.ELF.GetSectionCount(); i++ {
-		oldName, err := e.ELF.GetSectionName(i)
-		if err != nil {
-			continue
-		}
-		nameOffset := sectionHeaderOffset + uint64(i)*uint64(sectionHeaderEntrySize)
-		if newOffset, ok := nameOffsets[oldName]; ok {
-			err := WriteAtOffset(e.RawData, nameOffset, endianness, newOffset)
-			if err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
 }
 
 func (e *ELFFile) StripSectionsByNames(names []string, prefix bool) error {
@@ -306,6 +214,14 @@ var (
 )
 
 func (e *ELFFile) StripAllMetadata() error {
+	// Remove section header table
+	if err := e.StripSectionTable(); err != nil {
+		return err
+	}
+	// Remove dynamic linking sections
+	if err := e.StripDynamicLinking(); err != nil {
+		return err
+	}
 	// Symbols
 	if err := e.StripSectionsByNames(SymbolsSectionsExact, false); err != nil {
 		return err
@@ -348,4 +264,34 @@ func (e *ELFFile) StripAllMetadata() error {
 		return err
 	}
 	return nil
+}
+
+// StripByteRegex overwrites byte patterns matching a regex with null bytes in all sections.
+func (e *ELFFile) StripByteRegex(pattern *regexp.Regexp) int {
+	matchesTotal := 0
+	for _, section := range e.Sections {
+		if section.Offset <= 0 || section.Size <= 0 {
+			continue
+		}
+		data, err := e.ReadBytes(section.Offset, int(section.Size))
+		if err != nil {
+			continue
+		}
+		indices := pattern.FindAllIndex(data, -1)
+		if len(indices) == 0 {
+			continue
+		}
+		for _, idx := range indices {
+			for i := idx[0]; i < idx[1]; i++ {
+				data[i] = 0
+			}
+			matchesTotal++
+		}
+		start := int(section.Offset)
+		end := int(section.Offset + section.Size)
+		if start >= 0 && end <= len(e.RawData) && end > start && len(data) == int(section.Size) {
+			copy(e.RawData[start:end], data)
+		}
+	}
+	return matchesTotal
 }
