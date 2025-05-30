@@ -499,12 +499,12 @@ func (e *ELFFile) ObfuscateSecondaryTimestamps() {
 // ObfuscateAll applica tutte le tecniche di offuscamento
 func (e *ELFFile) ObfuscateAll() error {
 	// Offusca gli indirizzi di base
-	if err := e.ObfuscateBaseAddresses(); err != nil {
-		return err
+
+	if err := e.RandomizeSectionNames(); err != nil {
+		return fmt.Errorf("error randomizing section names during ObfuscateAll: %w", err)
 	}
 
-	// Offusca le tabelle GOT/PLT
-	if err := e.ObfuscateGOTPLT(); err != nil {
+	if err := e.ObfuscateBaseAddresses(); err != nil {
 		return err
 	}
 
@@ -513,10 +513,15 @@ func (e *ELFFile) ObfuscateAll() error {
 		return err
 	}
 
-	// Offusca le tabelle di inizializzazione/finalizzazione
-	if err := e.ObfuscateInitFiniTables(); err != nil {
-		return err
-	}
+	// Offusca le tabelle GOT/PLT
+	//if err := e.ObfuscateGOTPLT(); err != nil {
+	//	return err
+	//}
+	//
+	//// Offusca le tabelle di inizializzazione/finalizzazione
+	//if err := e.ObfuscateInitFiniTables(); err != nil {
+	//	return err
+	//}
 
 	e.ObfuscateSectionPadding()
 	e.ObfuscateReservedHeaderFields()
