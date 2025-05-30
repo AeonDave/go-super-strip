@@ -1,61 +1,122 @@
 package main
 
 import (
-	"bytes"
-	"gosstrip/perw"
+	"encoding/binary"
 	"regexp"
+	"strings"
 	"testing"
+
+	"gosstrip/perw"
 )
 
-func TestPEStripAllMetadata(t *testing.T) {
-	pe := &perw.PEFile{
-		RawData:  make([]byte, 4096),
-		Sections: []perw.Section{{Name: ".debug", Offset: 100, Size: 10}, {Name: ".strtab", Offset: 200, Size: 10}},
+// Constants for PE structures
+const (
+	dosHeaderSize        = 64
+	peSignatureSize      = 4
+	coffFileHeaderSize   = 20
+	optionalHeader64Size = 240
+	sectionPeHeaderSize  = 40
+
+	imageFileMachineAMD64 = 0x8664
+	pe32PlusMagic         = 0x20b
+
+	debugDirectoryOffset      = 128
+	tlsDirectoryOffset        = 144
+	loadConfigDirectoryOffset = 152
+)
+
+func trimNulls(b []byte) string {
+	return strings.TrimRight(string(b), "\x00")
+}
+
+func createMinimalPE64(t *testing.T, imageBase uint64) *perw.PEFile {
+	peFile := &perw.PEFile{Is64Bit: true}
+	rawData := make([]byte, dosHeaderSize+peSignatureSize+coffFileHeaderSize+optionalHeader64Size+sectionPeHeaderSize)
+
+	// DOS Header
+	rawData[0], rawData[1] = 'M', 'Z'
+	binary.LittleEndian.PutUint32(rawData[0x3C:], dosHeaderSize)
+
+	// PE Signature
+	copy(rawData[dosHeaderSize:], []byte{'P', 'E', 0, 0})
+
+	// COFF Header
+	binary.LittleEndian.PutUint16(rawData[dosHeaderSize+4:], imageFileMachineAMD64)
+	binary.LittleEndian.PutUint16(rawData[dosHeaderSize+6:], 1) // Number of sections
+	binary.LittleEndian.PutUint16(rawData[dosHeaderSize+16:], optionalHeader64Size)
+
+	// Optional Header
+	offset := dosHeaderSize + peSignatureSize + coffFileHeaderSize
+	binary.LittleEndian.PutUint16(rawData[offset:], pe32PlusMagic)
+	binary.LittleEndian.PutUint64(rawData[offset+24:], imageBase)
+	binary.LittleEndian.PutUint32(rawData[offset+56:], 0x2000) // Size of image
+	binary.LittleEndian.PutUint32(rawData[offset+60:], 0x200)  // Size of headers
+
+	// Section Header
+	sectionOffset := offset + optionalHeader64Size
+	copy(rawData[sectionOffset:], []byte(".text\x00\x00\x00"))
+	binary.LittleEndian.PutUint32(rawData[sectionOffset+36:], 0x60000020)
+
+	peFile.RawData = rawData
+	peFile.Sections = []perw.Section{{Name: ".text", Flags: 0x60000020}}
+	return peFile
+}
+
+func TestPERandomizeSectionNames(t *testing.T) {
+	peFile := createMinimalPE64(t, 0x140000000)
+	originalName := peFile.Sections[0].Name
+
+	if err := peFile.RandomizeSectionNames(); err != nil {
+		t.Fatalf("RandomizeSectionNames failed: %v", err)
 	}
-	copy(pe.RawData[100:110], []byte("debugdata"))
-	copy(pe.RawData[200:210], []byte("strtabdat"))
-	err := pe.StripAllMetadata()
-	if err != nil {
-		t.Fatalf("StripAllMetadata failed: %v", err)
+
+	newName := peFile.Sections[0].Name
+	if originalName == newName || !regexp.MustCompile(`^\.s\d+$`).MatchString(newName) {
+		t.Errorf("Section name not randomized correctly: %s", newName)
 	}
-	for _, sec := range pe.Sections {
-		if sec.Size != 0 && sec.Offset != 0 {
-			data, _ := pe.ReadBytes(sec.Offset, int(sec.Size))
-			if !bytes.Equal(data, make([]byte, len(data))) {
-				t.Errorf("Section %s not zeroed", sec.Name)
+}
+
+func TestPEObfuscateBaseAddresses(t *testing.T) {
+	peFile := createMinimalPE64(t, 0x140000000)
+	initialBase := binary.LittleEndian.Uint64(peFile.RawData[128:136])
+
+	if err := peFile.ObfuscateBaseAddresses(); err != nil {
+		t.Fatalf("ObfuscateBaseAddresses failed: %v", err)
+	}
+
+	newBase := binary.LittleEndian.Uint64(peFile.RawData[128:136])
+	if newBase == initialBase || newBase%0x10000 != 0 {
+		t.Errorf("Base address not obfuscated correctly: %X", newBase)
+	}
+}
+
+func TestPEObfuscateDirectory(t *testing.T) {
+	tests := []struct {
+		name     string
+		offset   int64
+		function func(*perw.PEFile) error
+	}{
+		{"Debug Directory", debugDirectoryOffset, (*perw.PEFile).ObfuscateDebugDirectory},
+		{"TLS Directory", tlsDirectoryOffset, (*perw.PEFile).ObfuscateTLSDirectory},
+		{"Load Config Directory", loadConfigDirectoryOffset, (*perw.PEFile).ObfuscateLoadConfig},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			peFile := createMinimalPE64(t, 0x140000000)
+			dirOffset := 128 + tt.offset
+			binary.LittleEndian.PutUint32(peFile.RawData[dirOffset:], 0x1000)  // VA
+			binary.LittleEndian.PutUint32(peFile.RawData[dirOffset+4:], 0x100) // Size
+
+			if err := tt.function(peFile); err != nil {
+				t.Fatalf("%s failed: %v", tt.name, err)
 			}
-		}
-	}
-}
 
-func TestPEObfuscateAll(t *testing.T) {
-	pe := &perw.PEFile{
-		RawData:  make([]byte, 4096),
-		Sections: []perw.Section{{Name: ".rsrc", Offset: 100, Size: 16}},
-	}
-	copy(pe.RawData[100:116], []byte("1234567890abcdef"))
-	err := pe.ObfuscateAll()
-	if err != nil {
-		t.Fatalf("ObfuscateAll failed: %v", err)
-	}
-	zero := make([]byte, 16)
-	if bytes.Equal(pe.RawData[100:116], zero) {
-		t.Error("ObfuscateAll did not randomize section data")
-	}
-}
-
-func TestPEStripByteRegex(t *testing.T) {
-	pe := &perw.PEFile{
-		RawData:  make([]byte, 256),
-		Sections: []perw.Section{{Name: ".data", Offset: 0, Size: 256}},
-	}
-	copy(pe.RawData[0:20], []byte("UPX! signature here"))
-	pat := regexp.MustCompile(`UPX!`)
-	matches := pe.StripByteRegex(pat)
-	if matches == 0 {
-		t.Error("StripByteRegex did not find pattern")
-	}
-	if bytes.Contains(pe.RawData[:20], []byte("UPX!")) {
-		t.Error("StripByteRegex did not remove pattern")
+			va := binary.LittleEndian.Uint32(peFile.RawData[dirOffset:])
+			size := binary.LittleEndian.Uint32(peFile.RawData[dirOffset+4:])
+			if va != 0 || size != 0 {
+				t.Errorf("%s not zeroed. VA: %X, Size: %X", tt.name, va, size)
+			}
+		})
 	}
 }

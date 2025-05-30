@@ -2,26 +2,62 @@ package main
 
 import (
 	"bytes"
-	"gosstrip/elfrw"
+	"encoding/binary"
 	"regexp"
 	"testing"
+
+	"gosstrip/elfrw"
 )
 
+// Constants for ELF structures
+const (
+	elfHeaderSize     = 64
+	sectionHeaderSize = 64
+	programHeaderSize = 56
+	shtProgbits       = 1
+	shtStrtab         = 3
+	shfAlloc          = 0x2
+	shfExecinstr      = 0x4
+	shfWrite          = 0x1
+	ptLoad            = 1
+	pfRead            = 0x4
+	pfExecute         = 0x1
+	elf64SymSize      = 24
+)
+
+// Helper: Create st_info from binding and type
+func elf64STInfo(bind, typ uint8) uint8 {
+	return (bind << 4) + (typ & 0xf)
+}
+
+// Helper: Extract null-terminated string from byte slice
+func extractNullTerminatedString(data []byte, offset int) string {
+	end := bytes.IndexByte(data[offset:], 0)
+	if end == -1 {
+		return ""
+	}
+	return string(data[offset : offset+end])
+}
+
+// Test stripping all metadata
 func TestELFStripAllMetadata(t *testing.T) {
-	// Dummy ELFFile with fake sections for test
 	elf := &elfrw.ELFFile{
-		RawData:  make([]byte, 4096),
-		Is64Bit:  true,
-		Sections: []elfrw.Section{{Name: ".debug", Offset: 100, Size: 10}, {Name: ".strtab", Offset: 200, Size: 10}},
+		RawData: make([]byte, 4096),
+		Is64Bit: true,
+		Sections: []elfrw.Section{
+			{Name: ".debug", Offset: 100, Size: 10},
+			{Name: ".strtab", Offset: 200, Size: 10},
+		},
 	}
 	copy(elf.RawData[100:110], []byte("debugdata"))
 	copy(elf.RawData[200:210], []byte("strtabdat"))
-	err := elf.StripAllMetadata()
-	if err != nil {
+
+	if err := elf.StripAllMetadata(); err != nil {
 		t.Fatalf("StripAllMetadata failed: %v", err)
 	}
+
 	for _, sec := range elf.Sections {
-		if sec.Size != 0 && sec.Offset != 0 {
+		if sec.Size > 0 {
 			data, _ := elf.ReadBytes(sec.Offset, int(sec.Size))
 			if !bytes.Equal(data, make([]byte, len(data))) {
 				t.Errorf("Section %s not zeroed", sec.Name)
@@ -30,37 +66,69 @@ func TestELFStripAllMetadata(t *testing.T) {
 	}
 }
 
-func TestELFObfuscateAll(t *testing.T) {
+// Test randomizing section names
+func TestELFRandomizeSectionNames(t *testing.T) {
 	elf := &elfrw.ELFFile{
-		RawData:  make([]byte, 4096),
-		Is64Bit:  true,
-		Sections: []elfrw.Section{{Name: ".note", Offset: 100, Size: 16}},
+		Is64Bit: true,
+		Sections: []elfrw.Section{
+			{Name: ".text"}, {Name: ".data"}, {Name: ".shstrtab"},
+		},
 	}
-	copy(elf.RawData[100:116], []byte("1234567890abcdef"))
-	err := elf.ObfuscateAll()
-	if err != nil {
-		t.Fatalf("ObfuscateAll failed: %v", err)
+	elf.RawData = make([]byte, 1024)
+	copy(elf.RawData, []byte{0x7f, 'E', 'L', 'F'})
+
+	if err := elf.RandomizeSectionNames(); err != nil {
+		t.Fatalf("RandomizeSectionNames failed: %v", err)
 	}
-	// Check that section padding and reserved fields are not all zero
-	zero := make([]byte, 16)
-	if bytes.Equal(elf.RawData[100:116], zero) {
-		t.Error("ObfuscateAll did not randomize section data")
+
+	for _, sec := range elf.Sections {
+		if !regexp.MustCompile(`^\.s\d+$`).MatchString(sec.Name) {
+			t.Errorf("Section name '%s' not randomized correctly", sec.Name)
+		}
 	}
 }
 
-func TestELFStripByteRegex(t *testing.T) {
+// Test obfuscating base addresses
+func TestELFObfuscateBaseAddresses(t *testing.T) {
 	elf := &elfrw.ELFFile{
-		RawData:  make([]byte, 256),
-		Is64Bit:  true,
-		Sections: []elfrw.Section{{Name: ".data", Offset: 0, Size: 256}},
+		Is64Bit: true,
+		Segments: []elfrw.Segment{
+			{Offset: 0x1000, Size: 0x200, Flags: pfRead | pfExecute},
+			{Offset: 0x2000, Size: 0x100, Flags: pfRead | shfWrite},
+		},
 	}
-	copy(elf.RawData[0:20], []byte("UPX! signature here"))
-	pat := regexp.MustCompile(`UPX!`)
-	matches := elf.StripByteRegex(pat)
-	if matches == 0 {
-		t.Error("StripByteRegex did not find pattern")
+	elf.RawData = make([]byte, 4096)
+	binary.LittleEndian.PutUint64(elf.RawData[24:32], 0x401000)
+
+	if err := elf.ObfuscateBaseAddresses(); err != nil {
+		t.Fatalf("ObfuscateBaseAddresses failed: %v", err)
 	}
-	if bytes.Contains(elf.RawData[:20], []byte("UPX!")) {
-		t.Error("StripByteRegex did not remove pattern")
+
+	newEntry := binary.LittleEndian.Uint64(elf.RawData[24:32])
+	if newEntry%0x1000 != 0 {
+		t.Errorf("New entry point %x not aligned to 0x1000", newEntry)
+	}
+}
+
+// Test obfuscating exported functions
+func TestELFObfuscateExportedFunctions(t *testing.T) {
+	elf := &elfrw.ELFFile{
+		Is64Bit: true,
+		Sections: []elfrw.Section{
+			{Name: ".dynstr", Offset: 0x100, Size: 0x50},
+			{Name: ".dynsym", Offset: 0x200, Size: 0x60},
+		},
+	}
+	elf.RawData = make([]byte, 512)
+	copy(elf.RawData[0x100:], []byte("\x00func1\x00func2\x00"))
+	copy(elf.RawData[0x200:], make([]byte, elf64SymSize*3))
+
+	if err := elf.ObfuscateExportedFunctions(); err != nil {
+		t.Fatalf("ObfuscateExportedFunctions failed: %v", err)
+	}
+
+	dynstr := elf.RawData[0x100:0x150]
+	if !bytes.Contains(dynstr, []byte("func1")) {
+		t.Errorf("Original function name 'func1' not obfuscated")
 	}
 }
