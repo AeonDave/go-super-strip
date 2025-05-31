@@ -1,15 +1,23 @@
 package perw
 
 import (
+	"crypto/rand"
 	"encoding/binary"
 	"fmt"
-	"math/rand"
 	"regexp"
 )
 
 // ObfuscateBaseAddresses modifies base virtual addresses with a random offset.
 func (p *PEFile) ObfuscateBaseAddresses() error {
-	randomOffset := uint64(rand.Intn(0x10)) * 0x10000
+	randBytes := make([]byte, 4)
+	_, err := rand.Read(randBytes)
+	if err != nil {
+		return fmt.Errorf("failed to generate random bytes for base address offset: %w", err)
+	}
+	// Generate a page-aligned offset, e.g., up to 255 * 0x10000 = 0xFF0000 (approx 16MB)
+	// Use a smaller range to reduce likelihood of extreme values.
+	randomOffset := uint64(randBytes[0]) * 0x10000 // Example: up to 255 * 64KB
+
 	if len(p.RawData) < 0x40 {
 		return fmt.Errorf("file too small for DOS header")
 	}
@@ -72,43 +80,71 @@ func (p *PEFile) ObfuscateSection(name string) (*Section, error) {
 }
 
 // ObfuscateSectionPadding randomizes unused bytes between PE sections.
-func (p *PEFile) ObfuscateSectionPadding() {
+func (p *PEFile) ObfuscateSectionPadding() error {
 	for i := 0; i < len(p.Sections)-1; i++ {
 		end := p.Sections[i].Offset + p.Sections[i].Size
 		next := p.Sections[i+1].Offset
 		if end < next && next-end < 0x10000 && end > 0 {
-			for j := end; j < next; j++ {
-				p.RawData[j] = byte(rand.Intn(256))
+			paddingSize := int(next - end)
+			if paddingSize <= 0 {
+				continue
 			}
+			randomPadding := make([]byte, paddingSize)
+			_, err := rand.Read(randomPadding)
+			if err != nil {
+				// Non-critical, can log or skip. Returning error for consistency.
+				return fmt.Errorf("failed to generate random padding for section %d: %w", i, err)
+			}
+			copy(p.RawData[end:next], randomPadding)
 		}
 	}
+	return nil
 }
 
 // ObfuscateReservedHeaderFields randomizes reserved/zero fields in PE headers.
-func (p *PEFile) ObfuscateReservedHeaderFields() {
+func (p *PEFile) ObfuscateReservedHeaderFields() error {
 	if len(p.RawData) < 0x40 {
-		return
+		return fmt.Errorf("file too small for DOS header, cannot obfuscate reserved fields")
 	}
 	// DOS header reserved fields (offsets 0x1C-0x3B)
-	for i := 0x1C; i < 0x3C; i++ {
-		p.RawData[i] = byte(rand.Intn(256))
+	dosReservedSize := 0x3C - 0x1C
+	randDOSBytes := make([]byte, dosReservedSize)
+	_, err := rand.Read(randDOSBytes)
+	if err != nil {
+		return fmt.Errorf("failed to generate random bytes for DOS reserved fields: %w", err)
 	}
+	copy(p.RawData[0x1C:0x3C], randDOSBytes)
+
 	// PE optional header reserved fields (offsets depend on arch)
-	e_lfanew := int64(binary.LittleEndian.Uint32(p.RawData[0x3C:0x40]))
-	optHeaderOffset := e_lfanew + 4 + 20
-	if p.Is64Bit {
-		for i := 108; i < 112; i++ { // Win64: LoaderFlags
-			p.RawData[optHeaderOffset+int64(i)] = byte(rand.Intn(256))
-		}
-	} else {
-		for i := 92; i < 96; i++ { // Win32: LoaderFlags
-			p.RawData[optHeaderOffset+int64(i)] = byte(rand.Intn(256))
-		}
+	eLfanewOffset := int64(0x3C)
+	if eLfanewOffset+4 > int64(len(p.RawData)) {
+		return fmt.Errorf("file too small to read e_lfanew for PE reserved fields")
 	}
+	e_lfanew := int64(binary.LittleEndian.Uint32(p.RawData[eLfanewOffset : eLfanewOffset+4]))
+	optHeaderOffset := e_lfanew + 4 + 20 // PE Sig + COFF Header
+
+	loaderFlagsOffset := int64(0)
+	if p.Is64Bit {
+		loaderFlagsOffset = optHeaderOffset + 108 // Win64: LoaderFlags (part of OptionalHeader64 specific fields)
+	} else {
+		loaderFlagsOffset = optHeaderOffset + 92 // Win32: LoaderFlags (part of OptionalHeader32 specific fields)
+	}
+
+	if loaderFlagsOffset > 0 && loaderFlagsOffset+4 <= int64(len(p.RawData)) {
+		randLoaderFlagsBytes := make([]byte, 4)
+		_, err = rand.Read(randLoaderFlagsBytes)
+		if err != nil {
+			return fmt.Errorf("failed to generate random bytes for LoaderFlags: %w", err)
+		}
+		copy(p.RawData[loaderFlagsOffset:loaderFlagsOffset+4], randLoaderFlagsBytes)
+	} else if loaderFlagsOffset > 0 { // It was calculated but is out of bounds
+		return fmt.Errorf("LoaderFlags offset %d out of bounds for file size %d", loaderFlagsOffset, len(p.RawData))
+	}
+	return nil
 }
 
 // ObfuscateSecondaryTimestamps randomizes non-critical timestamps in debug/resource/version sections.
-func (p *PEFile) ObfuscateSecondaryTimestamps() {
+func (p *PEFile) ObfuscateSecondaryTimestamps() error {
 	// Cerca stringhe tipo "20xx" o "19xx" in .rsrc/.data/.rdata
 	pattern := regexp.MustCompile(`(?m)19\\d{2}|20\\d{2}`)
 	for _, section := range p.Sections {
@@ -117,14 +153,23 @@ func (p *PEFile) ObfuscateSecondaryTimestamps() {
 			if err == nil && len(data) >= 4 {
 				indices := pattern.FindAllIndex(data, -1)
 				for _, idx := range indices {
-					for i := idx[0]; i < idx[1]; i++ {
-						data[i] = byte(rand.Intn(10) + '0')
+					// Create a random 4-digit string like "NNNN"
+					randDigits := make([]byte, idx[1]-idx[0])
+					for k := range randDigits {
+						digitRand := make([]byte, 1)
+						_, errRead := rand.Read(digitRand)
+						if errRead != nil {
+							return fmt.Errorf("failed to generate random digit for timestamp in %s: %w", section.Name, errRead)
+						}
+						randDigits[k] = byte((digitRand[0] % 10) + '0')
 					}
+					copy(data[idx[0]:idx[1]], randDigits)
 				}
 				copy(p.RawData[section.Offset:section.Offset+int64(len(data))], data)
 			}
 		}
 	}
+	return nil
 }
 
 // ObfuscateAll applies all obfuscation techniques.
@@ -144,8 +189,14 @@ func (p *PEFile) ObfuscateAll() error {
 	if err := p.ObfuscateTLSDirectory(); err != nil {
 		return fmt.Errorf("error obfuscating TLS directory: %w", err)
 	}
-	p.ObfuscateSectionPadding()
-	p.ObfuscateReservedHeaderFields()
-	p.ObfuscateSecondaryTimestamps()
+	if err := p.ObfuscateSectionPadding(); err != nil {
+		return fmt.Errorf("error obfuscating section padding: %w", err)
+	}
+	if err := p.ObfuscateReservedHeaderFields(); err != nil {
+		return fmt.Errorf("error obfuscating reserved header fields: %w", err)
+	}
+	if err := p.ObfuscateSecondaryTimestamps(); err != nil {
+		return fmt.Errorf("error obfuscating secondary timestamps: %w", err)
+	}
 	return nil
 }

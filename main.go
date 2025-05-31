@@ -185,14 +185,13 @@ func (h *ELFHandler) PrintInfo() {
 
 func (h *ELFHandler) Strip(opts map[string]bool) {
 	if opts["all"] {
-		checkErr(h.e.StripAllMetadata())
+		checkErr(h.e.StripAllMetadata(false))
 	} else {
 		if opts["debug"] {
-			checkErr(h.e.StripSectionsByNames(elfrw.DebugSectionsExact, false))
-			checkErr(h.e.StripSectionsByNames(elfrw.DebugSectionsPrefix, true))
+			checkErr(h.e.StripDebugSections(false))
 		}
 		if opts["symbols"] {
-			checkErr(h.e.StripSectionsByNames(elfrw.SymbolsSectionsExact, false))
+			checkErr(h.e.StripSymbolTables(false))
 		}
 	}
 }
@@ -221,7 +220,7 @@ func (h *ELFHandler) Commit() {
 // StripRegex overwrites byte patterns matching a regex in all sections
 func (h *ELFHandler) StripRegex(pat string) {
 	re := regexp.MustCompile(pat)
-	matches := h.e.StripByteRegex(re)
+	matches := h.e.StripByteRegex(re, false)
 	fmt.Printf("ELF: stripped %d matches\n", matches)
 }
 
@@ -240,13 +239,13 @@ func (h *PEHandler) PrintInfo() {
 
 func (h *PEHandler) Strip(opts map[string]bool) {
 	if opts["all"] {
-		checkErr(h.p.StripAllMetadata())
+		checkErr(h.p.StripAllMetadata(false))
 	} else {
 		if opts["debug"] {
-			checkErr(h.p.StripSectionsByNames(perw.DebugSectionsExact, false))
+			checkErr(h.p.StripDebugSections(false))
 		}
 		if opts["symbols"] {
-			checkErr(h.p.StripSectionsByNames(perw.SymbolSectionsExact, false))
+			checkErr(h.p.StripSymbolTables(false))
 		}
 	}
 }
@@ -275,6 +274,6 @@ func (h *PEHandler) Commit() {
 // StripRegex overwrites byte patterns matching a regex in all sections
 func (h *PEHandler) StripRegex(pat string) {
 	re := regexp.MustCompile(pat)
-	matches := h.p.StripByteRegex(re)
+	matches := h.p.StripByteRegex(re, false)
 	fmt.Printf("PE: stripped %d matches\n", matches)
 }

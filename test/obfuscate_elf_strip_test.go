@@ -52,7 +52,7 @@ func TestELFStripAllMetadata(t *testing.T) {
 	copy(elf.RawData[100:110], []byte("debugdata"))
 	copy(elf.RawData[200:210], []byte("strtabdat"))
 
-	if err := elf.StripAllMetadata(); err != nil {
+	if err := elf.StripAllMetadata(false); err != nil {
 		t.Fatalf("StripAllMetadata failed: %v", err)
 	}
 

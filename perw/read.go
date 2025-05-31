@@ -178,3 +178,22 @@ func mapKeysToSlice(m map[string]struct{}) []string {
 	}
 	return keys
 }
+
+// ReadBytes reads a specified number of bytes from an offset in RawData.
+func (p *PEFile) ReadBytes(offset int64, size int) ([]byte, error) {
+	if offset < 0 || size < 0 { // Ensure offset and size are not negative
+		return nil, fmt.Errorf("offset (%d) or size (%d) cannot be negative", offset, size)
+	}
+	if offset+int64(size) > int64(len(p.RawData)) {
+		return nil, fmt.Errorf("read beyond file limits: offset %d, size %d, file len %d", offset, size, len(p.RawData))
+	}
+	// Check for potential integer overflow if offset + size is very large, though less likely with int64 and int.
+	// However, the main check is offset+int64(size) > len(p.RawData)
+
+	// If size is 0, return an empty slice immediately.
+	if size == 0 {
+		return []byte{}, nil
+	}
+
+	return p.RawData[offset : offset+int64(size)], nil
+}

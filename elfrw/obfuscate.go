@@ -1,9 +1,9 @@
 package elfrw
 
 import (
+	"crypto/rand"
 	"encoding/binary"
 	"fmt"
-	"math/rand"
 )
 
 func (e *ELFFile) RandomizeSectionNames() error {
@@ -37,7 +37,20 @@ func (e *ELFFile) RandomizeSectionNames() error {
 		if e.Sections[i].Name == "" {
 			continue
 		}
-		randomName := fmt.Sprintf(".s%d", rand.Intn(10000))
+		// Generate a cryptographically random name
+		randBytes := make([]byte, 7) // Max 7 chars + dot + null terminator
+		_, err := rand.Read(randBytes)
+		if err != nil {
+			return fmt.Errorf("failed to generate random bytes for section name: %w", err)
+		}
+		randomName := "."
+		for _, b := range randBytes {
+			randomName += string(rune('a' + (b % 26))) // Simple a-z mapping
+		}
+		if len(randomName) > 8 { // Ensure it fits, though generation above should be fine
+			randomName = randomName[:8]
+		}
+
 		nameOffsets[e.Sections[i].Name] = uint32(len(newShstrtab))
 		newShstrtab = append(newShstrtab, []byte(randomName)...)
 		newShstrtab = append(newShstrtab, 0)
@@ -104,7 +117,17 @@ func (e *ELFFile) ObfuscateBaseAddresses() error {
 	endianness := e.GetEndian()
 
 	// Genera un offset casuale (manteniamo l'allineamento a pagina)
-	randomOffset := uint64(rand.Intn(0x10000)) * 0x1000
+	var randomOffsetBytes [8]byte // Enough for uint64
+	_, err := rand.Read(randomOffsetBytes[:])
+	if err != nil {
+		return fmt.Errorf("failed to generate random offset bytes: %w", err)
+	}
+	// Use only a few bytes for a smaller, page-aligned offset to reduce chance of extreme values
+	randomOffset := (binary.LittleEndian.Uint64(randomOffsetBytes[:]) / 0x1000) * 0x1000
+	// Cap the random offset to avoid excessively large shifts, e.g., 1GB
+	if randomOffset > 0x40000000 {
+		randomOffset = randomOffset % 0x40000000
+	}
 
 	// Modifica gli indirizzi virtuali nelle intestazioni di programma
 	for i, segment := range e.Segments {
@@ -292,7 +315,13 @@ func (e *ELFFile) ObfuscateGOTPLT() error {
 			if i >= 3*entrySize {
 				// Genera un valore casuale che sembra un puntatore valido
 				// ma che in realtà punta a una zona di memoria non mappata
-				randomPtr := uint64(0x7f000000 + rand.Intn(0xffffff))
+				randBytes := make([]byte, 8)
+				_, err := rand.Read(randBytes)
+				if err != nil {
+					// Decide on error handling: skip this entry or return error
+					return fmt.Errorf("failed to generate random ptr for GOT: %w", err)
+				}
+				randomPtr := binary.LittleEndian.Uint64(randBytes) & 0x00007FFFFFFFFFFF // Ensure it's in user-space-like area
 
 				// Modifica la voce della GOT
 				if e.Is64Bit {
@@ -369,7 +398,17 @@ func (e *ELFFile) ObfuscateExportedFunctions() error {
 					for end < uint32(len(dynstrContent)) && dynstrContent[end] != 0 {
 						end++
 					}
-					newName := fmt.Sprintf("fn_%08x", rand.Uint32())
+					newNameBytes := make([]byte, 8) // Example length
+					_, err := rand.Read(newNameBytes)
+					if err != nil {
+						return fmt.Errorf("failed to generate random bytes for function name: %w", err)
+					}
+					// Create a somewhat printable random name
+					newName := "f_"
+					for _, b := range newNameBytes[:6] { // Use 6 bytes for a 6-char suffix
+						newName += string(rune('a' + (b % 26)))
+					}
+
 					newOffset := uint32(len(newDynstr))
 					newDynstr = append(newDynstr, []byte(newName)...)
 					newDynstr = append(newDynstr, 0)
@@ -431,7 +470,12 @@ func (e *ELFFile) ObfuscateInitFiniTables() error {
 				offset := i * ptrSize
 
 				// Genera un valore casuale che sembra un puntatore valido
-				randomPtr := uint64(0x7f000000 + rand.Intn(0xffffff))
+				randBytes := make([]byte, 8)
+				_, err := rand.Read(randBytes)
+				if err != nil {
+					return fmt.Errorf("failed to generate random ptr for init/fini: %w", err)
+				}
+				randomPtr := binary.LittleEndian.Uint64(randBytes) & 0x00007FFFFFFFFFFF
 
 				// Modifica il puntatore
 				if e.Is64Bit {
@@ -455,45 +499,66 @@ func (e *ELFFile) ObfuscateSectionPadding() {
 		end := e.Sections[i].Offset + e.Sections[i].Size
 		next := e.Sections[i+1].Offset
 		if end < next && next-end < 0x10000 && end > 0 {
-			for j := end; j < next; j++ {
-				e.RawData[j] = byte(rand.Intn(256))
+			paddingSize := int(next - end)
+			randomPadding := make([]byte, paddingSize)
+			_, err := rand.Read(randomPadding)
+			if err != nil {
+				// Non-critical, can skip or log
+				continue
 			}
+			copy(e.RawData[end:next], randomPadding)
 		}
 	}
 }
 
 // ObfuscateReservedHeaderFields randomizza campi riservati a zero nell'header ELF
-func (e *ELFFile) ObfuscateReservedHeaderFields() {
+func (e *ELFFile) ObfuscateReservedHeaderFields() error {
 	// ELF header: campi riservati a zero tra e_ident[9:16], e_flags (alcuni arch), padding in header program/section
-	for i := 9; i < 16; i++ {
-		e.RawData[i] = byte(rand.Intn(256))
+	randBytes := make([]byte, 16-9)
+	_, err := rand.Read(randBytes)
+	if err != nil {
+		return fmt.Errorf("failed to generate random bytes for e_ident[9:16]: %w", err)
 	}
+	copy(e.RawData[9:16], randBytes)
+
 	// e_flags (offset 48 per 64bit, 36 per 32bit)
+	flagsOffset := 0
 	if e.Is64Bit {
-		for i := 48; i < 52; i++ {
-			e.RawData[i] = byte(rand.Intn(256))
-		}
+		flagsOffset = 48
 	} else {
-		for i := 36; i < 40; i++ {
-			e.RawData[i] = byte(rand.Intn(256))
-		}
+		flagsOffset = 36
 	}
+	if flagsOffset > 0 && flagsOffset+4 <= len(e.RawData) {
+		randBytesFlags := make([]byte, 4)
+		_, err = rand.Read(randBytesFlags)
+		if err != nil {
+			return fmt.Errorf("failed to generate random bytes for e_flags: %w", err)
+		}
+		copy(e.RawData[flagsOffset:flagsOffset+4], randBytesFlags)
+	}
+	return nil
 }
 
 // ObfuscateSecondaryTimestamps randomizza timestamp secondari in note/debug (se presenti)
-func (e *ELFFile) ObfuscateSecondaryTimestamps() {
+func (e *ELFFile) ObfuscateSecondaryTimestamps() error {
 	for _, section := range e.Sections {
 		if section.Name == ".note" || section.Name == ".note.gnu.build-id" || section.Name == ".comment" {
 			data, err := e.ReadBytes(section.Offset, int(section.Size))
 			if err == nil && len(data) >= 4 {
 				for i := 0; i+4 <= len(data); i += 4 {
-					val := rand.Uint32()
-					binary.LittleEndian.PutUint32(data[i:i+4], val)
+					randBytes := make([]byte, 4)
+					_, errRead := rand.Read(randBytes)
+					if errRead != nil {
+						// Skip this uint32 or return error
+						return fmt.Errorf("failed to generate random bytes for timestamp in %s: %w", section.Name, errRead)
+					}
+					copy(data[i:i+4], randBytes)
 				}
 				copy(e.RawData[section.Offset:section.Offset+uint64(len(data))], data)
 			}
 		}
 	}
+	return nil
 }
 
 // ObfuscateAll applica tutte le tecniche di offuscamento
@@ -524,8 +589,12 @@ func (e *ELFFile) ObfuscateAll() error {
 	//}
 
 	e.ObfuscateSectionPadding()
-	e.ObfuscateReservedHeaderFields()
-	e.ObfuscateSecondaryTimestamps()
+	if err := e.ObfuscateReservedHeaderFields(); err != nil {
+		return fmt.Errorf("ObfuscateReservedHeaderFields failed: %w", err)
+	}
+	if err := e.ObfuscateSecondaryTimestamps(); err != nil {
+		return fmt.Errorf("ObfuscateSecondaryTimestamps failed: %w", err)
+	}
 
 	return nil
 }
