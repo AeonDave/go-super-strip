@@ -303,64 +303,6 @@ func (p *PEFile) ModifyPEHeader() error {
 	return nil
 }
 
-// RandomizeSectionNames renames sections with random-like names using crypto/rand.
-// Section names in PE are max 8 bytes.
-func (p *PEFile) RandomizeSectionNames() error {
-	if len(p.RawData) < 0x40 {
-		return fmt.Errorf("file too small for DOS header")
-	}
-	eLfanewOffset := int64(0x3C)
-	if eLfanewOffset+4 > int64(len(p.RawData)) {
-		return fmt.Errorf("cannot read e_lfanew, file too small")
-	}
-	eLfanew := int64(binary.LittleEndian.Uint32(p.RawData[eLfanewOffset : eLfanewOffset+4]))
-
-	// PE Signature (4 bytes) + COFF FileHeader (20 bytes)
-	peHeaderSize := eLfanew + 4 + 20
-	if peHeaderSize+2 > int64(len(p.RawData)) { // Need at least up to SizeOfOptionalHeader
-		return fmt.Errorf("file too small for COFF header or SizeOfOptionalHeader field")
-	}
-
-	sizeOfOptionalHeaderOffsetCorrect := eLfanew + 20
-	if sizeOfOptionalHeaderOffsetCorrect+2 > int64(len(p.RawData)) {
-		return fmt.Errorf("cannot read SizeOfOptionalHeader, file too small")
-	}
-
-	sizeOfOptionalHeader := int64(binary.LittleEndian.Uint16(p.RawData[sizeOfOptionalHeaderOffsetCorrect : sizeOfOptionalHeaderOffsetCorrect+2]))
-	sectionTableOffset := eLfanew + 4 + 20 + sizeOfOptionalHeader // PE Sig + COFF Header + OptionalHeader
-
-	randBytes := make([]byte, 8) // Max section name length
-
-	for i := range p.Sections {
-		currentSectionHeaderOffset := sectionTableOffset + int64(i*40) // Each section header is 40 bytes
-		if currentSectionHeaderOffset+8 > int64(len(p.RawData)) {      // Check if section name field is within bounds
-			return fmt.Errorf("section header %d name offset out of bounds", i)
-		}
-
-		_, err := rand.Read(randBytes) // crypto/rand
-		if err != nil {
-			return fmt.Errorf("failed to generate random bytes for section name %d: %w", i, err)
-		}
-		// Create a name like ".sXXXXXX" where X is a hex char, ensuring it starts with a dot if possible
-		// and is null-padded/terminated within 8 bytes.
-		randomName := make([]byte, 8)
-		randomName[0] = '.'      // Standard PE sections often start with a dot
-		for j := 1; j < 7; j++ { // Fill next 6 chars with random hex-like chars
-			c := randBytes[j] % 16
-			if c < 10 {
-				randomName[j] = '0' + c
-			} else {
-				randomName[j] = 'a' + (c - 10)
-			}
-		}
-		// The rest (randomName[7]) will be null by default from make([]byte, 8)
-
-		copy(p.RawData[currentSectionHeaderOffset:currentSectionHeaderOffset+8], randomName)
-		p.Sections[i].Name = strings.TrimRight(string(randomName), "\x00")
-	}
-	return nil
-}
-
 // IsDLL checks if the PE file is a DLL.
 // This is a simplified check based on characteristics.
 // func (p *PEFile) IsDLL() bool { // This function is now in perw/utils.go

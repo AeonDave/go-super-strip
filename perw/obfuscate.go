@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"regexp"
+	"strings"
 )
 
 // ObfuscateBaseAddresses modifies base virtual addresses with a random offset.
@@ -167,6 +168,65 @@ func (p *PEFile) ObfuscateSecondaryTimestamps() error {
 				}
 				copy(p.RawData[section.Offset:section.Offset+int64(len(data))], data)
 			}
+		}
+	}
+	return nil
+}
+
+// RandomizeSectionNames changes the names of sections to random strings.
+// PE section names are 8 bytes. We will generate names like ".xxxxxxx".
+func (p *PEFile) RandomizeSectionNames() error {
+	if len(p.RawData) < 0x40 {
+		return fmt.Errorf("file too small for DOS header")
+	}
+	e_lfanew := int64(binary.LittleEndian.Uint32(p.RawData[0x3C:0x40]))
+	coffHeaderOffset := e_lfanew + 4 // PE Signature (4 bytes)
+	numberOfSectionsOffset := coffHeaderOffset + 2
+	optionalHeaderSizeOffset := coffHeaderOffset + 16
+
+	if int(optionalHeaderSizeOffset+2) > len(p.RawData) {
+		return fmt.Errorf("file too small for COFF header fields")
+	}
+	numberOfSections := int(binary.LittleEndian.Uint16(p.RawData[numberOfSectionsOffset : numberOfSectionsOffset+2]))
+	optionalHeaderSize := binary.LittleEndian.Uint16(p.RawData[optionalHeaderSizeOffset : optionalHeaderSizeOffset+2])
+
+	firstSectionHeaderOffset := coffHeaderOffset + 20 + int64(optionalHeaderSize) // 20 is COFF File Header size
+	const sectionHeaderSize = 40                                                  // IMAGE_SIZEOF_SECTION_HEADER
+
+	for i := 0; i < numberOfSections; i++ {
+		currentSectionHeaderOffset := firstSectionHeaderOffset + int64(i*sectionHeaderSize)
+		sectionNameOffset := currentSectionHeaderOffset
+
+		if int(sectionNameOffset+8) > len(p.RawData) {
+			return fmt.Errorf("file too small for section name for section %d", i)
+		}
+
+		// Generate a random 7-char name + leading dot
+		randBytes := make([]byte, 7)
+		_, err := rand.Read(randBytes)
+		if err != nil {
+			return fmt.Errorf("failed to generate random bytes for section name %d: %w", i, err)
+		}
+		randomName := "."
+		for _, b := range randBytes {
+			randomName += string(rune('a' + (b % 26))) // Simple a-z mapping
+		}
+
+		// PE section names are 8 bytes, null-padded.
+		newNameBytes := make([]byte, 8)
+		copy(newNameBytes, []byte(randomName))
+		// The rest of newNameBytes will be nulls by default due to make()
+
+		copy(p.RawData[sectionNameOffset:sectionNameOffset+8], newNameBytes)
+
+		// Update the internal structure as well
+		if i < len(p.Sections) {
+			p.Sections[i].Name = strings.TrimRight(string(newNameBytes), "\x00")
+		} else {
+			// This case should ideally not happen if p.Sections is parsed correctly
+			// or if we re-parse sections after modification.
+			// For now, log or handle as an inconsistency.
+			fmt.Printf("Warning: section index %d out of bounds for p.Sections while randomizing name\n", i)
 		}
 	}
 	return nil

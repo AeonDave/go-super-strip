@@ -71,20 +71,27 @@ func TestPERandomizeSectionNames(t *testing.T) {
 	}
 
 	newName := peFile.Sections[0].Name
-	if originalName == newName || !regexp.MustCompile(`^\.s\d+$`).MatchString(newName) {
-		t.Errorf("Section name not randomized correctly: %s", newName)
+	// PE section names are 8 bytes, e.g., ".text\0\0\0". Randomization aims for ".xxxxxxx\0".
+	// The .Name field in perw.Section is trimmed of nulls.
+	expectedPattern := regexp.MustCompile(`^\.[a-z]{7}$`)
+	if originalName == newName || !expectedPattern.MatchString(newName) {
+		t.Errorf("Section name '%s' (original: '%s') not randomized correctly. Expected format like .xxxxxxx", newName, originalName)
 	}
 }
 
 func TestPEObfuscateBaseAddresses(t *testing.T) {
 	peFile := createMinimalPE64(t, 0x140000000)
-	initialBase := binary.LittleEndian.Uint64(peFile.RawData[128:136])
+	// Correct offset for ImageBase in PE32+ Optional Header is OptionalHeaderStart + 24 bytes.
+	// OptionalHeaderStart = dosHeaderSize(64) + peSignatureSize(4) + coffFileHeaderSize(20) = 88.
+	// ImageBaseOffset = 88 + 24 = 112.
+	imageBaseOffset := int64(dosHeaderSize + peSignatureSize + coffFileHeaderSize + 24)
+	initialBase := binary.LittleEndian.Uint64(peFile.RawData[imageBaseOffset : imageBaseOffset+8])
 
 	if err := peFile.ObfuscateBaseAddresses(); err != nil {
 		t.Fatalf("ObfuscateBaseAddresses failed: %v", err)
 	}
 
-	newBase := binary.LittleEndian.Uint64(peFile.RawData[128:136])
+	newBase := binary.LittleEndian.Uint64(peFile.RawData[imageBaseOffset : imageBaseOffset+8])
 	if newBase == initialBase || newBase%0x10000 != 0 {
 		t.Errorf("Base address not obfuscated correctly: %X", newBase)
 	}
@@ -104,16 +111,21 @@ func TestPEObfuscateDirectory(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			peFile := createMinimalPE64(t, 0x140000000)
-			dirOffset := 128 + tt.offset
-			binary.LittleEndian.PutUint32(peFile.RawData[dirOffset:], 0x1000)  // VA
-			binary.LittleEndian.PutUint32(peFile.RawData[dirOffset+4:], 0x100) // Size
+			// Calculate the actual offset of the directory entry in RawData
+			// OptionalHeader starts after DOS Header (64), PE Sig (4), COFF Header (20)
+			optionalHeaderStartOffset := int64(dosHeaderSize + peSignatureSize + coffFileHeaderSize) // 88
+			// tt.offset is the offset of the specific DataDirectory entry from the start of OptionalHeader
+			dirEntryInRawDataOffset := optionalHeaderStartOffset + tt.offset
+
+			binary.LittleEndian.PutUint32(peFile.RawData[dirEntryInRawDataOffset:], 0x1000)  // VA
+			binary.LittleEndian.PutUint32(peFile.RawData[dirEntryInRawDataOffset+4:], 0x100) // Size
 
 			if err := tt.function(peFile); err != nil {
 				t.Fatalf("%s failed: %v", tt.name, err)
 			}
 
-			va := binary.LittleEndian.Uint32(peFile.RawData[dirOffset:])
-			size := binary.LittleEndian.Uint32(peFile.RawData[dirOffset+4:])
+			va := binary.LittleEndian.Uint32(peFile.RawData[dirEntryInRawDataOffset:])
+			size := binary.LittleEndian.Uint32(peFile.RawData[dirEntryInRawDataOffset+4:])
 			if va != 0 || size != 0 {
 				t.Errorf("%s not zeroed. VA: %X, Size: %X", tt.name, va, size)
 			}

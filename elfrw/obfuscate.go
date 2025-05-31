@@ -398,6 +398,16 @@ func (e *ELFFile) ObfuscateExportedFunctions() error {
 					for end < uint32(len(dynstrContent)) && dynstrContent[end] != 0 {
 						end++
 					}
+
+					// Zero out the old name in newDynstr first
+					// This handles the case where the new name is appended.
+					// Ensure strOffset and end are within bounds of newDynstr (which is initially a copy of dynstrContent)
+					if strOffset < uint32(len(newDynstr)) && end <= uint32(len(newDynstr)) {
+						for k := strOffset; k < end; k++ {
+							newDynstr[k] = 0
+						}
+					}
+
 					newNameBytes := make([]byte, 8) // Example length
 					_, err := rand.Read(newNameBytes)
 					if err != nil {
