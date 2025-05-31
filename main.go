@@ -3,23 +3,26 @@ package main
 import (
 	"flag"
 	"fmt"
-	elfrw "gosstrip/elfrw"
-	perw "gosstrip/perw"
+	"gosstrip/elfrw"
+	"gosstrip/perw"
 	"os"
 	"regexp"
 )
 
 var (
 	filePath = flag.String("file", "", "Path to executable file")
-	// strip single-letter flags
-	stripA     = flag.Bool("a", false, "strip section table/dynamic data")
-	stripB     = flag.Bool("b", false, "strip debug sections")
-	stripC     = flag.Bool("c", false, "strip symbol sections")
-	stripD     = flag.Bool("d", false, "strip string sections")
-	stripAll   = flag.Bool("A", false, "strip all metadata")
-	stripRegex = flag.String("s", "", "strip bytes matching regex pattern")
-	// obfuscate all
-	obfAll = flag.Bool("O", false, "apply all obfuscation")
+	// Regex stripping
+	stripRegex = flag.String("s", "", "Strip bytes matching regex pattern (e.g., \"UPX!\")")
+
+	// Stripping options
+	stripDebug   = flag.Bool("strip-debug", false, "Strip debug sections")
+	stripSymbols = flag.Bool("strip-symbols", false, "Strip symbol sections")
+	stripAllMeta = flag.Bool("strip-all", false, "Strip all non-essential metadata (includes debug, symbols)")
+
+	// Obfuscation options
+	obfSecNames = flag.Bool("obf-names", false, "Obfuscate by randomizing section names")
+	obfBaseAddr = flag.Bool("obf-base", false, "Obfuscate base addresses")
+	obfAll      = flag.Bool("obf-all", false, "Apply all available obfuscations")
 )
 
 func main() {
@@ -45,29 +48,49 @@ func main() {
 		handler.StripRegex(*stripRegex)
 		acted = true
 	}
-	// strip options
-	if *stripAll || *stripA || *stripB || *stripC || *stripD {
-		opts := map[string]bool{"all": *stripAll}
-		if *stripA {
-			opts["sectionTable"] = true
+
+	// Stripping options
+	stripOpts := make(map[string]bool)
+	actedOnStrip := false
+	if *stripAllMeta {
+		stripOpts["all"] = true
+		actedOnStrip = true
+	} else {
+		if *stripDebug {
+			stripOpts["debug"] = true
+			actedOnStrip = true
 		}
-		if *stripB {
-			opts["debug"] = true
+		if *stripSymbols {
+			stripOpts["symbols"] = true
+			actedOnStrip = true
 		}
-		if *stripC {
-			opts["symbols"] = true
-		}
-		if *stripD {
-			opts["strings"] = true
-		}
-		handler.Strip(opts)
+	}
+	if actedOnStrip {
+		handler.Strip(stripOpts)
 		acted = true
 	}
-	// obfuscate all
+
+	// Obfuscation options
+	obfOpts := make(map[string]bool)
+	actedOnObfuscate := false
 	if *obfAll {
-		handler.Obfuscate(map[string]bool{"all": true})
+		obfOpts["all"] = true
+		actedOnObfuscate = true
+	} else {
+		if *obfSecNames {
+			obfOpts["names"] = true
+			actedOnObfuscate = true
+		}
+		if *obfBaseAddr {
+			obfOpts["base"] = true
+			actedOnObfuscate = true
+		}
+	}
+	if actedOnObfuscate {
+		handler.Obfuscate(obfOpts)
 		acted = true
 	}
+
 	if acted {
 		handler.Commit()
 	} else {
@@ -118,19 +141,29 @@ func checkErr(err error) {
 }
 
 func printUsage() {
-	fmt.Println(`Usage:
-  -file <path>            Path to executable file
-  -s <pattern>            Strip bytes matching regex pattern
-  -a                       Strip section table/dynamic data
-  -b                       Strip debug sections
-  -c                       Strip symbol sections
-  -d                       Strip string sections
-  -A                       Strip all metadata
-  -O                       Apply all obfuscation
+	fmt.Println(`Usage: go-super-strip -file <path> [options]
+
+Path to executable file:
+  -file <path>            Specify the path to the executable file.
+
+Generic Stripping:
+  -s <pattern>            Strip bytes matching a regex pattern (e.g., -s "UPX!" to remove UPX signatures).
+
+Metadata Stripping Options:
+  -strip-debug            Strip debug sections from the file.
+  -strip-symbols          Strip symbol table sections.
+  -strip-all              Strip all non-essential metadata (recommended for maximum size reduction; includes debug and symbols).
+
+Obfuscation Options:
+  -obf-names              Randomize section names to hinder analysis.
+  -obf-base               Obfuscate base addresses (if applicable to format).
+  -obf-all                Apply all available obfuscation techniques (includes name randomization and base address obfuscation).
+
 Examples:
-  main -file a.out -a -b -s debug
-  main -file a.out -A
-  main -file a.exe -O`)
+  go-super-strip -file a.out -strip-all
+  go-super-strip -file myapp.exe -strip-debug -strip-symbols -s "ConfidentialBuild"
+  go-super-strip -file service.elf -obf-all
+  go-super-strip -file lib.dll -obf-names -obf-base`)
 }
 
 // --- ELF Handler ---
