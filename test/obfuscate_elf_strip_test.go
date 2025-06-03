@@ -52,6 +52,48 @@ func TestELFStripAllMetadata(t *testing.T) {
 			{Name: ".strtab", Offset: 200, Size: 10},
 		},
 	}
+
+	// Set up proper ELF header
+	// ELF magic
+	elff.RawData[0] = 0x7f
+	elff.RawData[1] = 'E'
+	elff.RawData[2] = 'L'
+	elff.RawData[3] = 'F'
+	// Class (64-bit)
+	elff.RawData[4] = 2
+	// Data (little endian)
+	elff.RawData[5] = 1
+	// Version
+	elff.RawData[6] = 1
+	// OS ABI (none)
+	elff.RawData[7] = 0
+	// ABI Version
+	elff.RawData[8] = 0
+	// Type (ET_EXEC)
+	binary.LittleEndian.PutUint16(elff.RawData[16:18], uint16(elf.ET_EXEC))
+	// Machine (X86_64)
+	binary.LittleEndian.PutUint16(elff.RawData[18:20], uint16(elf.EM_X86_64))
+	// Version (Current)
+	binary.LittleEndian.PutUint32(elff.RawData[20:24], uint32(elf.EV_CURRENT))
+	// Entry point address (dummy)
+	binary.LittleEndian.PutUint64(elff.RawData[24:32], 0x400000)
+	// Program header offset (dummy, but non-zero)
+	binary.LittleEndian.PutUint64(elff.RawData[32:40], 64)
+	// Section header offset (set to safe location)
+	binary.LittleEndian.PutUint64(elff.RawData[40:48], 512)
+	// ELF header size
+	binary.LittleEndian.PutUint16(elff.RawData[52:54], 64)
+	// Program header entry size
+	binary.LittleEndian.PutUint16(elff.RawData[54:56], 56)
+	// Number of program header entries
+	binary.LittleEndian.PutUint16(elff.RawData[56:58], 0)
+	// Section header entry size
+	binary.LittleEndian.PutUint16(elff.RawData[58:60], 64)
+	// Number of section headers
+	binary.LittleEndian.PutUint16(elff.RawData[60:62], uint16(len(elff.Sections)))
+	// Section header string table index
+	binary.LittleEndian.PutUint16(elff.RawData[62:64], 1)
+
 	copy(elff.RawData[100:110], []byte("debugdata"))
 	copy(elff.RawData[200:210], []byte("strtabdat"))
 

@@ -140,7 +140,11 @@ func (p *PEFile) StripSectionsByNames(names []string, prefix bool, useRandomFill
 
 // StripByteRegex overwrites byte patterns matching a regex in sections.
 // It can fill the matched data with zeros or random bytes.
-func (p *PEFile) StripByteRegex(pattern *regexp.Regexp, useRandomFill bool) int {
+func (p *PEFile) StripByteRegex(pattern *regexp.Regexp, useRandomFill bool) (int, error) {
+	if pattern == nil {
+		return 0, fmt.Errorf("regex pattern cannot be nil")
+	}
+
 	matchesTotal := 0
 	for i := range p.Sections {
 		section := &p.Sections[i]
@@ -181,7 +185,7 @@ func (p *PEFile) StripByteRegex(pattern *regexp.Regexp, useRandomFill bool) int 
 			matchesTotal++
 		}
 	}
-	return matchesTotal
+	return matchesTotal, nil
 }
 
 // --- Specific Stripping Functions ---
