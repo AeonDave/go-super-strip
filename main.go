@@ -14,15 +14,25 @@ var (
 	// Regex stripping
 	stripRegex = flag.String("s", "", "Strip bytes matching regex pattern (e.g., \"UPX!\")")
 
-	// Stripping options
+	// Stripping options (long form)
 	stripDebug   = flag.Bool("strip-debug", false, "Strip debug sections")
 	stripSymbols = flag.Bool("strip-symbols", false, "Strip symbol sections")
 	stripAllMeta = flag.Bool("strip-all", false, "Strip all non-essential metadata (includes debug, symbols)")
 
-	// Obfuscation options
+	// Stripping options (short form)
+	stripDebugShort   = flag.Bool("d", false, "Strip debug sections (short)")
+	stripSymbolsShort = flag.Bool("y", false, "Strip symbol sections (short)")
+	stripAllMetaShort = flag.Bool("S", false, "Strip all non-essential metadata (short)")
+
+	// Obfuscation options (long form)
 	obfSecNames = flag.Bool("obf-names", false, "Obfuscate by randomizing section names")
 	obfBaseAddr = flag.Bool("obf-base", false, "Obfuscate base addresses")
 	obfAll      = flag.Bool("obf-all", false, "Apply all available obfuscations")
+
+	// Obfuscation options (short form)
+	obfSecNamesShort = flag.Bool("n", false, "Obfuscate by randomizing section names (short)")
+	obfBaseAddrShort = flag.Bool("b", false, "Obfuscate base addresses (short)")
+	obfAllShort      = flag.Bool("O", false, "Apply all available obfuscations (short)")
 )
 
 func main() {
@@ -49,18 +59,18 @@ func main() {
 		acted = true
 	}
 
-	// Stripping options
+	// Stripping options (check both long and short forms)
 	stripOpts := make(map[string]bool)
 	actedOnStrip := false
-	if *stripAllMeta {
+	if *stripAllMeta || *stripAllMetaShort {
 		stripOpts["all"] = true
 		actedOnStrip = true
 	} else {
-		if *stripDebug {
+		if *stripDebug || *stripDebugShort {
 			stripOpts["debug"] = true
 			actedOnStrip = true
 		}
-		if *stripSymbols {
+		if *stripSymbols || *stripSymbolsShort {
 			stripOpts["symbols"] = true
 			actedOnStrip = true
 		}
@@ -70,18 +80,18 @@ func main() {
 		acted = true
 	}
 
-	// Obfuscation options
+	// Obfuscation options (check both long and short forms)
 	obfOpts := make(map[string]bool)
 	actedOnObfuscate := false
-	if *obfAll {
+	if *obfAll || *obfAllShort {
 		obfOpts["all"] = true
 		actedOnObfuscate = true
 	} else {
-		if *obfSecNames {
+		if *obfSecNames || *obfSecNamesShort {
 			obfOpts["names"] = true
 			actedOnObfuscate = true
 		}
-		if *obfBaseAddr {
+		if *obfBaseAddr || *obfBaseAddrShort {
 			obfOpts["base"] = true
 			actedOnObfuscate = true
 		}
@@ -149,21 +159,33 @@ Path to executable file:
 Generic Stripping:
   -s <pattern>            Strip bytes matching a regex pattern (e.g., -s "UPX!" to remove UPX signatures).
 
-Metadata Stripping Options:
+Metadata Stripping Options (Long form):
   -strip-debug            Strip debug sections from the file.
   -strip-symbols          Strip symbol table sections.
   -strip-all              Strip all non-essential metadata (recommended for maximum size reduction; includes debug and symbols).
 
-Obfuscation Options:
+Metadata Stripping Options (Short form):
+  -d                      Strip debug sections (short for -strip-debug).
+  -y                      Strip symbol table sections (short for -strip-symbols).
+  -S                      Strip all non-essential metadata (short for -strip-all).
+
+Obfuscation Options (Long form):
   -obf-names              Randomize section names to hinder analysis.
   -obf-base               Obfuscate base addresses (if applicable to format).
   -obf-all                Apply all available obfuscation techniques (includes name randomization and base address obfuscation).
 
+Obfuscation Options (Short form):
+  -n                      Randomize section names (short for -obf-names).
+  -b                      Obfuscate base addresses (short for -obf-base).
+  -O                      Apply all available obfuscation techniques (short for -obf-all).
+
 Examples:
-  go-super-strip -file a.out -strip-all
-  go-super-strip -file myapp.exe -strip-debug -strip-symbols -s "ConfidentialBuild"
-  go-super-strip -file service.elf -obf-all
-  go-super-strip -file lib.dll -obf-names -obf-base`)
+  go-super-strip -file a.out -S                    # Strip all metadata (short form)
+  go-super-strip -file a.out -strip-all            # Strip all metadata (long form)
+  go-super-strip -file myapp.exe -d -y -s "Build"  # Strip debug, symbols, and custom pattern
+  go-super-strip -file service.elf -O              # Apply all obfuscations (short form)
+  go-super-strip -file lib.dll -n -b               # Randomize names and obfuscate base (short form)
+  go-super-strip -file binary -S -O                # Strip everything and obfuscate everything`)
 }
 
 // --- ELF Handler ---
@@ -220,7 +242,9 @@ func (h *ELFHandler) Commit() {
 // StripRegex overwrites byte patterns matching a regex in all sections
 func (h *ELFHandler) StripRegex(pat string) {
 	re := regexp.MustCompile(pat)
-	matches := h.e.StripByteRegex(re, false)
+	fmt.Printf("ELF: attempting to strip pattern '%s'\n", pat)
+	matches, err := h.e.StripByteRegex(re, false)
+	checkErr(err)
 	fmt.Printf("ELF: stripped %d matches\n", matches)
 }
 
@@ -274,6 +298,8 @@ func (h *PEHandler) Commit() {
 // StripRegex overwrites byte patterns matching a regex in all sections
 func (h *PEHandler) StripRegex(pat string) {
 	re := regexp.MustCompile(pat)
-	matches := h.p.StripByteRegex(re, false)
+	fmt.Printf("PE: attempting to strip pattern '%s'\n", pat)
+	matches, err := h.p.StripByteRegex(re, false)
+	checkErr(err)
 	fmt.Printf("PE: stripped %d matches\n", matches)
 }

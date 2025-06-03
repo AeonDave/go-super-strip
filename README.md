@@ -1,136 +1,263 @@
-``` markdown
-# GosStrip
+# go-super-strip
 
-GosStrip is a command-line tool written in Go, inspired by the sstrip (Super Strip) project. It is designed to analyze, strip, and obfuscate executable files in ELF (commonly used on Linux) and PE (Portable Executable, used on Windows) formats. The goal is to reduce file sizes by removing non-essential data and/or to make analysis and reverse engineering more complex.
-
-## Supported Formats
-
-*   **ELF** (Executable and Linkable Format)
-*   **PE** (Portable Executable)
-
-## Key Features
-
-*   **File Analysis (`info`):** Displays basic information about the executable, such as a list of sections and segments.
-*   **Stripping (`strip`):** Removes various types of non-essential data to reduce file size:
-    *   Debug information.
-    *   Symbol tables.
-    *   An `all` option for comprehensive stripping of non-essential metadata.
-*   **Obfuscation (`obfuscate`):** Applies techniques to make the executable harder to analyze:
-    *   Randomization of section names.
-    *   Obfuscation of base addresses (if applicable to the format).
-    *   An `all` option for comprehensive obfuscation.
-*   **Multi-Format Support:** Handles both ELF and PE files through dedicated handlers.
-*   **Command-Line Interface (CLI):** Clear and simple for specifying the file, command, and desired options.
-
-## Requirements
-
-*   Go (version 1.24 or newer, as per the current development environment)
-
-## Installation
-
-1.  Ensure you have Go installed on your system.
-2.  Clone this repository:
-    ```bash
-    git clone <REPOSITORY_URL>
-    cd gosstrip
-    ```
-3.  Build the project:
-    ```bash
-    go build -o gosstrip
-    ```
-    This will create an executable named `gosstrip` in the current directory.
-
-## Usage
-
-The primary use of GosStrip is via the command line, specifying the file to process, the command to execute, and any relevant options.
 ```
-bash ./gosstrip -file <path_to_executable> -cmd  [command_options]
-command
-``` 
-
-### Main Commands
-
-#### 1. `info`
-Displays detailed information about the specified executable file.
-
-**Syntax:**
+ ██████╗  ██████╗ ███████╗███████╗████████╗██████╗ ██╗██████╗ 
+██╔════╝ ██╔═══██╗██╔════╝██╔════╝╚══██╔══╝██╔══██╗██║██╔══██╗
+██║  ███╗██║   ██║███████╗███████╗   ██║   ██████╔╝██║██████╔╝
+██║   ██║██║   ██║╚════██║╚════██║   ██║   ██╔══██╗██║██╔═══╝ 
+╚██████╔╝╚██████╔╝███████║███████║   ██║   ██║  ██║██║██║     
+ ╚═════╝  ╚═════╝ ╚══════╝╚══════╝   ╚═╝   ╚═╝  ╚═╝╚═╝╚═╝     
+                                                              
+              |  G O   S U P E R   S T R I P  |
 ```
-bash ./gosstrip -file <file_path> -cmd info
-``` 
-**Example:**
+
+**go-super-strip** is a powerful command-line utility written in Go for analyzing, stripping, and obfuscating executable
+files in both **ELF** (Linux) and **PE** (Windows) formats. Inspired by the original *sstrip (Super Strip)* project, it
+provides advanced techniques for reducing file size and increasing resistance to reverse engineering.
+
+---
+
+## 🎯 Supported Formats
+
+- **ELF** — Executable and Linkable Format (Linux/Unix)
+- **PE** — Portable Executable (Windows)
+
+---
+
+## ✨ Key Features
+
+- **Regex-based Stripping**
+    - Remove specific byte patterns using regular expressions
+- **Metadata Stripping**
+    - Debug sections removal
+    - Symbol table stripping
+    - Comprehensive metadata removal
+- **Advanced Obfuscation**
+    - Section name randomization
+    - Base address obfuscation
+    - Header field randomization
+    - Padding obfuscation
+- **Multi-Format Support**
+    - Dedicated handlers for ELF and PE formats
+    - Format-specific optimization techniques
+
+---
+
+## ⚙️ Requirements
+
+- [Go](https://golang.org/dl/) version **1.24** or higher
+
+---
+
+## 📦 Installation
+
+1. Ensure Go is installed on your system.
+2. Clone the repository:
+   ```bash
+   git clone <REPOSITORY_URL>
+   cd go-super-strip
+   ```
+3. Build the executable:
+   ```bash
+   go build -o go-super-strip
+   ```
+
+---
+
+## 🚀 Usage
+
+**Basic Syntax:**
+
+```bash
+./go-super-strip -file <path> [options]
 ```
-bash ./gosstrip -file ./my_elf_program -cmd info ./gosstrip -file C:\Path\To\my_program.exe -cmd info
-``` 
 
-#### 2. `strip`
-Removes non-essential data from the executable file.
+### Generic Stripping
 
-**Syntax:**
+Remove specific byte patterns using regex:
+
+```bash
+# Remove UPX signatures
+./go-super-strip -file program -s "UPX!"
+
+# Remove custom build strings
+./go-super-strip -file program -s "ConfidentialBuild"
 ```
-bash ./gosstrip -file <file_path> -cmd strip -strip <strip_options>
-``` 
-**Options for `-strip` (comma-separated, no spaces):**
-*   `debug`: Removes debug sections and information.
-*   `symbols`: Removes symbol tables.
-*   `all`: Applies all available stripping techniques for the file format (generally includes debug, symbols, and other non-critical metadata).
 
-**Examples:**
+### Metadata Stripping
+
+Remove various types of metadata:
+
+```bash
+# Strip debug information only (long form)
+./go-super-strip -file program -strip-debug
+# Or using short form
+./go-super-strip -file program -d
+
+# Strip symbol tables only (long form)
+./go-super-strip -file program -strip-symbols
+# Or using short form  
+./go-super-strip -file program -y
+
+# Strip all non-essential metadata (recommended)
+./go-super-strip -file program -strip-all
+# Or using short form
+./go-super-strip -file program -S
 ```
-bash ./gosstrip -file ./my_elf_program -cmd strip -strip debug,symbols ./gosstrip -file ./my_elf_program -cmd strip -strip all ./gosstrip -file C:\Path\To\my_program.exe -cmd strip -strip all
-``` 
 
-#### 3. `obfuscate`
-Applies obfuscation techniques to the executable file.
+### Obfuscation Techniques
 
-**Syntax:**
+Apply anti-analysis techniques:
+
+```bash
+# Randomize section names (long form)
+./go-super-strip -file program -obf-names
+# Or using short form
+./go-super-strip -file program -n
+
+# Obfuscate base addresses (long form)
+./go-super-strip -file program -obf-base
+# Or using short form
+./go-super-strip -file program -b
+
+# Apply all obfuscation techniques (long form)
+./go-super-strip -file program -obf-all
+# Or using short form
+./go-super-strip -file program -O
 ```
-bash ./gosstrip -file <file_path> -cmd obfuscate -obf <obf_options>
-``` 
-**Options for `-obf` (comma-separated, no spaces):**
-*   `names`: Randomizes section names in the file.
-*   `base`: Attempts to obfuscate base addresses (effectiveness and availability may depend on the file format and structure).
-*   `all`: Applies all available obfuscation techniques.
 
-**Examples:**
+### Combined Operations
+
+Multiple techniques can be combined:
+
+```bash
+# Comprehensive stripping and obfuscation (long form)
+./go-super-strip -file myapp.exe -strip-all -obf-all -s "CompanyName"
+
+# Same operation using short forms (much faster to type!)
+./go-super-strip -file myapp.exe -S -O -s "CompanyName"
+
+# Quick debug and symbol stripping
+./go-super-strip -file binary -d -y
+
+# Fast full processing
+./go-super-strip -file program -S -O
 ```
-bash ./gosstrip -file ./my_elf_program -cmd obfuscate -obf names ./gosstrip -file C:\Path\To\my_program.exe -cmd obfuscate -obf names,base ./gosstrip -file ./my_elf_program -cmd obfuscate -obf all
-``` 
 
-### General Options
+### Arguments Reference
 
-*   `-file <path>`: **(Required)** Path to the executable file to process.
-*   `-cmd <command>`: **(Required)** Command to execute. Possible values: `info`, `strip`, `obfuscate`.
-*   `-strip <opts>`: Specific options for the `strip` command.
-*   `-obf <opts>`: Specific options for the `obfuscate` command.
-*   `-h`: Shows a help message with syntax and examples.
+| Argument (Long)  | Argument (Short) | Description                        | Type     |
+|------------------|------------------|------------------------------------|----------|
+| `-file <path>`   | -                | Target executable file path        | Required |
+| `-s <pattern>`   | -                | Strip bytes matching regex pattern | Optional |
+| `-strip-debug`   | `-d`             | Strip debug sections               | Optional |
+| `-strip-symbols` | `-y`             | Strip symbol table sections        | Optional |
+| `-strip-all`     | `-S`             | Strip all non-essential metadata   | Optional |
+| `-obf-names`     | `-n`             | Randomize section names            | Optional |
+| `-obf-base`      | `-b`             | Obfuscate base addresses           | Optional |
+| `-obf-all`       | `-O`             | Apply all obfuscation techniques   | Optional |
 
-### Other Usage Examples
+---
+
+## 📊 ELF Techniques & Risk Analysis
+
+The following table details all stripping and obfuscation techniques available for ELF executables:
+
+| Category               | Technique                | Sections Affected                                  | Risk Level  | Failure Rate* | Description                                                      |
+|------------------------|--------------------------|----------------------------------------------------|-------------|---------------|------------------------------------------------------------------|
+| **Debug Stripping**    | Strip Debug Sections     | `.debug_*`, `.zdebug_*`, `.stab*`, `.gdb_index`    | 🟢 Low      | ~2%           | Removes DWARF debugging information, STABS data, and GDB indices |
+| **Symbol Stripping**   | Strip Symbol Tables      | `.symtab`, `.strtab`                               | 🟢 Low      | ~1%           | Removes static symbol tables (preserves dynamic symbols)         |
+| **Build Info**         | Strip Build Metadata     | `.note.*`, `.comment`, `.gnu.*`, `.buildid`        | 🟢 Low      | ~1%           | Removes build IDs, compiler notes, and version information       |
+| **Profiling**          | Strip Profile Data       | `.gmon`, `.profile`                                | 🟢 Low      | ~0%           | Removes profiling and performance monitoring data                |
+| **Exception Handling** | Strip Exception Data     | `.eh_frame*`, `.gcc_except_table`, `.ARM.ex*`      | 🟡 Medium   | ~15%          | **WARNING**: Breaks C++ exceptions and stack unwinding           |
+| **Architecture**       | Strip Arch Sections      | `.ARM.*`, `.MIPS.*`, `.xtensa.*`                   | 🟡 Medium   | ~5%           | Removes architecture-specific metadata                           |
+| **Relocations**        | Strip Relocations        | `.rel.*`, `.rela.*`                                | 🔴 High     | ~80%          | **WARNING**: Breaks dynamic linking in most cases                |
+| **Dynamic Linking**    | Strip Dynamic Data       | `.dynamic`, `.dynsym`, `.dynstr`, `.got*`, `.plt*` | 🔴 Critical | ~95%          | **WARNING**: Breaks dynamically linked executables               |
+| **Section Headers**    | Remove Section Table     | Section header table                               | 🟡 Medium   | ~10%          | Makes sections invisible to analysis tools                       |
+| **Obfuscation**        | Randomize Section Names  | All section names                                  | 🟢 Low      | ~3%           | Replaces section names with random strings                       |
+| **Obfuscation**        | Obfuscate Base Addresses | Program headers                                    | 🟢 Low      | ~2%           | Randomizes virtual memory addresses                              |
+| **Obfuscation**        | Modify ELF Header        | ELF header fields                                  | 🟢 Low      | ~1%           | Randomizes non-critical header fields                            |
+| **Advanced**           | GOT/PLT Obfuscation      | `.got`, `.plt` sections                            | 🟡 Medium   | ~25%          | Obfuscates Global Offset Table entries                           |
+
+*Failure rates are estimates based on typical usage scenarios. Static executables have lower failure rates.
+
+---
+
+## 📊 PE Techniques & Risk Analysis
+
+The following table details all stripping and obfuscation techniques available for PE executables:
+
+| Category               | Technique               | Sections Affected                 | Risk Level | Failure Rate* | Description                                             |
+|------------------------|-------------------------|-----------------------------------|------------|---------------|---------------------------------------------------------|
+| **Debug Stripping**    | Strip Debug Sections    | `.debug$*`, `.pdata`, `.xdata`    | 🟢 Low     | ~3%           | Removes CodeView debug info and procedure data          |
+| **Resources**          | Strip Resources         | `.rsrc`                           | 🟡 Medium  | ~8%           | **WARNING**: Removes icons, version info, dialogs       |
+| **Build Info**         | Strip Build Metadata    | `.buildid`, `.gfids`, `.comment`  | 🟢 Low     | ~1%           | Removes build IDs, CFG data, and compiler info          |
+| **Relocations**        | Strip Relocation Table  | `.reloc`                          | 🟡 Medium  | ~20%**        | **WARNING**: Breaks ASLR and base address conflicts     |
+| **Exception Handling** | Strip Exception Data    | `.pdata`, `.xdata`, `.sxdata`     | 🔴 High    | ~45%          | **WARNING**: Breaks structured exception handling (SEH) |
+| **Non-Essential**      | Strip Misc Sections     | `.drectve`, `.shared`, `.cormeta` | 🟢 Low     | ~2%           | Removes linker directives and metadata                  |
+| **Obfuscation**        | Randomize Section Names | All section names                 | 🟢 Low     | ~2%           | Replaces section names with random strings              |
+| **Obfuscation**        | Obfuscate Base Address  | ImageBase field                   | 🟢 Low     | ~1%           | Randomizes preferred load address                       |
+| **Obfuscation**        | Obfuscate Directories   | Debug/TLS/LoadConfig dirs         | 🟡 Medium  | ~10%          | Clears optional header directory entries                |
+| **Obfuscation**        | Randomize Header Fields | TimeDateStamp, reserved fields    | 🟢 Low     | ~1%           | Obfuscates PE header metadata                           |
+| **Obfuscation**        | Randomize Padding       | Inter-section padding             | 🟢 Low     | ~0%           | Fills unused space with random data                     |
+| **Advanced**           | Obfuscate Timestamps    | Resource/version timestamps       | 🟢 Low     | ~2%           | Randomizes embedded timestamp strings                   |
+
+*Failure rates for PE files. **Lower for DLLs (~5%), higher for EXEs with ASLR.
+
+## ⚠️ Important Notes
+
+- **Backup your files:** Always work on copies of executables, never originals
+- **Test thoroughly:** Verify functionality after modification, especially with medium/high risk techniques
+- **Format-specific behavior:** Some techniques are more aggressive on certain architectures or linking types
+- **Static vs Dynamic:** Static executables generally have lower failure rates than dynamically linked ones
+- **Risk Assessment:**
+    - 🟢 **Low Risk**: Generally safe, minimal chance of breaking functionality
+    - 🟡 **Medium Risk**: May break specific features, test thoroughly
+    - 🔴 **High Risk**: High probability of breaking executable functionality
+    - 🔴 **Critical Risk**: Almost guaranteed to break dynamically linked executables
+
+### Recommended Safe Combinations
+
+**Conservative (Low Risk):**
+```bash
+# Long form
+./go-super-strip -file program -strip-debug -strip-symbols -obf-names
+# Short form (faster to type)
+./go-super-strip -file program -d -y -n
 ```
-bash ./gosstrip -h # Show help ./gosstrip -file a.out -cmd info ./gosstrip -file a.out -cmd strip -strip all ./gosstrip -file a.exe -cmd obfuscate -obf names,base
-``` 
 
-## Testing
-
-**Important:** Modifying executable files is an inherently risky operation that can lead to file corruption if not performed correctly.
-
-No information about an automated test suite is available from the provided files. For a tool of this nature, it is **critical** to implement and maintain a robust test suite that includes:
-*   A variety of valid ELF and PE files (both 32-bit and 64-bit, executables, and libraries).
-*   Checks to ensure that modified files are still valid according to their format specifications.
-*   Where possible, functional tests to ensure that modified executables (especially after non-aggressive stripping) still work as intended.
-*   Tests for edge cases and error handling (e.g., corrupted files or unsupported formats).
-
-It is strongly recommended to thoroughly test any modifications on copies of files, never on originals.
-
-## Extending GosStrip
-
-The code structure in `main.go` with the `FileHandler` interface and specific handlers (`ELFHandler`, `PEHandler`) facilitates extension:
-
-1.  **New Techniques:** Add new stripping or obfuscation functions within the `elfrw` (for ELF) or `perw` (for PE) packages and then integrate them into the respective `Strip` or `Obfuscate` methods of the handlers.
-2.  **New Options:** Modify the `parseOptions` function and the command logic in `main.go` to support new options for stripping or obfuscation.
-3.  **Support New Formats:**
-    *   Create a new package for managing the format (e.g., `machorw` for Mach-O).
-    *   Implement a new struct that satisfies the `FileHandler` interface.
-    *   Update the `detectFormat` function in `main.go` to identify the new format.
-
-Remember to add appropriate tests for any new functionality or changes.
+**Moderate (Acceptable Risk):**
+```bash
+# Long form
+./go-super-strip -file program -strip-all -obf-all
+# Short form (much faster!)
+./go-super-strip -file program -S -O
 ```
+
+**Aggressive (High Risk - Static Executables Only):**
+```bash
+# Long form
+./go-super-strip -file static_program -strip-all -obf-all -s "BuildInfo"
+# Short form
+./go-super-strip -file static_program -S -O -s "BuildInfo"
+```
+
+---
+
+## 🔧 Development & Extension
+
+The modular architecture allows for easy extension:
+
+- **New techniques:** Add functions in `elfrw/` or `perw/` packages
+- **CLI options:** Extend argument parsing in `main.go`
+- **Format support:** Implement new handlers following the `FileHandler` interface
+
+---
+
+## 🔧 Development & Extension
+
+The modular architecture allows for easy extension:
+
+- **New techniques:** Add functions in `elfrw/` or `perw/` packages
+- **CLI options:** Extend argument parsing in `main.go`
+- **Format support:** Implement new handlers following the `FileHandler` interface

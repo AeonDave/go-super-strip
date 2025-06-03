@@ -6,49 +6,188 @@ import (
 	"fmt"
 )
 
-func (e *ELFFile) RandomizeSectionNames() error {
-	var shStrNdxPos int
+// ELF header field positions
+type elfOffsets struct {
+	shOff      int // Section header table offset
+	shEntSize  int // Section header entry size
+	shNum      int // Number of section headers
+	shStrNdx   int // Section header string table index
+	phOff      int // Program header table offset
+	phEntSize  int // Program header entry size
+	entryPoint int // Entry point
+	flags      int // Processor-specific flags
+}
+
+// getELFOffsets returns the correct field offsets based on architecture
+func (e *ELFFile) getELFOffsets() elfOffsets {
 	if e.Is64Bit {
-		shStrNdxPos = 62
-	} else {
-		shStrNdxPos = 50
+		return elfOffsets{
+			shOff:      40,
+			shEntSize:  58,
+			shNum:      60,
+			shStrNdx:   62,
+			phOff:      32,
+			phEntSize:  54,
+			entryPoint: 24,
+			flags:      48,
+		}
+	}
+	return elfOffsets{
+		shOff:      32,
+		shEntSize:  46,
+		shNum:      48,
+		shStrNdx:   50,
+		phOff:      28,
+		phEntSize:  42,
+		entryPoint: 24,
+		flags:      36,
+	}
+}
+
+// readValue reads a value from the ELF file at the given offset
+func (e *ELFFile) readValue(offset int, is64bit bool) uint64 {
+	endian := e.GetEndian()
+	if is64bit {
+		if endian == binary.LittleEndian {
+			return binary.LittleEndian.Uint64(e.RawData[offset : offset+8])
+		}
+		return binary.BigEndian.Uint64(e.RawData[offset : offset+8])
 	}
 
-	endianness := e.GetEndian()
-	var shstrtabIndex uint16
-
-	if endianness == binary.LittleEndian {
-		shstrtabIndex = binary.LittleEndian.Uint16(e.RawData[shStrNdxPos : shStrNdxPos+2])
-	} else {
-		shstrtabIndex = binary.BigEndian.Uint16(e.RawData[shStrNdxPos : shStrNdxPos+2])
+	if endian == binary.LittleEndian {
+		return uint64(binary.LittleEndian.Uint32(e.RawData[offset : offset+4]))
 	}
+	return uint64(binary.BigEndian.Uint32(e.RawData[offset : offset+4]))
+}
+
+// readValue16 reads a 16-bit value from the ELF file
+func (e *ELFFile) readValue16(offset int) uint16 {
+	endian := e.GetEndian()
+	if endian == binary.LittleEndian {
+		return binary.LittleEndian.Uint16(e.RawData[offset : offset+2])
+	}
+	return binary.BigEndian.Uint16(e.RawData[offset : offset+2])
+}
+
+// generateRandomName creates a random section name
+func generateRandomName() (string, error) {
+	randBytes := make([]byte, 7)
+	if _, err := rand.Read(randBytes); err != nil {
+		return "", fmt.Errorf("failed to generate random bytes: %w", err)
+	}
+
+	name := "."
+	for _, b := range randBytes {
+		name += string(rune('a' + (b % 26)))
+	}
+
+	if len(name) > 8 {
+		name = name[:8]
+	}
+	return name, nil
+}
+
+// generateRandomOffset creates a page-aligned random offset
+func generateRandomOffset() (uint64, error) {
+	var randomBytes [8]byte
+	if _, err := rand.Read(randomBytes[:]); err != nil {
+		return 0, fmt.Errorf("failed to generate random offset: %w", err)
+	}
+
+	offset := (binary.LittleEndian.Uint64(randomBytes[:]) / 0x1000) * 0x1000
+	if offset > 0x40000000 {
+		offset = offset % 0x40000000
+	}
+	return offset, nil
+}
+
+// generateRandomPointer creates a random pointer value
+func generateRandomPointer() (uint64, error) {
+	randBytes := make([]byte, 8)
+	if _, err := rand.Read(randBytes); err != nil {
+		return 0, fmt.Errorf("failed to generate random pointer: %w", err)
+	}
+	return binary.LittleEndian.Uint64(randBytes) & 0x00007FFFFFFFFFFF, nil
+}
+
+// findSection finds a section by name
+func (e *ELFFile) findSection(name string) *Section {
+	for i := range e.Sections {
+		if e.Sections[i].Name == name {
+			return &e.Sections[i]
+		}
+	}
+	return nil
+}
+
+// findSections finds multiple sections by names
+func (e *ELFFile) findSections(names []string) map[string]*Section {
+	result := make(map[string]*Section)
+	for _, name := range names {
+		result[name] = e.findSection(name)
+	}
+	return result
+}
+
+// validateELF checks if critical ELF values are reasonable
+func (e *ELFFile) validateELF() error {
+	if len(e.RawData) < 4 || string(e.RawData[0:4]) != "\x7FELF" {
+		return fmt.Errorf("invalid ELF header")
+	}
+
+	if len(e.RawData) < 64 {
+		return fmt.Errorf("file too small to be a valid ELF: %d bytes", len(e.RawData))
+	}
+
+	offsets := e.getELFOffsets()
+	shOffset := e.readValue(offsets.shOff, e.Is64Bit)
+
+	if shOffset >= uint64(len(e.RawData)) {
+		return fmt.Errorf("section header offset (%d) out of bounds (%d)", shOffset, len(e.RawData))
+	}
+
+	shCount := e.readValue16(offsets.shNum)
+	shEntSize := e.readValue16(offsets.shEntSize)
+
+	totalSize := shOffset + uint64(shCount)*uint64(shEntSize)
+	if totalSize > uint64(len(e.RawData)) {
+		return fmt.Errorf("section headers exceed file size: %d > %d", totalSize, len(e.RawData))
+	}
+
+	return nil
+}
+
+// RandomizeSectionNames randomizes ELF section names
+func (e *ELFFile) RandomizeSectionNames() error {
+	if err := e.validateELF(); err != nil {
+		return fmt.Errorf("ELF validation failed: %w", err)
+	}
+
+	offsets := e.getELFOffsets()
+	shstrtabIndex := e.readValue16(offsets.shStrNdx)
+
 	shstrtabContent, err := e.ELF.GetSectionContent(shstrtabIndex)
 	if err != nil {
-		return fmt.Errorf("impossibile leggere la tabella delle stringhe: %w", err)
+		return fmt.Errorf("failed to read string table: %w", err)
 	}
+
 	shstrtabHeader, err := e.ELF.GetSectionHeader(shstrtabIndex)
 	if err != nil {
-		return fmt.Errorf("impossibile leggere l'header della tabella delle stringhe: %w", err)
+		return fmt.Errorf("failed to read string table header: %w", err)
 	}
-	newShstrtab := make([]byte, 0, len(shstrtabContent))
-	newShstrtab = append(newShstrtab, 0)
+
+	// Build new string table
+	newShstrtab := []byte{0} // Start with null terminator
 	nameOffsets := make(map[string]uint32)
+
 	for i := range e.Sections {
 		if e.Sections[i].Name == "" {
 			continue
 		}
-		// Generate a cryptographically random name
-		randBytes := make([]byte, 7) // Max 7 chars + dot + null terminator
-		_, err := rand.Read(randBytes)
+
+		randomName, err := generateRandomName()
 		if err != nil {
-			return fmt.Errorf("failed to generate random bytes for section name: %w", err)
-		}
-		randomName := "."
-		for _, b := range randBytes {
-			randomName += string(rune('a' + (b % 26))) // Simple a-z mapping
-		}
-		if len(randomName) > 8 { // Ensure it fits, though generation above should be fine
-			randomName = randomName[:8]
+			return err
 		}
 
 		nameOffsets[e.Sections[i].Name] = uint32(len(newShstrtab))
@@ -56,55 +195,36 @@ func (e *ELFFile) RandomizeSectionNames() error {
 		newShstrtab = append(newShstrtab, 0)
 		e.Sections[i].Name = randomName
 	}
+
+	// Update string table in file
 	shstrtabOffset := shstrtabHeader.GetFileOffset()
 	copy(e.RawData[shstrtabOffset:shstrtabOffset+uint64(len(newShstrtab))], newShstrtab)
+
+	// Zero remaining bytes if new table is smaller
 	if len(newShstrtab) < len(shstrtabContent) {
 		for i := len(newShstrtab); i < len(shstrtabContent); i++ {
 			e.RawData[shstrtabOffset+uint64(i)] = 0
 		}
 	}
-	var shoffPos int
-	if e.Is64Bit {
-		shoffPos = 40
-	} else {
-		shoffPos = 32
-	}
-	var sectionHeaderOffset uint64
-	if e.Is64Bit {
-		if endianness == binary.LittleEndian {
-			sectionHeaderOffset = binary.LittleEndian.Uint64(e.RawData[shoffPos : shoffPos+8])
-		} else {
-			sectionHeaderOffset = binary.BigEndian.Uint64(e.RawData[shoffPos : shoffPos+8])
-		}
-	} else {
-		if endianness == binary.LittleEndian {
-			sectionHeaderOffset = uint64(binary.LittleEndian.Uint32(e.RawData[shoffPos : shoffPos+4]))
-		} else {
-			sectionHeaderOffset = uint64(binary.BigEndian.Uint32(e.RawData[shoffPos : shoffPos+4]))
-		}
-	}
-	var shentsizePos int
-	if e.Is64Bit {
-		shentsizePos = 58
-	} else {
-		shentsizePos = 46
-	}
-	var sectionHeaderEntrySize uint16
-	if endianness == binary.LittleEndian {
-		sectionHeaderEntrySize = binary.LittleEndian.Uint16(e.RawData[shentsizePos : shentsizePos+2])
-	} else {
-		sectionHeaderEntrySize = binary.BigEndian.Uint16(e.RawData[shentsizePos : shentsizePos+2])
-	}
+
+	// Update section header name offsets
+	shOffset := e.readValue(offsets.shOff, e.Is64Bit)
+	shEntSize := e.readValue16(offsets.shEntSize)
+
 	for i := uint16(0); i < e.ELF.GetSectionCount(); i++ {
 		oldName, err := e.ELF.GetSectionName(i)
 		if err != nil {
 			continue
 		}
-		nameOffset := sectionHeaderOffset + uint64(i)*uint64(sectionHeaderEntrySize)
+
+		shdrOffset := shOffset + uint64(i)*uint64(shEntSize)
+		if shdrOffset >= uint64(len(e.RawData)) {
+			continue
+		}
+
 		if newOffset, ok := nameOffsets[oldName]; ok {
-			err := WriteAtOffset(e.RawData, nameOffset, endianness, newOffset)
-			if err != nil {
-				return err
+			if err := WriteAtOffset(e.RawData, shdrOffset, e.GetEndian(), newOffset); err != nil {
+				return fmt.Errorf("failed to write name offset: %w", err)
 			}
 		}
 	}
@@ -112,499 +232,412 @@ func (e *ELFFile) RandomizeSectionNames() error {
 	return nil
 }
 
-// ObfuscateBaseAddresses modifica casualmente gli indirizzi virtuali di base
+// ObfuscateBaseAddresses randomly modifies virtual base addresses
 func (e *ELFFile) ObfuscateBaseAddresses() error {
-	endianness := e.GetEndian()
+	if err := e.validateELF(); err != nil {
+		return fmt.Errorf("ELF validation failed: %w", err)
+	}
 
-	// Genera un offset casuale (manteniamo l'allineamento a pagina)
-	var randomOffsetBytes [8]byte // Enough for uint64
-	_, err := rand.Read(randomOffsetBytes[:])
+	randomOffset, err := generateRandomOffset()
 	if err != nil {
-		return fmt.Errorf("failed to generate random offset bytes: %w", err)
-	}
-	// Use only a few bytes for a smaller, page-aligned offset to reduce chance of extreme values
-	randomOffset := (binary.LittleEndian.Uint64(randomOffsetBytes[:]) / 0x1000) * 0x1000
-	// Cap the random offset to avoid excessively large shifts, e.g., 1GB
-	if randomOffset > 0x40000000 {
-		randomOffset = randomOffset % 0x40000000
+		return err
 	}
 
-	// Modifica gli indirizzi virtuali nelle intestazioni di programma
+	offsets := e.getELFOffsets()
+	phdrTableOffset := e.readValue(offsets.phOff, e.Is64Bit)
+	phdrEntrySize := e.readValue16(offsets.phEntSize)
+
+	// Update loadable segments
 	for i, segment := range e.Segments {
-		if segment.Loadable {
-			// Ottieni l'header originale
-			_, err := e.ELF.GetProgramHeader(segment.Index)
-			if err != nil {
-				continue
-			}
-
-			// Calcola la posizione dell'intestazione di programma
-			var phdrTableOffset uint64
-			if e.Is64Bit {
-				phdrTableOffsetPos := 32
-				if endianness == binary.LittleEndian {
-					phdrTableOffset = binary.LittleEndian.Uint64(e.RawData[phdrTableOffsetPos : phdrTableOffsetPos+8])
-				} else {
-					phdrTableOffset = binary.BigEndian.Uint64(e.RawData[phdrTableOffsetPos : phdrTableOffsetPos+8])
-				}
-			} else {
-				phdrTableOffsetPos := 28
-				if endianness == binary.LittleEndian {
-					phdrTableOffset = uint64(binary.LittleEndian.Uint32(e.RawData[phdrTableOffsetPos : phdrTableOffsetPos+4]))
-				} else {
-					phdrTableOffset = uint64(binary.BigEndian.Uint32(e.RawData[phdrTableOffsetPos : phdrTableOffsetPos+4]))
-				}
-			}
-
-			// Calcola la dimensione dell'entry della tabella dei program header
-			var phdrEntrySize uint16
-			if e.Is64Bit {
-				phdrEntrySizePos := 54
-				if endianness == binary.LittleEndian {
-					phdrEntrySize = binary.LittleEndian.Uint16(e.RawData[phdrEntrySizePos : phdrEntrySizePos+2])
-				} else {
-					phdrEntrySize = binary.BigEndian.Uint16(e.RawData[phdrEntrySizePos : phdrEntrySizePos+2])
-				}
-			} else {
-				phdrEntrySizePos := 42
-				if endianness == binary.LittleEndian {
-					phdrEntrySize = binary.LittleEndian.Uint16(e.RawData[phdrEntrySizePos : phdrEntrySizePos+2])
-				} else {
-					phdrEntrySize = binary.BigEndian.Uint16(e.RawData[phdrEntrySizePos : phdrEntrySizePos+2])
-				}
-			}
-
-			phdrPos := phdrTableOffset + uint64(segment.Index)*uint64(phdrEntrySize)
-
-			// Calcola la posizione del campo vaddr nell'intestazione di programma
-			var vaddrPos uint64
-			if e.Is64Bit {
-				vaddrPos = phdrPos + 16
-			} else {
-				vaddrPos = phdrPos + 8
-			}
-
-			// Ottieni l'indirizzo virtuale originale
-			var originalVaddr uint64
-			if e.Is64Bit {
-				if endianness == binary.LittleEndian {
-					originalVaddr = binary.LittleEndian.Uint64(e.RawData[vaddrPos : vaddrPos+8])
-				} else {
-					originalVaddr = binary.BigEndian.Uint64(e.RawData[vaddrPos : vaddrPos+8])
-				}
-			} else {
-				if endianness == binary.LittleEndian {
-					originalVaddr = uint64(binary.LittleEndian.Uint32(e.RawData[vaddrPos : vaddrPos+4]))
-				} else {
-					originalVaddr = uint64(binary.BigEndian.Uint32(e.RawData[vaddrPos : vaddrPos+4]))
-				}
-			}
-
-			// Calcola il nuovo indirizzo virtuale
-			newVaddr := originalVaddr + randomOffset
-
-			// Aggiorna l'indirizzo virtuale
-			if e.Is64Bit {
-				err := WriteAtOffset(e.RawData, vaddrPos, endianness, newVaddr)
-				if err != nil {
-					return err
-				}
-			} else {
-				err := WriteAtOffset(e.RawData, vaddrPos, endianness, uint32(newVaddr))
-				if err != nil {
-					return err
-				}
-			}
-
-			// Aggiorna anche l'indirizzo fisico (paddr)
-			var paddrPos uint64
-			if e.Is64Bit {
-				paddrPos = phdrPos + 24
-			} else {
-				paddrPos = phdrPos + 12
-			}
-
-			if e.Is64Bit {
-				err := WriteAtOffset(e.RawData, paddrPos, endianness, newVaddr)
-				if err != nil {
-					return err
-				}
-			} else {
-				err := WriteAtOffset(e.RawData, paddrPos, endianness, uint32(newVaddr))
-				if err != nil {
-					return err
-				}
-			}
-
-			// Aggiorna la struttura Segment
-			e.Segments[i].Offset = segment.Offset
+		if !segment.Loadable {
+			continue
 		}
+
+		if _, err := e.ELF.GetProgramHeader(segment.Index); err != nil {
+			continue
+		}
+
+		phdrPos := phdrTableOffset + uint64(segment.Index)*uint64(phdrEntrySize)
+
+		// Update virtual address
+		vaddrPos := phdrPos + getVAddrOffset(e.Is64Bit)
+		originalVaddr := e.readValue(int(vaddrPos), e.Is64Bit)
+		newVaddr := originalVaddr + randomOffset
+
+		if err := e.writeValue(vaddrPos, newVaddr, e.Is64Bit); err != nil {
+			return err
+		}
+
+		// Update physical address
+		paddrPos := phdrPos + getPAddrOffset(e.Is64Bit)
+		if err := e.writeValue(paddrPos, newVaddr, e.Is64Bit); err != nil {
+			return err
+		}
+
+		e.Segments[i].Offset = segment.Offset
 	}
 
-	// Aggiorna l'entry point nell'header ELF
-	var entryPointPos int
-	if e.Is64Bit {
-		entryPointPos = 24
-	} else {
-		entryPointPos = 24
-	}
-
-	var originalEntryPoint uint64
-	if e.Is64Bit {
-		if endianness == binary.LittleEndian {
-			originalEntryPoint = binary.LittleEndian.Uint64(e.RawData[entryPointPos : entryPointPos+8])
-		} else {
-			originalEntryPoint = binary.BigEndian.Uint64(e.RawData[entryPointPos : entryPointPos+8])
-		}
-	} else {
-		if endianness == binary.LittleEndian {
-			originalEntryPoint = uint64(binary.LittleEndian.Uint32(e.RawData[entryPointPos : entryPointPos+4]))
-		} else {
-			originalEntryPoint = uint64(binary.BigEndian.Uint32(e.RawData[entryPointPos : entryPointPos+4]))
-		}
-	}
+	// Update entry point
+	originalEntryPoint := e.readValue(offsets.entryPoint, e.Is64Bit)
 	if originalEntryPoint != 0 {
 		newEntryPoint := originalEntryPoint + randomOffset
-
-		if e.Is64Bit {
-			err := WriteAtOffset(e.RawData, uint64(entryPointPos), endianness, newEntryPoint)
-			if err != nil {
-				return err
-			}
-		} else {
-			err := WriteAtOffset(e.RawData, uint64(entryPointPos), endianness, uint32(newEntryPoint))
-			if err != nil {
-				return err
-			}
+		if err := e.writeValue(uint64(offsets.entryPoint), newEntryPoint, e.Is64Bit); err != nil {
+			return err
 		}
 	}
 
 	return nil
 }
 
-// ObfuscateGOTPLT aggiunge voci fittizie nelle tabelle GOT/PLT
+// Helper functions for program header offsets
+func getVAddrOffset(is64bit bool) uint64 {
+	if is64bit {
+		return 16
+	}
+	return 8
+}
+
+func getPAddrOffset(is64bit bool) uint64 {
+	if is64bit {
+		return 24
+	}
+	return 12
+}
+
+// writeValue writes a value to the ELF file
+func (e *ELFFile) writeValue(offset, value uint64, is64bit bool) error {
+	if is64bit {
+		return WriteAtOffset(e.RawData, offset, e.GetEndian(), value)
+	}
+	return WriteAtOffset(e.RawData, offset, e.GetEndian(), uint32(value))
+}
+
+// ObfuscateGOTPLT adds fake entries to GOT/PLT tables
 func (e *ELFFile) ObfuscateGOTPLT() error {
-	// Cerca le sezioni GOT e PLT
-	var gotSection, pltSection *Section
-	for i := range e.Sections {
-		if e.Sections[i].Name == ".got" || e.Sections[i].Name == ".got.plt" {
-			gotSection = &e.Sections[i]
-		} else if e.Sections[i].Name == ".plt" {
-			pltSection = &e.Sections[i]
-		}
-	}
-	if gotSection == nil && pltSection == nil {
-		return nil
-	}
+	sections := e.findSections([]string{".got", ".got.plt", ".plt"})
 
-	if gotSection != nil && gotSection.Offset > 0 && gotSection.Size > 0 {
-		content, err := e.ReadBytes(gotSection.Offset, int(gotSection.Size))
-		if err != nil {
-			return err
-		}
-
-		// Modifica alcune voci della GOT (ma non tutte, per mantenere la funzionalità)
-		// Modifichiamo solo le voci che sembrano essere puntatori a funzioni
-		entrySize := 4
-		if e.Is64Bit {
-			entrySize = 8
-		}
-
-		for i := 0; i < len(content); i += entrySize {
-			// Salta le prime 3 voci della GOT che sono speciali
-			if i >= 3*entrySize {
-				// Genera un valore casuale che sembra un puntatore valido
-				// ma che in realtà punta a una zona di memoria non mappata
-				randBytes := make([]byte, 8)
-				_, err := rand.Read(randBytes)
-				if err != nil {
-					// Decide on error handling: skip this entry or return error
-					return fmt.Errorf("failed to generate random ptr for GOT: %w", err)
-				}
-				randomPtr := binary.LittleEndian.Uint64(randBytes) & 0x00007FFFFFFFFFFF // Ensure it's in user-space-like area
-
-				// Modifica la voce della GOT
-				if e.Is64Bit {
-					binary.LittleEndian.PutUint64(content[i:i+entrySize], randomPtr)
-				} else {
-					binary.LittleEndian.PutUint32(content[i:i+entrySize], uint32(randomPtr))
-				}
-			}
-		}
-
-		// Scrivi il contenuto modificato
-		copy(e.RawData[gotSection.Offset:gotSection.Offset+uint64(len(content))], content)
-	}
-
-	// Offusca la PLT se presente
-	if pltSection != nil && pltSection.Offset > 0 && pltSection.Size > 0 {
-		// La PLT contiene codice eseguibile, quindi è più rischioso modificarla
-		// Possiamo aggiungere voci fittizie alla fine se c'è spazio
-
-		// Per ora, lasciamo la PLT intatta per evitare di compromettere la funzionalità
-	}
-
-	return nil
-}
-
-// ObfuscateExportedFunctions rinomina le funzioni esportate
-func (e *ELFFile) ObfuscateExportedFunctions() error {
-	var dynsymSection, dynstrSection *Section
-	for i := range e.Sections {
-		if e.Sections[i].Name == ".dynsym" {
-			dynsymSection = &e.Sections[i]
-		} else if e.Sections[i].Name == ".dynstr" {
-			dynstrSection = &e.Sections[i]
-		}
-	}
-	if dynsymSection == nil || dynstrSection == nil {
-		return nil
-	}
-	if dynsymSection.Offset > 0 && dynsymSection.Size > 0 &&
-		dynstrSection.Offset > 0 && dynstrSection.Size > 0 {
-		dynstrContent, err := e.ReadBytes(dynstrSection.Offset, int(dynstrSection.Size))
-		if err != nil {
-			return err
-		}
-		newDynstr := make([]byte, len(dynstrContent))
-		copy(newDynstr, dynstrContent)
-		symEntSize := 16
-		if e.Is64Bit {
-			symEntSize = 24
-		}
-		dynsymContent, err := e.ReadBytes(dynsymSection.Offset, int(dynsymSection.Size))
-		if err != nil {
-			return err
-		}
-		nameOffsets := make(map[uint32]uint32)
-		numSymbols := len(dynsymContent) / symEntSize
-		nameOffset := 0
-		infoOffset := 4
-		if e.Is64Bit {
-			infoOffset = 4
-		}
-		for i := 0; i < numSymbols; i++ {
-			symOffset := i * symEntSize
-			var strOffset uint32
-			if e.Is64Bit {
-				strOffset = binary.LittleEndian.Uint32(dynsymContent[symOffset+nameOffset : symOffset+nameOffset+4])
-			} else {
-				strOffset = binary.LittleEndian.Uint32(dynsymContent[symOffset+nameOffset : symOffset+nameOffset+4])
-			}
-			symInfo := dynsymContent[symOffset+infoOffset]
-			if (symInfo&0x0f) == 2 && (symInfo&0xf0) >= (1<<4) {
-				if strOffset > 0 && strOffset < uint32(len(dynstrContent)) && nameOffsets[strOffset] == 0 {
-					end := strOffset
-					for end < uint32(len(dynstrContent)) && dynstrContent[end] != 0 {
-						end++
-					}
-
-					// Zero out the old name in newDynstr first
-					// This handles the case where the new name is appended.
-					// Ensure strOffset and end are within bounds of newDynstr (which is initially a copy of dynstrContent)
-					if strOffset < uint32(len(newDynstr)) && end <= uint32(len(newDynstr)) {
-						for k := strOffset; k < end; k++ {
-							newDynstr[k] = 0
-						}
-					}
-
-					newNameBytes := make([]byte, 8) // Example length
-					_, err := rand.Read(newNameBytes)
-					if err != nil {
-						return fmt.Errorf("failed to generate random bytes for function name: %w", err)
-					}
-					// Create a somewhat printable random name
-					newName := "f_"
-					for _, b := range newNameBytes[:6] { // Use 6 bytes for a 6-char suffix
-						newName += string(rune('a' + (b % 26)))
-					}
-
-					newOffset := uint32(len(newDynstr))
-					newDynstr = append(newDynstr, []byte(newName)...)
-					newDynstr = append(newDynstr, 0)
-					nameOffsets[strOffset] = newOffset
-					if e.Is64Bit {
-						binary.LittleEndian.PutUint32(dynsymContent[symOffset+nameOffset:symOffset+nameOffset+4], newOffset)
-					} else {
-						binary.LittleEndian.PutUint32(dynsymContent[symOffset+nameOffset:symOffset+nameOffset+4], newOffset)
-					}
-				}
-			}
-		}
-		copy(e.RawData[dynsymSection.Offset:dynsymSection.Offset+uint64(len(dynsymContent))], dynsymContent)
-		if len(newDynstr) > len(dynstrContent) {
-			// Questo è complicato e richiede la riallocazione della sezione
-			// Per semplicità, in questa implementazione ci limitiamo a modificare
-			// i nomi che possono essere contenuti nella tabella esistente
-			copy(e.RawData[dynstrSection.Offset:dynstrSection.Offset+uint64(len(dynstrContent))], newDynstr[:len(dynstrContent)])
-		} else {
-			copy(e.RawData[dynstrSection.Offset:dynstrSection.Offset+uint64(len(newDynstr))], newDynstr)
-		}
-	}
-
-	return nil
-}
-
-// ObfuscateInitFiniTables offusca le tabelle di inizializzazione/finalizzazione
-func (e *ELFFile) ObfuscateInitFiniTables() error {
-	// Cerca le sezioni .init_array, .fini_array, .preinit_array
-	initSections := []string{".init_array", ".fini_array", ".preinit_array"}
-
-	for _, sectionName := range initSections {
-		var section *Section
-		for i := range e.Sections {
-			if e.Sections[i].Name == sectionName {
-				section = &e.Sections[i]
-				break
-			}
-		}
-
-		// Se non troviamo la sezione, passiamo alla prossima
+	for name, section := range sections {
 		if section == nil || section.Offset == 0 || section.Size == 0 {
 			continue
 		}
 
-		// Leggi il contenuto della sezione
-		content, err := e.ReadBytes(section.Offset, int(section.Size))
-		if err != nil {
+		if name == ".plt" {
+			continue // Skip PLT for now
+		}
+
+		if err := e.obfuscateGOTSection(section); err != nil {
 			return err
-		}
-		ptrSize := 4
-		if e.Is64Bit {
-			ptrSize = 8
-		}
-		numPtrs := len(content) / ptrSize
-		if numPtrs > 1 {
-			// Aggiungiamo puntatori fittizi alla fine
-			for i := 1; i < numPtrs; i++ {
-				offset := i * ptrSize
-
-				// Genera un valore casuale che sembra un puntatore valido
-				randBytes := make([]byte, 8)
-				_, err := rand.Read(randBytes)
-				if err != nil {
-					return fmt.Errorf("failed to generate random ptr for init/fini: %w", err)
-				}
-				randomPtr := binary.LittleEndian.Uint64(randBytes) & 0x00007FFFFFFFFFFF
-
-				// Modifica il puntatore
-				if e.Is64Bit {
-					binary.LittleEndian.PutUint64(content[offset:offset+ptrSize], randomPtr)
-				} else {
-					binary.LittleEndian.PutUint32(content[offset:offset+ptrSize], uint32(randomPtr))
-				}
-			}
-
-			// Scrivi il contenuto modificato
-			copy(e.RawData[section.Offset:section.Offset+uint64(len(content))], content)
 		}
 	}
 
 	return nil
 }
 
-// ObfuscateSectionPadding randomizza i byte di padding tra le sezioni ELF
+// obfuscateGOTSection obfuscates a single GOT section
+func (e *ELFFile) obfuscateGOTSection(section *Section) error {
+	content, err := e.ReadBytes(section.Offset, int(section.Size))
+	if err != nil {
+		return err
+	}
+
+	entrySize := getPointerSize(e.Is64Bit)
+
+	// Skip first 3 entries (reserved)
+	for i := 3 * entrySize; i < len(content); i += entrySize {
+		randomPtr, err := generateRandomPointer()
+		if err != nil {
+			return err
+		}
+
+		if e.Is64Bit {
+			binary.LittleEndian.PutUint64(content[i:i+entrySize], randomPtr)
+		} else {
+			binary.LittleEndian.PutUint32(content[i:i+entrySize], uint32(randomPtr))
+		}
+	}
+
+	copy(e.RawData[section.Offset:section.Offset+uint64(len(content))], content)
+	return nil
+}
+
+// getPointerSize returns the pointer size for the architecture
+func getPointerSize(is64bit bool) int {
+	if is64bit {
+		return 8
+	}
+	return 4
+}
+
+// ObfuscateExportedFunctions renames exported functions
+func (e *ELFFile) ObfuscateExportedFunctions() error {
+	sections := e.findSections([]string{".dynsym", ".dynstr"})
+	dynsymSection := sections[".dynsym"]
+	dynstrSection := sections[".dynstr"]
+
+	if dynsymSection == nil || dynstrSection == nil {
+		return nil
+	}
+
+	if dynsymSection.Offset == 0 || dynsymSection.Size == 0 ||
+		dynstrSection.Offset == 0 || dynstrSection.Size == 0 {
+		return nil
+	}
+
+	return e.obfuscateDynamicSymbols(dynsymSection, dynstrSection)
+}
+
+// obfuscateDynamicSymbols obfuscates dynamic symbol table
+func (e *ELFFile) obfuscateDynamicSymbols(dynsymSection, dynstrSection *Section) error {
+	dynstrContent, err := e.ReadBytes(dynstrSection.Offset, int(dynstrSection.Size))
+	if err != nil {
+		return err
+	}
+
+	dynsymContent, err := e.ReadBytes(dynsymSection.Offset, int(dynsymSection.Size))
+	if err != nil {
+		return err
+	}
+
+	newDynstr := make([]byte, len(dynstrContent))
+	copy(newDynstr, dynstrContent)
+
+	symEntSize := getSymbolEntrySize(e.Is64Bit)
+	numSymbols := len(dynsymContent) / symEntSize
+	nameOffsets := make(map[uint32]uint32)
+
+	for i := 0; i < numSymbols; i++ {
+		symOffset := i * symEntSize
+		strOffset := binary.LittleEndian.Uint32(dynsymContent[symOffset : symOffset+4])
+		symInfo := dynsymContent[symOffset+4]
+
+		// Check if it's a global function symbol
+		if (symInfo&0x0f) == 2 && (symInfo&0xf0) >= (1<<4) {
+			if err := e.obfuscateSymbolName(dynsymContent, symOffset, strOffset,
+				dynstrContent, &newDynstr, nameOffsets); err != nil {
+				return err
+			}
+		}
+	}
+
+	// Write back the modified data
+	copy(e.RawData[dynsymSection.Offset:dynsymSection.Offset+uint64(len(dynsymContent))], dynsymContent)
+
+	copySize := min(len(newDynstr), len(dynstrContent))
+	copy(e.RawData[dynstrSection.Offset:dynstrSection.Offset+uint64(copySize)], newDynstr[:copySize])
+
+	return nil
+}
+
+// getSymbolEntrySize returns the symbol entry size for the architecture
+func getSymbolEntrySize(is64bit bool) int {
+	if is64bit {
+		return 24
+	}
+	return 16
+}
+
+// obfuscateSymbolName obfuscates a single symbol name
+func (e *ELFFile) obfuscateSymbolName(dynsymContent []byte, symOffset int, strOffset uint32,
+	dynstrContent []byte, newDynstr *[]byte, nameOffsets map[uint32]uint32) error {
+
+	if strOffset == 0 || strOffset >= uint32(len(dynstrContent)) || nameOffsets[strOffset] != 0 {
+		return nil
+	}
+
+	// Find end of string
+	end := strOffset
+	for end < uint32(len(dynstrContent)) && dynstrContent[end] != 0 {
+		end++
+	}
+
+	// Clear old name
+	if strOffset < uint32(len(*newDynstr)) && end <= uint32(len(*newDynstr)) {
+		for k := strOffset; k < end; k++ {
+			(*newDynstr)[k] = 0
+		}
+	}
+
+	// Generate new name
+	newName, err := generateRandomFunctionName()
+	if err != nil {
+		return err
+	}
+
+	// Add new name to string table
+	newOffset := uint32(len(*newDynstr))
+	*newDynstr = append(*newDynstr, []byte(newName)...)
+	*newDynstr = append(*newDynstr, 0)
+	nameOffsets[strOffset] = newOffset
+
+	// Update symbol table entry
+	binary.LittleEndian.PutUint32(dynsymContent[symOffset:symOffset+4], newOffset)
+
+	return nil
+}
+
+// generateRandomFunctionName creates a random function name
+func generateRandomFunctionName() (string, error) {
+	randBytes := make([]byte, 6)
+	if _, err := rand.Read(randBytes); err != nil {
+		return "", fmt.Errorf("failed to generate random function name: %w", err)
+	}
+
+	name := "f_"
+	for _, b := range randBytes {
+		name += string(rune('a' + (b % 26)))
+	}
+	return name, nil
+}
+
+// ObfuscateInitFiniTables obfuscates initialization/finalization tables
+func (e *ELFFile) ObfuscateInitFiniTables() error {
+	sectionNames := []string{".init_array", ".fini_array", ".preinit_array"}
+	sections := e.findSections(sectionNames)
+
+	for _, section := range sections {
+		if section == nil || section.Offset == 0 || section.Size == 0 {
+			continue
+		}
+
+		if err := e.obfuscateInitFiniSection(section); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// obfuscateInitFiniSection obfuscates a single init/fini section
+func (e *ELFFile) obfuscateInitFiniSection(section *Section) error {
+	content, err := e.ReadBytes(section.Offset, int(section.Size))
+	if err != nil {
+		return err
+	}
+
+	ptrSize := getPointerSize(e.Is64Bit)
+	numPtrs := len(content) / ptrSize
+
+	// Skip first entry, obfuscate rest
+	for i := 1; i < numPtrs; i++ {
+		offset := i * ptrSize
+
+		randomPtr, err := generateRandomPointer()
+		if err != nil {
+			return err
+		}
+
+		if e.Is64Bit {
+			binary.LittleEndian.PutUint64(content[offset:offset+ptrSize], randomPtr)
+		} else {
+			binary.LittleEndian.PutUint32(content[offset:offset+ptrSize], uint32(randomPtr))
+		}
+	}
+
+	copy(e.RawData[section.Offset:section.Offset+uint64(len(content))], content)
+	return nil
+}
+
+// ObfuscateSectionPadding randomizes padding between sections
 func (e *ELFFile) ObfuscateSectionPadding() {
 	for i := 0; i < len(e.Sections)-1; i++ {
 		end := e.Sections[i].Offset + e.Sections[i].Size
 		next := e.Sections[i+1].Offset
+
 		if end < next && next-end < 0x10000 && end > 0 {
 			paddingSize := int(next - end)
 			randomPadding := make([]byte, paddingSize)
-			_, err := rand.Read(randomPadding)
-			if err != nil {
-				// Non-critical, can skip or log
-				continue
+			if _, err := rand.Read(randomPadding); err == nil {
+				copy(e.RawData[end:next], randomPadding)
 			}
-			copy(e.RawData[end:next], randomPadding)
 		}
 	}
 }
 
-// ObfuscateReservedHeaderFields randomizza campi riservati a zero nell'header ELF
+// ObfuscateReservedHeaderFields randomizes reserved fields in ELF header
 func (e *ELFFile) ObfuscateReservedHeaderFields() error {
-	// ELF header: campi riservati a zero tra e_ident[9:16], e_flags (alcuni arch), padding in header program/section
-	randBytes := make([]byte, 16-9)
-	_, err := rand.Read(randBytes)
-	if err != nil {
-		return fmt.Errorf("failed to generate random bytes for e_ident[9:16]: %w", err)
+	// Randomize e_ident[9:16] (padding)
+	randBytes := make([]byte, 7)
+	if _, err := rand.Read(randBytes); err != nil {
+		return fmt.Errorf("failed to generate random header bytes: %w", err)
 	}
 	copy(e.RawData[9:16], randBytes)
 
-	// e_flags (offset 48 per 64bit, 36 per 32bit)
-	flagsOffset := 0
-	if e.Is64Bit {
-		flagsOffset = 48
-	} else {
-		flagsOffset = 36
-	}
-	if flagsOffset > 0 && flagsOffset+4 <= len(e.RawData) {
-		randBytesFlags := make([]byte, 4)
-		_, err = rand.Read(randBytesFlags)
-		if err != nil {
-			return fmt.Errorf("failed to generate random bytes for e_flags: %w", err)
+	// Randomize e_flags
+	offsets := e.getELFOffsets()
+	if offsets.flags+4 <= len(e.RawData) {
+		randFlags := make([]byte, 4)
+		if _, err := rand.Read(randFlags); err != nil {
+			return fmt.Errorf("failed to generate random flags: %w", err)
 		}
-		copy(e.RawData[flagsOffset:flagsOffset+4], randBytesFlags)
+		copy(e.RawData[offsets.flags:offsets.flags+4], randFlags)
 	}
+
 	return nil
 }
 
-// ObfuscateSecondaryTimestamps randomizza timestamp secondari in note/debug (se presenti)
+// ObfuscateSecondaryTimestamps randomizes timestamps in note/debug sections
 func (e *ELFFile) ObfuscateSecondaryTimestamps() error {
-	for _, section := range e.Sections {
-		if section.Name == ".note" || section.Name == ".note.gnu.build-id" || section.Name == ".comment" {
-			data, err := e.ReadBytes(section.Offset, int(section.Size))
-			if err == nil && len(data) >= 4 {
-				for i := 0; i+4 <= len(data); i += 4 {
-					randBytes := make([]byte, 4)
-					_, errRead := rand.Read(randBytes)
-					if errRead != nil {
-						// Skip this uint32 or return error
-						return fmt.Errorf("failed to generate random bytes for timestamp in %s: %w", section.Name, errRead)
-					}
-					copy(data[i:i+4], randBytes)
-				}
-				copy(e.RawData[section.Offset:section.Offset+uint64(len(data))], data)
-			}
+	timestampSections := []string{".note", ".note.gnu.build-id", ".comment"}
+	sections := e.findSections(timestampSections)
+
+	for _, section := range sections {
+		if section == nil {
+			continue
+		}
+
+		if err := e.obfuscateTimestampsInSection(section); err != nil {
+			return err
 		}
 	}
+
 	return nil
 }
 
-// ObfuscateAll applica tutte le tecniche di offuscamento
+// obfuscateTimestampsInSection randomizes timestamps in a section
+func (e *ELFFile) obfuscateTimestampsInSection(section *Section) error {
+	data, err := e.ReadBytes(section.Offset, int(section.Size))
+	if err != nil || len(data) < 4 {
+		return nil
+	}
+
+	for i := 0; i+4 <= len(data); i += 4 {
+		randBytes := make([]byte, 4)
+		if _, err := rand.Read(randBytes); err != nil {
+			return fmt.Errorf("failed to generate random timestamp: %w", err)
+		}
+		copy(data[i:i+4], randBytes)
+	}
+
+	copy(e.RawData[section.Offset:section.Offset+uint64(len(data))], data)
+	return nil
+}
+
+// ObfuscateAll applies all obfuscation techniques
 func (e *ELFFile) ObfuscateAll() error {
-	// Offusca gli indirizzi di base
-
-	if err := e.RandomizeSectionNames(); err != nil {
-		return fmt.Errorf("error randomizing section names during ObfuscateAll: %w", err)
+	if err := e.validateELF(); err != nil {
+		return fmt.Errorf("ELF validation failed: %w", err)
 	}
 
-	if err := e.ObfuscateBaseAddresses(); err != nil {
-		return err
+	obfuscationSteps := []struct {
+		name string
+		fn   func() error
+	}{
+		{"RandomizeSectionNames", e.RandomizeSectionNames},
+		{"ObfuscateBaseAddresses", e.ObfuscateBaseAddresses},
+		{"ObfuscateExportedFunctions", e.ObfuscateExportedFunctions},
+		{"ObfuscateInitFiniTables", e.ObfuscateInitFiniTables},
+		{"ObfuscateReservedHeaderFields", e.ObfuscateReservedHeaderFields},
+		{"ObfuscateSecondaryTimestamps", e.ObfuscateSecondaryTimestamps},
 	}
 
-	// Offusca i nomi delle funzioni esportate
-	if err := e.ObfuscateExportedFunctions(); err != nil {
-		return err
+	for _, step := range obfuscationSteps {
+		if err := step.fn(); err != nil {
+			return fmt.Errorf("%s failed: %w", step.name, err)
+		}
 	}
 
-	// Offusca le tabelle GOT/PLT
-	//if err := e.ObfuscateGOTPLT(); err != nil {
-	//	return err
-	//}
-	//
-	//// Offusca le tabelle di inizializzazione/finalizzazione
-	//if err := e.ObfuscateInitFiniTables(); err != nil {
-	//	return err
-	//}
-
+	// This one doesn't return an error
 	e.ObfuscateSectionPadding()
-	if err := e.ObfuscateReservedHeaderFields(); err != nil {
-		return fmt.Errorf("ObfuscateReservedHeaderFields failed: %w", err)
-	}
-	if err := e.ObfuscateSecondaryTimestamps(); err != nil {
-		return fmt.Errorf("ObfuscateSecondaryTimestamps failed: %w", err)
-	}
 
 	return nil
 }

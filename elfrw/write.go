@@ -230,9 +230,18 @@ func WriteAtOffset(rawData []byte, offset uint64, endian binary.ByteOrder, value
 	default:
 		return fmt.Errorf("unsupported type: %T", value)
 	}
-	if int(offset)+size > len(rawData) {
-		return fmt.Errorf("offset out of bounds: %d (size %d)", offset, size)
+
+	// Check for integer overflow in the offset calculation
+	if offset > uint64(len(rawData)) {
+		return fmt.Errorf("offset too large: %d (file size: %d)", offset, len(rawData))
 	}
+
+	// Check if we have enough space to write
+	if int(offset)+size > len(rawData) {
+		return fmt.Errorf("write would exceed buffer limits: offset %d + size %d > length %d",
+			offset, size, len(rawData))
+	}
+
 	buf := make([]byte, size)
 	switch v := value.(type) {
 	case uint16:

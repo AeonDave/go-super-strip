@@ -44,7 +44,7 @@ func extractNullTerminatedString(data []byte, offset int) string {
 
 // Test stripping all metadata
 func TestELFStripAllMetadata(t *testing.T) {
-	elf := &elfrw.ELFFile{
+	elff := &elfrw.ELFFile{
 		RawData: make([]byte, 4096),
 		Is64Bit: true,
 		Sections: []elfrw.Section{
@@ -52,16 +52,16 @@ func TestELFStripAllMetadata(t *testing.T) {
 			{Name: ".strtab", Offset: 200, Size: 10},
 		},
 	}
-	copy(elf.RawData[100:110], []byte("debugdata"))
-	copy(elf.RawData[200:210], []byte("strtabdat"))
+	copy(elff.RawData[100:110], []byte("debugdata"))
+	copy(elff.RawData[200:210], []byte("strtabdat"))
 
-	if err := elf.StripAllMetadata(false); err != nil {
+	if err := elff.StripAllMetadata(false); err != nil {
 		t.Fatalf("StripAllMetadata failed: %v", err)
 	}
 
-	for _, sec := range elf.Sections {
+	for _, sec := range elff.Sections {
 		if sec.Size > 0 {
-			data, _ := elf.ReadBytes(sec.Offset, int(sec.Size))
+			data, _ := elff.ReadBytes(sec.Offset, int(sec.Size))
 			if !bytes.Equal(data, make([]byte, len(data))) {
 				t.Errorf("Section %s not zeroed", sec.Name)
 			}
@@ -146,21 +146,55 @@ func TestELFRandomizeSectionNames(t *testing.T) {
 
 // Test obfuscating base addresses
 func TestELFObfuscateBaseAddresses(t *testing.T) {
-	elf := &elfrw.ELFFile{
+	elff := &elfrw.ELFFile{
 		Is64Bit: true,
 		Segments: []elfrw.Segment{
 			{Offset: 0x1000, Size: 0x200, Flags: pfRead | pfExecute},
 			{Offset: 0x2000, Size: 0x100, Flags: pfRead | shfWrite},
 		},
 	}
-	elf.RawData = make([]byte, 4096)
-	binary.LittleEndian.PutUint64(elf.RawData[24:32], 0x401000)
+	elff.RawData = make([]byte, 4096)
 
-	if err := elf.ObfuscateBaseAddresses(); err != nil {
+	// Add a valid ELF header
+	elff.RawData[0] = 0x7f // ELF magic number
+	elff.RawData[1] = 'E'
+	elff.RawData[2] = 'L'
+	elff.RawData[3] = 'F'
+	elff.RawData[4] = 2 // EI_CLASS: 64-bit
+	elff.RawData[5] = 1 // EI_DATA: little endian
+	elff.RawData[6] = 1 // EI_VERSION: current version
+	elff.RawData[7] = 0 // EI_OSABI: System V
+	elff.RawData[8] = 0 // EI_ABIVERSION: 0
+
+	// e_type: ET_EXEC (executable)
+	binary.LittleEndian.PutUint16(elff.RawData[16:18], 2)
+
+	// e_machine: EM_X86_64
+	binary.LittleEndian.PutUint16(elff.RawData[18:20], 62)
+
+	// e_entry: Entry point address
+	binary.LittleEndian.PutUint64(elff.RawData[24:32], 0x401000)
+
+	// e_phoff: Program header table offset
+	binary.LittleEndian.PutUint64(elff.RawData[32:40], 64)
+
+	// e_shoff: Section header table offset
+	binary.LittleEndian.PutUint64(elff.RawData[40:48], 512)
+
+	// e_shentsize: Section header entry size
+	binary.LittleEndian.PutUint16(elff.RawData[58:60], 64)
+
+	// e_shnum: Section header count
+	binary.LittleEndian.PutUint16(elff.RawData[60:62], 5)
+
+	// e_shstrndx: Section name string table index
+	binary.LittleEndian.PutUint16(elff.RawData[62:64], 1)
+
+	if err := elff.ObfuscateBaseAddresses(); err != nil {
 		t.Fatalf("ObfuscateBaseAddresses failed: %v", err)
 	}
 
-	newEntry := binary.LittleEndian.Uint64(elf.RawData[24:32])
+	newEntry := binary.LittleEndian.Uint64(elff.RawData[24:32])
 	if newEntry%0x1000 != 0 {
 		t.Errorf("New entry point %x not aligned to 0x1000", newEntry)
 	}
