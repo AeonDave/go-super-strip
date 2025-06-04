@@ -69,19 +69,19 @@ provides advanced techniques for reducing file size and increasing resistance to
 **Basic Syntax:**
 
 ```bash
-./go-super-strip -file <path> [options]
+./go-super-strip <file> [options]
 ```
 
 ### Generic Stripping
 
-Remove specific byte patterns using regex:
+Remove specific byte patterns using regex (note that patterns are applied AFTER all other operations):
 
 ```bash
-# Remove UPX signatures
-./go-super-strip -file program -s "UPX!"
+# Remove UPX signatures (with proper regex escaping)
+./go-super-strip program -s "\\d\\.\\d{2}\\x00UPX!\\r"
 
 # Remove custom build strings
-./go-super-strip -file program -s "ConfidentialBuild"
+./go-super-strip program -s "ConfidentialBuild"
 ```
 
 ### Metadata Stripping
@@ -90,19 +90,19 @@ Remove various types of metadata:
 
 ```bash
 # Strip debug information only (long form)
-./go-super-strip -file program -strip-debug
+./go-super-strip program -strip-debug
 # Or using short form
-./go-super-strip -file program -d
+./go-super-strip program -d
 
 # Strip symbol tables only (long form)
-./go-super-strip -file program -strip-symbols
+./go-super-strip program -strip-symbols
 # Or using short form  
-./go-super-strip -file program -y
+./go-super-strip program -y
 
 # Strip all non-essential metadata (recommended)
-./go-super-strip -file program -strip-all
+./go-super-strip program -strip-all
 # Or using short form
-./go-super-strip -file program -S
+./go-super-strip program -S
 ```
 
 ### Obfuscation Techniques
@@ -111,35 +111,35 @@ Apply anti-analysis techniques:
 
 ```bash
 # Randomize section names (long form)
-./go-super-strip -file program -obf-names
+./go-super-strip program -obf-names
 # Or using short form
-./go-super-strip -file program -n
+./go-super-strip program -n
 
 # Obfuscate base addresses (long form)
-./go-super-strip -file program -obf-base
+./go-super-strip program -obf-base
 # Or using short form
-./go-super-strip -file program -b
+./go-super-strip program -b
 
 # PE-specific obfuscation techniques:
 # Obfuscate load configuration directory (PE only)
-./go-super-strip -file program.exe -obf-load-config
+./go-super-strip program.exe -obf-load-config
 # Or using short form
-./go-super-strip -file program.exe -l
+./go-super-strip program.exe -l
 
 # Obfuscate import table metadata (PE only)
-./go-super-strip -file program.exe -obf-import-table
+./go-super-strip program.exe -obf-import-table
 # Or using short form
-./go-super-strip -file program.exe -i
+./go-super-strip program.exe -i
 
 # Aggressive import name obfuscation (PE only)
-./go-super-strip -file program.exe -obf-imports
+./go-super-strip program.exe -obf-imports
 # Or using short form
-./go-super-strip -file program.exe -m
+./go-super-strip program.exe -m
 
 # Apply all obfuscation techniques (long form)
-./go-super-strip -file program -obf-all
+./go-super-strip program -obf-all
 # Or using short form
-./go-super-strip -file program -O
+./go-super-strip program -O
 ```
 
 ### Combined Operations
@@ -148,38 +148,41 @@ Multiple techniques can be combined:
 
 ```bash
 # Comprehensive stripping and obfuscation (long form)
-./go-super-strip -file myapp.exe -strip-all -obf-all -s "CompanyName"
+./go-super-strip myapp.exe -strip-all -obf-all -s "CompanyName"
 
 # Same operation using short forms (much faster to type!)
-./go-super-strip -file myapp.exe -S -O -s "CompanyName"
+./go-super-strip myapp.exe -S -O -s "CompanyName"
 
 # Quick debug and symbol stripping
-./go-super-strip -file binary -d -y
+./go-super-strip binary -d -y
 
 # Fast full processing
-./go-super-strip -file program -S -O
+./go-super-strip program -S -O
 
 # PE-specific combined operations:
 # Conservative PE obfuscation (metadata only)
-./go-super-strip -file app.exe -strip-all -obf-names -obf-base -obf-import-table
+./go-super-strip app.exe -strip-all -obf-names -obf-base -obf-import-table
 # Short form
-./go-super-strip -file app.exe -S -n -b -i
+./go-super-strip app.exe -S -n -b -i
 
 # Aggressive PE obfuscation (includes function name randomization)
-./go-super-strip -file app.exe -strip-all -obf-names -obf-import-table -obf-imports
+./go-super-strip app.exe -strip-all -obf-names -obf-import-table -obf-imports
 # Short form  
-./go-super-strip -file app.exe -S -n -i -m
+./go-super-strip app.exe -S -n -i -m
 
 # Maximum PE processing (strip everything + all obfuscations)
-./go-super-strip -file program.exe -S -O
+./go-super-strip program.exe -S -O
+
+# Remove sensitive data with regex pattern (applied AFTER other operations)
+./go-super-strip app.elf -S -O -s "SECRET_KEY_\\d+"
 ```
 
 ### Arguments Reference
 
 | Argument (Long)       | Argument (Short) | Description                                      | Type     |
 |-----------------------|------------------|--------------------------------------------------|----------|
-| `-file <path>`        | -                | Target executable file path                      | Required |
-| `-s <pattern>`        | -                | Strip bytes matching regex pattern              | Optional |
+| `<file>`              | -                | Target executable file path (first argument)    | Required |
+| `-s <pattern>`        | -                | Strip bytes matching regex pattern (applied AFTER all other operations) | Optional |
 | `-strip-debug`        | `-d`             | Strip debug sections                             | Optional |
 | `-strip-symbols`      | `-y`             | Strip symbol table sections                      | Optional |
 | `-strip-all`          | `-S`             | Strip all non-essential metadata                 | Optional |
@@ -259,43 +262,43 @@ The following table details all stripping and obfuscation techniques available f
 **Conservative (Low Risk):**
 ```bash
 # Long form
-./go-super-strip -file program -strip-debug -strip-symbols -obf-names
+./go-super-strip program -strip-debug -strip-symbols -obf-names
 # Short form (faster to type)
-./go-super-strip -file program -d -y -n
+./go-super-strip program -d -y -n
 ```
 
 **Moderate (Acceptable Risk):**
 ```bash
 # Long form
-./go-super-strip -file program -strip-all -obf-all
+./go-super-strip program -strip-all -obf-all
 # Short form (much faster!)
-./go-super-strip -file program -S -O
+./go-super-strip program -S -O
 ```
 
 **PE-Specific Safe Combinations:**
 ```bash
 # Conservative PE (Low Risk - metadata only)
-./go-super-strip -file app.exe -strip-all -obf-names -obf-base -obf-import-table
+./go-super-strip app.exe -strip-all -obf-names -obf-base -obf-import-table
 # Short form
-./go-super-strip -file app.exe -S -n -b -i
+./go-super-strip app.exe -S -n -b -i
 
 # Moderate PE (Medium Risk - includes load config)
-./go-super-strip -file app.exe -strip-all -obf-names -obf-base -obf-load-config -obf-import-table
+./go-super-strip app.exe -strip-all -obf-names -obf-base -obf-load-config -obf-import-table
 # Short form
-./go-super-strip -file app.exe -S -n -b -l -i
+./go-super-strip app.exe -S -n -b -l -i
 
 # Aggressive PE (Higher Risk - includes function name randomization)
-./go-super-strip -file app.exe -strip-all -obf-names -obf-import-table -obf-imports
+./go-super-strip app.exe -strip-all -obf-names -obf-import-table -obf-imports
 # Short form
-./go-super-strip -file app.exe -S -n -i -m
+./go-super-strip app.exe -S -n -i -m
 ```
 
 **Aggressive (High Risk - Static Executables Only):**
 ```bash
-# Long form
-./go-super-strip -file static_program -strip-all -obf-all -s "BuildInfo"
+# Long form with regex pattern (proper escaping)
+./go-super-strip static_program -strip-all -obf-all -s "BuildInfo|\\d\\.\\d{2}"
 # Short form
-./go-super-strip -file static_program -S -O -s "BuildInfo"
+./go-super-strip static_program -S -O -s "BuildInfo"
 ```
 
 ---

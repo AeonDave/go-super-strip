@@ -7,13 +7,15 @@ import (
 	"gosstrip/perw"
 	"os"
 	"regexp"
+	"strings"
 )
 
 var (
-	filePath = flag.String("file", "", "Path to executable file")
-
 	// Regex stripping
-	stripRegex = flag.String("s", "", "Strip bytes matching regex pattern (e.g., \"UPX!\")")
+	stripRegex = flag.String("s", "", "Strip bytes matching regex pattern (e.g., \"\\\\d\\\\.\\\\d{2}\\\\x00UPX!\\\\r\")")
+
+	// Verbose output
+	verbose *bool
 
 	// Stripping options - both short and long forms point to same variable
 	stripDebug   *bool
@@ -29,7 +31,24 @@ var (
 	obfAll         *bool
 )
 
+// debugPrint prints debug messages only when verbose mode is enabled
+func debugPrint(format string, args ...interface{}) {
+	if verbose != nil && *verbose {
+		fmt.Printf("DEBUG: "+format+"\n", args...)
+	}
+}
+
 func init() {
+	// Customize flag usage to redirect to our custom help
+	flag.Usage = printUsage
+	// Add explicit help flags
+	flag.BoolVar(new(bool), "h", false, "Show help")
+	flag.BoolVar(new(bool), "help", false, "Show help")
+
+	// Add verbose flag
+	verbose = flag.Bool("verbose", false, "Enable verbose output")
+	flag.BoolVar(verbose, "v", false, "Enable verbose output")
+
 	// Initialize flags with both short and long forms pointing to same variables
 	stripDebug = flag.Bool("strip-debug", false, "Strip debug sections")
 	flag.BoolVar(stripDebug, "d", false, "Strip debug sections")
@@ -59,11 +78,89 @@ func init() {
 	flag.BoolVar(obfAll, "O", false, "Apply all available obfuscations")
 }
 
+// cleanQuotedPattern removes surrounding quotes from a pattern string
+func cleanQuotedPattern(pattern string) (string, error) {
+	if len(pattern) == 0 {
+		return pattern, nil
+	}
+
+	// Check if pattern starts with a quote
+	if pattern[0] == '"' {
+		// Find closing quote
+		if len(pattern) < 2 {
+			return "", fmt.Errorf("unterminated quoted pattern: %s", pattern)
+		}
+
+		// Find the closing quote
+		closeIndex := -1
+		for i := 1; i < len(pattern); i++ {
+			if pattern[i] == '"' {
+				closeIndex = i
+				break
+			}
+		}
+
+		if closeIndex == -1 {
+			return "", fmt.Errorf("unterminated quoted pattern: %s", pattern)
+		}
+
+		// Extract content between quotes
+		return pattern[1:closeIndex], nil
+	}
+
+	// No quotes, return as-is
+	return pattern, nil
+}
+
 func main() {
+	// Set up debug logging for ELF module
+	elfrw.SetDebugLogger(debugPrint)
+
+	// Check for help flags first, before any parsing
+	for _, arg := range os.Args[1:] {
+		if arg == "-h" || arg == "--help" || arg == "-help" || arg == "help" {
+			printUsage()
+			return
+		}
+	}
+
+	// Custom flag parsing to handle file path as first or last argument
+	var filePath string
+	var otherArgs []string
+
+	// Separate file path from other arguments
+	for _, arg := range os.Args[1:] {
+		if !strings.HasPrefix(arg, "-") && filePath == "" {
+			// First non-flag argument is the file path
+			filePath = arg
+		} else {
+			otherArgs = append(otherArgs, arg)
+		}
+	}
+
+	// If no file path found in positional args, check if it's at the end
+	if filePath == "" && len(otherArgs) > 0 && !strings.HasPrefix(otherArgs[len(otherArgs)-1], "-") {
+		filePath = otherArgs[len(otherArgs)-1]
+		otherArgs = otherArgs[:len(otherArgs)-1]
+	}
+
+	// Set os.Args to just the program name + flags for flag.Parse()
+	os.Args = append([]string{os.Args[0]}, otherArgs...)
 	flag.Parse()
-	if *filePath == "" {
+
+	if filePath == "" {
 		printUsage()
 		return
+	}
+
+	// Clean regex pattern from quotes if present
+	if *stripRegex != "" {
+		cleanedPattern, err := cleanQuotedPattern(*stripRegex)
+		if err != nil {
+			fmt.Printf("Error in regex pattern: %v\n", err)
+			os.Exit(1)
+		}
+		*stripRegex = cleanedPattern
 	}
 	// Collect all the operations that would be performed
 	stripOpts := make(map[string]bool)
@@ -110,21 +207,8 @@ func main() {
 		}
 	}
 
-	// Special handling for UPX signature removal before full PE parsing
-	if *stripRegex == "UPX!" {
-		fmt.Println("Detected UPX signature removal request - using raw file method")
-		matches, err := perw.StripUPXSignatureFromRawPE(*filePath)
-		if err != nil {
-			fmt.Printf("UPX signature removal failed: %v\n", err)
-			checkErr(err)
-		} else {
-			fmt.Printf("Successfully removed %d UPX signature(s)\n", matches)
-			return
-		}
-	}
-
 	// Open file with read-write permissions
-	f, err := os.OpenFile(*filePath, os.O_RDWR, 0)
+	f, err := os.OpenFile(filePath, os.O_RDWR, 0)
 	checkErr(err)
 	defer func(f *os.File) {
 		_ = f.Close()
@@ -135,18 +219,22 @@ func main() {
 
 	// dispatch based on flags
 	acted := false
-	// strip by regex
-	if *stripRegex != "" {
-		handler.StripRegex(*stripRegex)
-		acted = true
-	}
 
+	// First perform stripping operations
 	if actedOnStrip {
 		handler.Strip(stripOpts)
 		acted = true
 	}
+
+	// Then perform obfuscation operations
 	if actedOnObfuscate {
 		handler.Obfuscate(obfOpts)
+		acted = true
+	}
+
+	// Finally apply regex stripping (always last)
+	if *stripRegex != "" {
+		handler.StripRegex(*stripRegex)
 		acted = true
 	}
 	if acted {
@@ -210,39 +298,49 @@ func checkErr(err error) {
 }
 
 func printUsage() {
-	fmt.Println(`Usage: go-super-strip -file <path> [options]
+	fmt.Println(`Usage: go-super-strip <file> [options]
 
 Path to executable file:
-  -file <path>            Specify the path to the executable file.
+  <file>                  Specify the path to the executable file as the first argument.
+
+Help:
+  -h, --help              Show this help message.
+  -v, --verbose           Enable verbose output for debugging.
 
 Generic Stripping:
-  -s <pattern>            Strip bytes matching a regex pattern (e.g., -s "UPX!" to remove UPX signatures).
+  -s <pattern>            Strip bytes matching a regex pattern (e.g., -s "\\d\\.\\d{2}\\x00UPX!\\r" for UPX signatures).
+                          The pattern is applied AFTER all other stripping and obfuscation operations.
+                          Matched bytes are replaced with null bytes (0x00).
 
 Metadata Stripping Options:
-  -strip-debug, -d        Strip debug sections from the file.
-  -strip-symbols, -y      Strip symbol table sections.
-  -strip-all, -S          Strip all non-essential metadata (recommended for maximum size reduction; includes debug and symbols).
+  -d, --strip-debug       Strip debug sections from the file.
+  -y, --strip-symbols     Strip symbol table sections.
+  -S, --strip-all         Strip all non-essential metadata (recommended for maximum size reduction; includes debug and symbols).
 
 Obfuscation Options:
-  -obf-names, -n          Randomize section names to hinder analysis.
-  -obf-base, -b           Obfuscate base addresses (if applicable to format).
-  -obf-load-config, -l    Obfuscate load configuration directory (PE files only).
-  -obf-import-table, -i   Obfuscate import table metadata (PE files only).
-  -obf-imports, -m        Obfuscate import table entries by randomizing names (PE files only).
-  -obf-all, -O            Apply all available obfuscation techniques.
+  -n, --obf-names         Randomize section names to hinder analysis.
+  -b, --obf-base          Obfuscate base addresses (if applicable to format).
+  -l, --obf-load-config   Obfuscate load configuration directory (PE files only).
+  -i, --obf-import-table  Obfuscate import table metadata (PE files only).
+  -m, --obf-imports       Obfuscate import table entries by randomizing names (PE files only).
+  -O, --obf-all           Apply all available obfuscation techniques.
 
 Examples:
   # Basic operations:
-  go-super-strip -file a.out -S                    # Strip all metadata (short form)
-  go-super-strip -file a.out -strip-all            # Strip all metadata (long form)
-  go-super-strip -file myapp.exe -d -y -s "Build"  # Strip debug, symbols, and custom pattern
-    # Obfuscation operations:
-  go-super-strip -file service.elf -O              # Apply all obfuscations (short form)
-  go-super-strip -file lib.dll -n -b               # Randomize names and obfuscate base (short form)  go-super-strip -file app.exe -l                  # Obfuscate load config only (short form)
-  go-super-strip -file app.exe -i                  # Obfuscate import table only (short form)
-  go-super-strip -file app.exe -obf-import-table   # Obfuscate import table only (long form)
-  go-super-strip -file app.exe -obf-imports        # Aggressive import name obfuscation (long form)
-  go-super-strip -file binary -S -O                # Strip everything and obfuscate everything
+  go-super-strip a.out -S                           # Strip all metadata (short form)
+  go-super-strip a.out --strip-all                  # Strip all metadata (long form)
+  go-super-strip myapp.exe -d -y -s "BuildInfo"     # Strip debug, symbols, and custom pattern
+
+  # Obfuscation operations:
+  go-super-strip service.elf -O              # Apply all obfuscations (short form)
+  go-super-strip lib.dll -n -b               # Randomize names and obfuscate base (short form)
+  go-super-strip app.exe -l                  # Obfuscate load config only (short form)
+  go-super-strip app.exe -i                  # Obfuscate import table only (short form)
+  go-super-strip app.exe --obf-import-table  # Obfuscate import table only (long form)
+  go-super-strip app.exe --obf-imports       # Aggressive import name obfuscation (long form)
+  go-super-strip binary -S -O                       # Strip everything and obfuscate everything
+  go-super-strip packed.exe -s "\\d\\.\\d{2}\\x00UPX!\\r"  # Remove UPX signatures with regex
+  go-super-strip app.elf -d -s "SECRET_KEY_\\d+"           # Strip debug sections and regex pattern
 
 ⚠️  WARNING: Some operations can break executables. See README.md for risk analysis.`)
 }
@@ -287,8 +385,8 @@ func (h *ELFHandler) Commit() {
 
 // StripRegex overwrites byte patterns matching a regex in all sections
 func (h *ELFHandler) StripRegex(pat string) {
-	re := regexp.MustCompile(pat)
 	fmt.Printf("ELF: attempting to strip pattern '%s'\n", pat)
+	re := regexp.MustCompile(pat)
 	matches, err := h.e.StripByteRegex(re, false)
 	checkErr(err)
 	fmt.Printf("ELF: stripped %d matches\n", matches)
@@ -380,23 +478,6 @@ func (h *PEHandler) StripRegex(pat string) {
 	h.wasStripped = true // Mark that stripping operations were performed
 
 	fmt.Printf("PE: attempting to strip pattern '%s'\n", pat)
-
-	// Special handling for UPX signatures on potentially packed files
-	if pat == "UPX!" {
-		fmt.Println("PE: Detected UPX signature pattern, using raw file method for packed PE compatibility")
-		matches, err := perw.StripUPXSignatureFromRawPE(h.p.FileName)
-		if err != nil {
-			fmt.Printf("PE: Raw UPX signature stripping failed, trying standard method: %v\n", err)
-			// Fallback to standard method
-			re := regexp.MustCompile(pat)
-			matches, err = h.p.StripBytePattern(re, perw.ZeroFill)
-			checkErr(err)
-		}
-		fmt.Printf("PE: stripped %d UPX signature matches\n", matches)
-		return
-	}
-
-	// Standard regex stripping for other patterns
 	re := regexp.MustCompile(pat)
 	matches, err := h.p.StripBytePattern(re, perw.ZeroFill)
 	checkErr(err)

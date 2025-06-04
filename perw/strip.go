@@ -3,7 +3,6 @@ package perw
 import (
 	"crypto/rand"
 	"fmt"
-	"os"
 	"regexp"
 	"strings"
 )
@@ -359,46 +358,4 @@ func (p *PEFile) CalculatePhysicalFileSize() (uint64, error) {
 	}
 
 	return maxSize, nil
-}
-
-// StripUPXSignatureFromRawPE strips UPX signatures from a packed PE file
-// This function works directly on raw file data without full PE parsing
-// to handle UPX-packed files that may have modified PE structures
-func StripUPXSignatureFromRawPE(filePath string) (int, error) {
-	// Read file data
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return 0, fmt.Errorf("failed to read file: %w", err)
-	}
-
-	// UPX signature regex pattern: version number followed by null byte and "UPX!\r"
-	// Pattern: \d\.\d{2}\x00UPX!\r
-	upxPattern := regexp.MustCompile(`\d\.\d{2}\x00UPX!\r`)
-
-	// Find all matches
-	matches := upxPattern.FindAllIndex(data, -1)
-	if len(matches) == 0 {
-		return 0, fmt.Errorf("no UPX signatures found")
-	}
-
-	// Replace each match with null bytes
-	modifiedData := make([]byte, len(data))
-	copy(modifiedData, data)
-
-	matchCount := 0
-	for _, match := range matches {
-		start, end := match[0], match[1]
-		for i := start; i < end; i++ {
-			modifiedData[i] = 0x00
-		}
-		matchCount++
-	}
-
-	// Write the modified data back to file
-	err = os.WriteFile(filePath, modifiedData, 0644)
-	if err != nil {
-		return matchCount, fmt.Errorf("failed to write modified file: %w", err)
-	}
-
-	return matchCount, nil
 }

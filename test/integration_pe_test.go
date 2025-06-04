@@ -190,7 +190,7 @@ func TestPEIntegration(t *testing.T) {
 				t.Fatalf("Copying file failed for %s: %v", tc.name, err)
 			}
 
-			argsToPass := append([]string{"-file", processedExePath}, tc.cliArgs...)
+			argsToPass := append([]string{processedExePath}, tc.cliArgs...)
 			if err := runGoSuperStripCommandPE(t, argsToPass...); err != nil {
 				t.Errorf("go-super-strip command failed for %s: %v", tc.name, err)
 			}

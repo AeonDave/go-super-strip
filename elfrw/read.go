@@ -2,10 +2,24 @@ package elfrw
 
 import (
 	"fmt"
-	"github.com/yalue/elf_reader"
 	"io"
 	"os"
+
+	"github.com/yalue/elf_reader"
 )
+
+// DebugLogger is a function type for debug logging
+type DebugLogger func(format string, args ...interface{})
+
+// Global debug logger - can be set from main package
+var debugLog DebugLogger = func(format string, args ...interface{}) {
+	// Default: do nothing (no debug output)
+}
+
+// SetDebugLogger sets the debug logging function
+func SetDebugLogger(logger DebugLogger) {
+	debugLog = logger
+}
 
 type Section struct {
 	Name   string
@@ -36,16 +50,20 @@ type ELFFile struct {
 }
 
 func ReadELF(file *os.File) (*ELFFile, error) {
+	debugLog("ReadELF - Starting to read file %s", file.Name())
 	rawData, err := readFileData(file)
 	if err != nil {
 		return nil, err
 	}
+	debugLog("ReadELF - Read %d bytes", len(rawData))
 
 	is64Bit := len(rawData) > 4 && rawData[4] == 2
+	debugLog("ReadELF - About to call elf_reader.ParseELFFile, is64Bit=%v", is64Bit)
 	elfFile, err := elf_reader.ParseELFFile(rawData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse ELF file: %w", err)
 	}
+	debugLog("ReadELF - elf_reader.ParseELFFile completed successfully")
 
 	ef := &ELFFile{
 		File:     file,
@@ -55,8 +73,13 @@ func ReadELF(file *os.File) (*ELFFile, error) {
 		FileName: file.Name(),
 	}
 
+	debugLog("ReadELF - About to call parseSections")
 	ef.Sections = parseSections(ef)
+	debugLog("ReadELF - parseSections completed, got %d sections", len(ef.Sections))
+
+	debugLog("ReadELF - About to call parseSegments")
 	ef.Segments = parseSegments(ef)
+	debugLog("ReadELF - parseSegments completed, got %d segments", len(ef.Segments))
 
 	return ef, nil
 }
@@ -113,7 +136,52 @@ func readFileData(file *os.File) ([]byte, error) {
 }
 
 func parseSections(ef *ELFFile) []Section {
+	debugLog("parseSections - Starting")
+	// Check if the ELF file has section headers by reading e_shnum from raw data
+	// For 64-bit ELF: e_shnum is at offset 60-62
+	// For 32-bit ELF: e_shnum is at offset 48-50
+	var shNumOffset int
+	if ef.Is64Bit {
+		shNumOffset = 60
+	} else {
+		shNumOffset = 48
+	}
+	debugLog("parseSections - shNumOffset=%d", shNumOffset)
+
+	// Safety check: ensure we have enough data to read e_shnum
+	if len(ef.RawData) < shNumOffset+2 {
+		debugLog("parseSections - Not enough data for e_shnum, returning empty")
+		return make([]Section, 0) // Return empty sections if header is too small
+	}
+
+	// Read e_shnum with correct endianness
+	endian := ef.GetEndian()
+	shNum := endian.Uint16(ef.RawData[shNumOffset : shNumOffset+2])
+	debugLog("parseSections - Read e_shnum=%d", shNum)
+
+	// If e_shnum is 0, there are no sections - return empty slice immediately
+	if shNum == 0 {
+		debugLog("parseSections - e_shnum is 0, returning empty sections")
+		return make([]Section, 0)
+	}
+
+	debugLog("parseSections - about to call GetSectionCount(), e_shnum=%d", shNum)
 	count := ef.ELF.GetSectionCount()
+	debugLog("parseSections - GetSectionCount() returned %d", count)
+
+	// Additional safety check: if library returns 0 count but e_shnum > 0, something's wrong
+	if count == 0 && shNum > 0 {
+		debugLog("parseSections - Warning: e_shnum=%d but GetSectionCount()=0, returning empty", shNum)
+		return make([]Section, 0)
+	}
+
+	// If counts don't match, use the smaller value to be safe
+	if count != shNum {
+		debugLog("parseSections - Warning: e_shnum=%d != GetSectionCount()=%d, using minimum", shNum, count)
+		if count > shNum {
+			count = shNum
+		}
+	}
 	sections := make([]Section, 0, count)
 	for i := uint16(0); i < count; i++ {
 		header, err := ef.ELF.GetSectionHeader(i)
@@ -131,6 +199,7 @@ func parseSections(ef *ELFFile) []Section {
 			Index:  i,
 		})
 	}
+	debugLog("parseSections - Completed, returning %d sections", len(sections))
 	return sections
 }
 

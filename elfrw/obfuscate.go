@@ -101,15 +101,6 @@ func generateRandomOffset() (uint64, error) {
 	return offset, nil
 }
 
-// generateRandomPointer creates a random pointer value
-func generateRandomPointer() (uint64, error) {
-	randBytes := make([]byte, 8)
-	if _, err := rand.Read(randBytes); err != nil {
-		return 0, fmt.Errorf("failed to generate random pointer: %w", err)
-	}
-	return binary.LittleEndian.Uint64(randBytes) & 0x00007FFFFFFFFFFF, nil
-}
-
 // findSection finds a section by name
 func (e *ELFFile) findSection(name string) *Section {
 	for i := range e.Sections {
@@ -141,12 +132,17 @@ func (e *ELFFile) validateELF() error {
 
 	offsets := e.getELFOffsets()
 	shOffset := e.readValue(offsets.shOff, e.Is64Bit)
+	shCount := e.readValue16(offsets.shNum)
+
+	// Handle the case where there are no section headers (valid for stripped binaries)
+	if shOffset == 0 && shCount == 0 {
+		return nil // This is valid - no section headers
+	}
 
 	if shOffset >= uint64(len(e.RawData)) {
 		return fmt.Errorf("section header offset (%d) out of bounds (%d)", shOffset, len(e.RawData))
 	}
 
-	shCount := e.readValue16(offsets.shNum)
 	shEntSize := e.readValue16(offsets.shEntSize)
 
 	totalSize := shOffset + uint64(shCount)*uint64(shEntSize)
@@ -164,6 +160,13 @@ func (e *ELFFile) RandomizeSectionNames() error {
 	}
 
 	offsets := e.getELFOffsets()
+
+	// Check if file has sections (UPX-packed files have e_shnum = 0)
+	shCount := e.readValue16(offsets.shNum)
+	if shCount == 0 || len(e.Sections) == 0 {
+		return nil // No sections to randomize - silently succeed
+	}
+
 	shstrtabIndex := e.readValue16(offsets.shStrNdx)
 
 	shstrtabContent, err := e.ELF.GetSectionContent(shstrtabIndex)
@@ -312,231 +315,6 @@ func (e *ELFFile) writeValue(offset, value uint64, is64bit bool) error {
 	return WriteAtOffset(e.RawData, offset, e.GetEndian(), uint32(value))
 }
 
-// ObfuscateGOTPLT adds fake entries to GOT/PLT tables
-func (e *ELFFile) ObfuscateGOTPLT() error {
-	sections := e.findSections([]string{".got", ".got.plt", ".plt"})
-
-	for name, section := range sections {
-		if section == nil || section.Offset == 0 || section.Size == 0 {
-			continue
-		}
-
-		if name == ".plt" {
-			continue // Skip PLT for now
-		}
-
-		if err := e.obfuscateGOTSection(section); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// obfuscateGOTSection obfuscates a single GOT section
-func (e *ELFFile) obfuscateGOTSection(section *Section) error {
-	content, err := e.ReadBytes(section.Offset, int(section.Size))
-	if err != nil {
-		return err
-	}
-
-	entrySize := getPointerSize(e.Is64Bit)
-
-	// Skip first 3 entries (reserved)
-	for i := 3 * entrySize; i < len(content); i += entrySize {
-		randomPtr, err := generateRandomPointer()
-		if err != nil {
-			return err
-		}
-
-		if e.Is64Bit {
-			binary.LittleEndian.PutUint64(content[i:i+entrySize], randomPtr)
-		} else {
-			binary.LittleEndian.PutUint32(content[i:i+entrySize], uint32(randomPtr))
-		}
-	}
-
-	copy(e.RawData[section.Offset:section.Offset+uint64(len(content))], content)
-	return nil
-}
-
-// getPointerSize returns the pointer size for the architecture
-func getPointerSize(is64bit bool) int {
-	if is64bit {
-		return 8
-	}
-	return 4
-}
-
-// ObfuscateExportedFunctions renames exported functions
-func (e *ELFFile) ObfuscateExportedFunctions() error {
-	sections := e.findSections([]string{".dynsym", ".dynstr"})
-	dynsymSection := sections[".dynsym"]
-	dynstrSection := sections[".dynstr"]
-
-	if dynsymSection == nil || dynstrSection == nil {
-		return nil
-	}
-
-	if dynsymSection.Offset == 0 || dynsymSection.Size == 0 ||
-		dynstrSection.Offset == 0 || dynstrSection.Size == 0 {
-		return nil
-	}
-
-	return e.obfuscateDynamicSymbols(dynsymSection, dynstrSection)
-}
-
-// obfuscateDynamicSymbols obfuscates dynamic symbol table
-func (e *ELFFile) obfuscateDynamicSymbols(dynsymSection, dynstrSection *Section) error {
-	dynstrContent, err := e.ReadBytes(dynstrSection.Offset, int(dynstrSection.Size))
-	if err != nil {
-		return err
-	}
-
-	dynsymContent, err := e.ReadBytes(dynsymSection.Offset, int(dynsymSection.Size))
-	if err != nil {
-		return err
-	}
-
-	newDynstr := make([]byte, len(dynstrContent))
-	copy(newDynstr, dynstrContent)
-
-	symEntSize := getSymbolEntrySize(e.Is64Bit)
-	numSymbols := len(dynsymContent) / symEntSize
-	nameOffsets := make(map[uint32]uint32)
-
-	for i := 0; i < numSymbols; i++ {
-		symOffset := i * symEntSize
-		strOffset := binary.LittleEndian.Uint32(dynsymContent[symOffset : symOffset+4])
-		symInfo := dynsymContent[symOffset+4]
-
-		// Check if it's a global function symbol
-		if (symInfo&0x0f) == 2 && (symInfo&0xf0) >= (1<<4) {
-			if err := e.obfuscateSymbolName(dynsymContent, symOffset, strOffset,
-				dynstrContent, &newDynstr, nameOffsets); err != nil {
-				return err
-			}
-		}
-	}
-
-	// Write back the modified data
-	copy(e.RawData[dynsymSection.Offset:dynsymSection.Offset+uint64(len(dynsymContent))], dynsymContent)
-
-	copySize := min(len(newDynstr), len(dynstrContent))
-	copy(e.RawData[dynstrSection.Offset:dynstrSection.Offset+uint64(copySize)], newDynstr[:copySize])
-
-	return nil
-}
-
-// getSymbolEntrySize returns the symbol entry size for the architecture
-func getSymbolEntrySize(is64bit bool) int {
-	if is64bit {
-		return 24
-	}
-	return 16
-}
-
-// obfuscateSymbolName obfuscates a single symbol name
-func (e *ELFFile) obfuscateSymbolName(dynsymContent []byte, symOffset int, strOffset uint32,
-	dynstrContent []byte, newDynstr *[]byte, nameOffsets map[uint32]uint32) error {
-
-	if strOffset == 0 || strOffset >= uint32(len(dynstrContent)) || nameOffsets[strOffset] != 0 {
-		return nil
-	}
-
-	// Find end of string
-	end := strOffset
-	for end < uint32(len(dynstrContent)) && dynstrContent[end] != 0 {
-		end++
-	}
-
-	// Clear old name
-	if strOffset < uint32(len(*newDynstr)) && end <= uint32(len(*newDynstr)) {
-		for k := strOffset; k < end; k++ {
-			(*newDynstr)[k] = 0
-		}
-	}
-
-	// Generate new name
-	newName, err := generateRandomFunctionName()
-	if err != nil {
-		return err
-	}
-
-	// Add new name to string table
-	newOffset := uint32(len(*newDynstr))
-	*newDynstr = append(*newDynstr, []byte(newName)...)
-	*newDynstr = append(*newDynstr, 0)
-	nameOffsets[strOffset] = newOffset
-
-	// Update symbol table entry
-	binary.LittleEndian.PutUint32(dynsymContent[symOffset:symOffset+4], newOffset)
-
-	return nil
-}
-
-// generateRandomFunctionName creates a random function name
-func generateRandomFunctionName() (string, error) {
-	randBytes := make([]byte, 6)
-	if _, err := rand.Read(randBytes); err != nil {
-		return "", fmt.Errorf("failed to generate random function name: %w", err)
-	}
-
-	name := "f_"
-	for _, b := range randBytes {
-		name += string(rune('a' + (b % 26)))
-	}
-	return name, nil
-}
-
-// ObfuscateInitFiniTables obfuscates initialization/finalization tables
-func (e *ELFFile) ObfuscateInitFiniTables() error {
-	sectionNames := []string{".init_array", ".fini_array", ".preinit_array"}
-	sections := e.findSections(sectionNames)
-
-	for _, section := range sections {
-		if section == nil || section.Offset == 0 || section.Size == 0 {
-			continue
-		}
-
-		if err := e.obfuscateInitFiniSection(section); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// obfuscateInitFiniSection obfuscates a single init/fini section
-func (e *ELFFile) obfuscateInitFiniSection(section *Section) error {
-	content, err := e.ReadBytes(section.Offset, int(section.Size))
-	if err != nil {
-		return err
-	}
-
-	ptrSize := getPointerSize(e.Is64Bit)
-	numPtrs := len(content) / ptrSize
-
-	// Skip first entry, obfuscate rest
-	for i := 1; i < numPtrs; i++ {
-		offset := i * ptrSize
-
-		randomPtr, err := generateRandomPointer()
-		if err != nil {
-			return err
-		}
-
-		if e.Is64Bit {
-			binary.LittleEndian.PutUint64(content[offset:offset+ptrSize], randomPtr)
-		} else {
-			binary.LittleEndian.PutUint32(content[offset:offset+ptrSize], uint32(randomPtr))
-		}
-	}
-
-	copy(e.RawData[section.Offset:section.Offset+uint64(len(content))], content)
-	return nil
-}
-
 // ObfuscateSectionPadding randomizes padding between sections
 func (e *ELFFile) ObfuscateSectionPadding() {
 	for i := 0; i < len(e.Sections)-1; i++ {
@@ -624,8 +402,6 @@ func (e *ELFFile) ObfuscateAll() error {
 	}{
 		{"RandomizeSectionNames", e.RandomizeSectionNames},
 		{"ObfuscateBaseAddresses", e.ObfuscateBaseAddresses},
-		{"ObfuscateExportedFunctions", e.ObfuscateExportedFunctions},
-		{"ObfuscateInitFiniTables", e.ObfuscateInitFiniTables},
 		{"ObfuscateReservedHeaderFields", e.ObfuscateReservedHeaderFields},
 		{"ObfuscateSecondaryTimestamps", e.ObfuscateSecondaryTimestamps},
 	}

@@ -107,12 +107,19 @@ var sectionCategories = map[string]SectionCategory{
 	},
 	"buildinfo": {
 		ExactNames: []string{
-			".gnu.build.attributes", ".gnu.version", ".gnu.version_r", ".gnu.version_d",
-			".gnu.warning", ".note.gnu.build-id", ".note.ABI-tag", ".note.gnu.property",
+			".gnu.build.attributes", ".gnu.warning",
+			".note.gnu.build-id", ".note.ABI-tag", ".note.gnu.property",
 			".comment", ".buildid", ".SUNW_cap", ".SUNW_signature",
 		},
 		PrefixNames: []string{".note", ".SUNW_", ".ident"},
 		Description: "Build information and notes",
+	},
+	"versioning": {
+		ExactNames: []string{
+			".gnu.version", ".gnu.version_r", ".gnu.version_d",
+		},
+		Description:             "Version information sections",
+		BreaksRuntimeIfStripped: true,
 	},
 	"profiling": {
 		ExactNames:  []string{".gmon", ".profile"},
@@ -253,16 +260,38 @@ func (e *ELFFile) StripSectionsByNames(names []string, usePrefix, useRandom bool
 
 // StripByteRegex overwrites byte patterns matching a regex in all sections.
 func (e *ELFFile) StripByteRegex(pattern *regexp.Regexp, useRandom bool) (int, error) {
-	if err := e.validateELF(); err != nil {
-		return 0, fmt.Errorf("ELF validation failed: %w", err)
-	}
-
 	if pattern == nil {
 		return 0, fmt.Errorf("regex pattern cannot be nil")
 	}
 
-	totalMatches := 0
+	// If there are no sections, fallback to raw data stripping
+	if len(e.Sections) == 0 {
+		// Apply regex to entire file
+		matches := pattern.FindAllIndex(e.RawData, -1)
+		total := 0
+		for _, match := range matches {
+			start, end := match[0], match[1]
+			if start < 0 || end > len(e.RawData) || start >= end {
+				continue
+			}
+			for k := start; k < end; k++ {
+				if useRandom {
+					b := make([]byte, 1)
+					if _, err := rand.Read(b); err == nil {
+						e.RawData[k] = b[0]
+					} else {
+						e.RawData[k] = 0
+					}
+				} else {
+					e.RawData[k] = 0
+				}
+			}
+			total++
+		}
+		return total, nil
+	}
 
+	totalMatches := 0
 	for _, section := range e.Sections {
 		if section.Offset <= 0 || section.Size <= 0 {
 			continue
@@ -359,35 +388,6 @@ func (e *ELFFile) StripNonLoadableSegments(useRandom bool) error {
 	return e.UpdateProgramHeaders()
 }
 
-// ModifyELFHeader randomizes non-critical ELF header fields for obfuscation.
-func (e *ELFFile) ModifyELFHeader() error {
-	// Randomize EI_OSABI and EI_ABIVERSION
-	headerBytes := make([]byte, 2)
-	if _, err := rand.Read(headerBytes); err != nil {
-		return fmt.Errorf("failed to generate random bytes for header: %w", err)
-	}
-	e.RawData[7] = headerBytes[0] // EI_OSABI
-	e.RawData[8] = headerBytes[1] // EI_ABIVERSION
-
-	// Randomize e_flags
-	flagsOffset := 0x24 // 32-bit
-	if e.Is64Bit {
-		flagsOffset = 0x30 // 64-bit
-	}
-
-	if len(e.RawData) < flagsOffset+4 {
-		return fmt.Errorf("e_flags offset out of bounds")
-	}
-
-	flagsBytes := make([]byte, 4)
-	if _, err := rand.Read(flagsBytes); err != nil {
-		return fmt.Errorf("failed to generate random bytes for e_flags: %w", err)
-	}
-	copy(e.RawData[flagsOffset:flagsOffset+4], flagsBytes)
-
-	return nil
-}
-
 // --- High-Level Stripping Functions ---
 
 // StripDebugSections removes debugging information.
@@ -446,25 +446,20 @@ func (e *ELFFile) StripDynamicLinkingData(useRandom bool) error {
 }
 
 // StripAllMetadata removes a wide range of non-essential metadata.
-// WARNING: Very aggressive and can break executables.
+// This is a safer version that preserves critical sections for dynamic linking.
 func (e *ELFFile) StripAllMetadata(useRandom bool) error {
-	// Strip section table first (special case - no useRandom parameter)
-	if err := e.StripSectionTable(); err != nil {
-		return fmt.Errorf("section table stripping failed: %w", err)
-	}
-
-	// Define other stripping operations in order of safety (safest first)
+	// Define stripping operations in order of safety (safest first)
+	// Note: We do NOT strip the section table to preserve runtime functionality
 	operations := []struct {
 		name string
 		fn   func(bool) error
 	}{
 		{"debug sections", e.StripDebugSections},
 		{"symbol tables", e.StripSymbolTables},
-		{"string tables", e.StripStringTables},
 		{"build info", e.StripBuildInfoSections},
 		{"profiling", e.StripProfilingSections},
-		{"exception sections", e.StripExceptionSections},
-		{"arch sections", e.StripArchSections},
+		// Skip exception sections and arch sections for better compatibility
+		// Skip string tables as they may contain essential dynamic linking strings
 	}
 
 	// Execute each operation

@@ -164,7 +164,7 @@ func TestELFIntegration(t *testing.T) {
 
 			// originalSize, _ := os.Stat(originalExePath).Size()
 
-			argsToPass := append([]string{"-file", processedExePath}, tc.cliArgs...)
+			argsToPass := append([]string{processedExePath}, tc.cliArgs...)
 			if err := runGoSuperStripCommandELF(t, argsToPass...); err != nil {
 				// For known risky operations like ObfBase or ObfAll, we might not fail the test here
 				// if gosstrip itself runs but the resulting binary is broken.
