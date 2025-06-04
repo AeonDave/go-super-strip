@@ -77,6 +77,28 @@ func (p *PEFile) CommitChanges(newSize int64) error {
 	return nil
 }
 
+// CommitChangesSimple writes RawData to the file without updating headers
+func (p *PEFile) CommitChangesSimple(newSize int64) error {
+	if p.File == nil {
+		return fmt.Errorf("invalid file reference")
+	}
+
+	if newSize > 0 && int64(len(p.RawData)) > newSize {
+		p.RawData = p.RawData[:newSize]
+	}
+
+	if _, err := p.File.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("failed to reposition file: %w", err)
+	}
+	if _, err := p.File.Write(p.RawData); err != nil {
+		return fmt.Errorf("failed to write changes to disk: %w", err)
+	}
+	if err := p.File.Truncate(int64(len(p.RawData))); err != nil {
+		return fmt.Errorf("failed to resize file: %w", err)
+	}
+	return nil
+}
+
 // UpdateSectionHeaders updates the COFF section header table in RawData.
 func (p *PEFile) UpdateSectionHeaders() error {
 	if p.PE == nil {
@@ -95,20 +117,30 @@ func (p *PEFile) UpdateSectionHeaders() error {
 		}
 
 		name := make([]byte, 8)
-		copy(name, []byte(section.Name))
+		copy(name, section.Name)
 		if err := WriteAtOffset(p.RawData, headerOffset, name); err != nil {
 			return fmt.Errorf("failed to update name for section %d: %w", i, err)
+		} // Safe type conversions with overflow checks
+		if section.Size > 0xFFFFFFFF {
+			return fmt.Errorf("section %d size too large for PE format: %d", i, section.Size)
 		}
-		if err := WriteAtOffset(p.RawData, headerOffset+8, uint32(section.Size)); err != nil {
+		if section.Offset > 0xFFFFFFFF {
+			return fmt.Errorf("section %d offset too large for PE format: %d", i, section.Offset)
+		}
+
+		sectionSize := uint32(section.Size)
+		sectionOffset := uint32(section.Offset)
+
+		if err := WriteAtOffset(p.RawData, headerOffset+8, sectionSize); err != nil {
 			return fmt.Errorf("failed to update virtual size for section %d: %w", i, err)
 		}
 		if err := WriteAtOffset(p.RawData, headerOffset+12, section.RVA); err != nil {
 			return fmt.Errorf("failed to update virtual address for section %d: %w", i, err)
 		}
-		if err := WriteAtOffset(p.RawData, headerOffset+16, uint32(section.Size)); err != nil {
+		if err := WriteAtOffset(p.RawData, headerOffset+16, sectionSize); err != nil {
 			return fmt.Errorf("failed to update raw data size for section %d: %w", i, err)
 		}
-		if err := WriteAtOffset(p.RawData, headerOffset+20, uint32(section.Offset)); err != nil {
+		if err := WriteAtOffset(p.RawData, headerOffset+20, sectionOffset); err != nil {
 			return fmt.Errorf("failed to update raw data pointer for section %d: %w", i, err)
 		}
 		if err := WriteAtOffset(p.RawData, headerOffset+36, section.Flags); err != nil {

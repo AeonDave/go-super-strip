@@ -120,6 +120,22 @@ Apply anti-analysis techniques:
 # Or using short form
 ./go-super-strip -file program -b
 
+# PE-specific obfuscation techniques:
+# Obfuscate load configuration directory (PE only)
+./go-super-strip -file program.exe -obf-load-config
+# Or using short form
+./go-super-strip -file program.exe -l
+
+# Obfuscate import table metadata (PE only)
+./go-super-strip -file program.exe -obf-import-table
+# Or using short form
+./go-super-strip -file program.exe -i
+
+# Aggressive import name obfuscation (PE only)
+./go-super-strip -file program.exe -obf-imports
+# Or using short form
+./go-super-strip -file program.exe -m
+
 # Apply all obfuscation techniques (long form)
 ./go-super-strip -file program -obf-all
 # Or using short form
@@ -142,20 +158,37 @@ Multiple techniques can be combined:
 
 # Fast full processing
 ./go-super-strip -file program -S -O
+
+# PE-specific combined operations:
+# Conservative PE obfuscation (metadata only)
+./go-super-strip -file app.exe -strip-all -obf-names -obf-base -obf-import-table
+# Short form
+./go-super-strip -file app.exe -S -n -b -i
+
+# Aggressive PE obfuscation (includes function name randomization)
+./go-super-strip -file app.exe -strip-all -obf-names -obf-import-table -obf-imports
+# Short form  
+./go-super-strip -file app.exe -S -n -i -m
+
+# Maximum PE processing (strip everything + all obfuscations)
+./go-super-strip -file program.exe -S -O
 ```
 
 ### Arguments Reference
 
-| Argument (Long)  | Argument (Short) | Description                        | Type     |
-|------------------|------------------|------------------------------------|----------|
-| `-file <path>`   | -                | Target executable file path        | Required |
-| `-s <pattern>`   | -                | Strip bytes matching regex pattern | Optional |
-| `-strip-debug`   | `-d`             | Strip debug sections               | Optional |
-| `-strip-symbols` | `-y`             | Strip symbol table sections        | Optional |
-| `-strip-all`     | `-S`             | Strip all non-essential metadata   | Optional |
-| `-obf-names`     | `-n`             | Randomize section names            | Optional |
-| `-obf-base`      | `-b`             | Obfuscate base addresses           | Optional |
-| `-obf-all`       | `-O`             | Apply all obfuscation techniques   | Optional |
+| Argument (Long)       | Argument (Short) | Description                                      | Type     |
+|-----------------------|------------------|--------------------------------------------------|----------|
+| `-file <path>`        | -                | Target executable file path                      | Required |
+| `-s <pattern>`        | -                | Strip bytes matching regex pattern              | Optional |
+| `-strip-debug`        | `-d`             | Strip debug sections                             | Optional |
+| `-strip-symbols`      | `-y`             | Strip symbol table sections                      | Optional |
+| `-strip-all`          | `-S`             | Strip all non-essential metadata                 | Optional |
+| `-obf-names`          | `-n`             | Randomize section names                          | Optional |
+| `-obf-base`           | `-b`             | Obfuscate base addresses                         | Optional |
+| `-obf-load-config`    | `-l`             | Obfuscate load configuration directory (PE only) | Optional |
+| `-obf-import-table`   | `-i`             | Obfuscate import table metadata (PE only)        | Optional |
+| `-obf-imports`        | `-m`             | Aggressive import name obfuscation (PE only)     | Optional |
+| `-obf-all`            | `-O`             | Apply all obfuscation techniques                 | Optional |
 
 ---
 
@@ -198,6 +231,8 @@ The following table details all stripping and obfuscation techniques available f
 | **Obfuscation**        | Randomize Section Names | All section names                 | 🟢 Low     | ~2%           | Replaces section names with random strings              |
 | **Obfuscation**        | Obfuscate Base Address  | ImageBase field                   | 🟢 Low     | ~1%           | Randomizes preferred load address                       |
 | **Obfuscation**        | Obfuscate Directories   | Debug/TLS/LoadConfig dirs         | 🟡 Medium  | ~10%          | Clears optional header directory entries                |
+| **Obfuscation**        | Import Table Metadata   | Import descriptor fields          | 🟢 Low     | ~5%           | Shuffles descriptors, modifies metadata, adds fake entries |
+| **Obfuscation**        | Aggressive Import Names | Function names in import tables   | 🟡 Medium  | ~15%          | **AGGRESSIVE**: Randomizes actual function names        |
 | **Obfuscation**        | Randomize Header Fields | TimeDateStamp, reserved fields    | 🟢 Low     | ~1%           | Obfuscates PE header metadata                           |
 | **Obfuscation**        | Randomize Padding       | Inter-section padding             | 🟢 Low     | ~0%           | Fills unused space with random data                     |
 | **Advanced**           | Obfuscate Timestamps    | Resource/version timestamps       | 🟢 Low     | ~2%           | Randomizes embedded timestamp strings                   |
@@ -210,6 +245,9 @@ The following table details all stripping and obfuscation techniques available f
 - **Test thoroughly:** Verify functionality after modification, especially with medium/high risk techniques
 - **Format-specific behavior:** Some techniques are more aggressive on certain architectures or linking types
 - **Static vs Dynamic:** Static executables generally have lower failure rates than dynamically linked ones
+- **PE Import Obfuscation Levels:**
+    - `-obf-import-table` (Low Risk): Only modifies metadata, preserves functionality
+    - `-obf-imports` (Medium Risk): **AGGRESSIVE** - randomizes function names, may break dynamic loading
 - **Risk Assessment:**
     - 🟢 **Low Risk**: Generally safe, minimal chance of breaking functionality
     - 🟡 **Medium Risk**: May break specific features, test thoroughly
@@ -234,6 +272,24 @@ The following table details all stripping and obfuscation techniques available f
 ./go-super-strip -file program -S -O
 ```
 
+**PE-Specific Safe Combinations:**
+```bash
+# Conservative PE (Low Risk - metadata only)
+./go-super-strip -file app.exe -strip-all -obf-names -obf-base -obf-import-table
+# Short form
+./go-super-strip -file app.exe -S -n -b -i
+
+# Moderate PE (Medium Risk - includes load config)
+./go-super-strip -file app.exe -strip-all -obf-names -obf-base -obf-load-config -obf-import-table
+# Short form
+./go-super-strip -file app.exe -S -n -b -l -i
+
+# Aggressive PE (Higher Risk - includes function name randomization)
+./go-super-strip -file app.exe -strip-all -obf-names -obf-import-table -obf-imports
+# Short form
+./go-super-strip -file app.exe -S -n -i -m
+```
+
 **Aggressive (High Risk - Static Executables Only):**
 ```bash
 # Long form
@@ -241,16 +297,6 @@ The following table details all stripping and obfuscation techniques available f
 # Short form
 ./go-super-strip -file static_program -S -O -s "BuildInfo"
 ```
-
----
-
-## 🔧 Development & Extension
-
-The modular architecture allows for easy extension:
-
-- **New techniques:** Add functions in `elfrw/` or `perw/` packages
-- **CLI options:** Extend argument parsing in `main.go`
-- **Format support:** Implement new handlers following the `FileHandler` interface
 
 ---
 

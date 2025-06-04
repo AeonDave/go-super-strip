@@ -11,29 +11,53 @@ import (
 
 var (
 	filePath = flag.String("file", "", "Path to executable file")
+
 	// Regex stripping
 	stripRegex = flag.String("s", "", "Strip bytes matching regex pattern (e.g., \"UPX!\")")
 
-	// Stripping options (long form)
-	stripDebug   = flag.Bool("strip-debug", false, "Strip debug sections")
-	stripSymbols = flag.Bool("strip-symbols", false, "Strip symbol sections")
-	stripAllMeta = flag.Bool("strip-all", false, "Strip all non-essential metadata (includes debug, symbols)")
+	// Stripping options - both short and long forms point to same variable
+	stripDebug   *bool
+	stripSymbols *bool
+	stripAllMeta *bool
 
-	// Stripping options (short form)
-	stripDebugShort   = flag.Bool("d", false, "Strip debug sections (short)")
-	stripSymbolsShort = flag.Bool("y", false, "Strip symbol sections (short)")
-	stripAllMetaShort = flag.Bool("S", false, "Strip all non-essential metadata (short)")
-
-	// Obfuscation options (long form)
-	obfSecNames = flag.Bool("obf-names", false, "Obfuscate by randomizing section names")
-	obfBaseAddr = flag.Bool("obf-base", false, "Obfuscate base addresses")
-	obfAll      = flag.Bool("obf-all", false, "Apply all available obfuscations")
-
-	// Obfuscation options (short form)
-	obfSecNamesShort = flag.Bool("n", false, "Obfuscate by randomizing section names (short)")
-	obfBaseAddrShort = flag.Bool("b", false, "Obfuscate base addresses (short)")
-	obfAllShort      = flag.Bool("O", false, "Apply all available obfuscations (short)")
+	// Obfuscation options - both short and long forms point to same variable
+	obfSecNames    *bool
+	obfBaseAddr    *bool
+	obfLoadConfig  *bool
+	obfImportTable *bool
+	obfImports     *bool
+	obfAll         *bool
 )
+
+func init() {
+	// Initialize flags with both short and long forms pointing to same variables
+	stripDebug = flag.Bool("strip-debug", false, "Strip debug sections")
+	flag.BoolVar(stripDebug, "d", false, "Strip debug sections")
+
+	stripSymbols = flag.Bool("strip-symbols", false, "Strip symbol sections")
+	flag.BoolVar(stripSymbols, "y", false, "Strip symbol sections")
+
+	stripAllMeta = flag.Bool("strip-all", false, "Strip all non-essential metadata (includes debug, symbols)")
+	flag.BoolVar(stripAllMeta, "S", false, "Strip all non-essential metadata")
+
+	obfSecNames = flag.Bool("obf-names", false, "Obfuscate by randomizing section names")
+	flag.BoolVar(obfSecNames, "n", false, "Obfuscate by randomizing section names")
+
+	obfBaseAddr = flag.Bool("obf-base", false, "Obfuscate base addresses")
+	flag.BoolVar(obfBaseAddr, "b", false, "Obfuscate base addresses")
+
+	obfLoadConfig = flag.Bool("obf-load-config", false, "Obfuscate load configuration directory")
+	flag.BoolVar(obfLoadConfig, "l", false, "Obfuscate load configuration directory")
+
+	obfImportTable = flag.Bool("obf-import-table", false, "Obfuscate import table metadata (PE files only)")
+	flag.BoolVar(obfImportTable, "i", false, "Obfuscate import table metadata (PE files only)")
+
+	obfImports = flag.Bool("obf-imports", false, "Obfuscate import table entries by randomizing names (PE files only)")
+	flag.BoolVar(obfImports, "m", false, "Obfuscate import table entries by randomizing names (PE files only)")
+
+	obfAll = flag.Bool("obf-all", false, "Apply all available obfuscations")
+	flag.BoolVar(obfAll, "O", false, "Apply all available obfuscations")
+}
 
 func main() {
 	flag.Parse()
@@ -41,7 +65,52 @@ func main() {
 		printUsage()
 		return
 	}
+	// Collect all the operations that would be performed
+	stripOpts := make(map[string]bool)
+	actedOnStrip := false
+	if *stripAllMeta {
+		stripOpts["all"] = true
+		actedOnStrip = true
+	} else {
+		if *stripDebug {
+			stripOpts["debug"] = true
+			actedOnStrip = true
+		}
+		if *stripSymbols {
+			stripOpts["symbols"] = true
+			actedOnStrip = true
+		}
+	}
+	// Obfuscation options
+	obfOpts := make(map[string]bool)
+	actedOnObfuscate := false
+	if *obfAll {
+		obfOpts["all"] = true
+		actedOnObfuscate = true
+	} else {
+		if *obfSecNames {
+			obfOpts["names"] = true
+			actedOnObfuscate = true
+		}
+		if *obfBaseAddr {
+			obfOpts["base"] = true
+			actedOnObfuscate = true
+		}
+		if *obfLoadConfig {
+			obfOpts["loadconfig"] = true
+			actedOnObfuscate = true
+		}
+		if *obfImportTable {
+			obfOpts["importtable"] = true
+			actedOnObfuscate = true
+		}
+		if *obfImports {
+			obfOpts["imports"] = true
+			actedOnObfuscate = true
+		}
+	}
 
+	// Open file with read-write permissions
 	f, err := os.OpenFile(*filePath, os.O_RDWR, 0)
 	checkErr(err)
 	defer func(f *os.File) {
@@ -59,57 +128,34 @@ func main() {
 		acted = true
 	}
 
-	// Stripping options (check both long and short forms)
-	stripOpts := make(map[string]bool)
-	actedOnStrip := false
-	if *stripAllMeta || *stripAllMetaShort {
-		stripOpts["all"] = true
-		actedOnStrip = true
-	} else {
-		if *stripDebug || *stripDebugShort {
-			stripOpts["debug"] = true
-			actedOnStrip = true
-		}
-		if *stripSymbols || *stripSymbolsShort {
-			stripOpts["symbols"] = true
-			actedOnStrip = true
-		}
-	}
 	if actedOnStrip {
 		handler.Strip(stripOpts)
 		acted = true
-	}
-
-	// Obfuscation options (check both long and short forms)
-	obfOpts := make(map[string]bool)
-	actedOnObfuscate := false
-	if *obfAll || *obfAllShort {
-		obfOpts["all"] = true
-		actedOnObfuscate = true
-	} else {
-		if *obfSecNames || *obfSecNamesShort {
-			obfOpts["names"] = true
-			actedOnObfuscate = true
-		}
-		if *obfBaseAddr || *obfBaseAddrShort {
-			obfOpts["base"] = true
-			actedOnObfuscate = true
-		}
 	}
 	if actedOnObfuscate {
 		handler.Obfuscate(obfOpts)
 		acted = true
 	}
-
 	if acted {
-		handler.Commit()
+		// For PE files, use different commit strategies based on operations performed
+		if peHandler, ok := handler.(*PEHandler); ok {
+			if actedOnObfuscate && peHandler.needsHeaderUpdates {
+				// Some obfuscation operations need full header updates
+				peHandler.CommitWithHeaders()
+			} else {
+				// Stripping and some obfuscation operations use simple commit
+				handler.Commit()
+			}
+		} else {
+			// For ELF files, use normal commit
+			handler.Commit()
+		}
 	} else {
 		printUsage()
 	}
 }
 
 type FileHandler interface {
-	PrintInfo()
 	Strip(opts map[string]bool)
 	StripRegex(pattern string)
 	Obfuscate(opts map[string]bool)
@@ -136,7 +182,7 @@ func detectFormat(f *os.File) (string, FileHandler, error) {
 		if err != nil {
 			return "PE", nil, err
 		}
-		handler := &PEHandler{pe}
+		handler := &PEHandler{p: pe, needsHeaderUpdates: false, wasStripped: false}
 		return "PE", handler, nil
 	default:
 		return "", nil, fmt.Errorf("unknown file format")
@@ -159,51 +205,38 @@ Path to executable file:
 Generic Stripping:
   -s <pattern>            Strip bytes matching a regex pattern (e.g., -s "UPX!" to remove UPX signatures).
 
-Metadata Stripping Options (Long form):
-  -strip-debug            Strip debug sections from the file.
-  -strip-symbols          Strip symbol table sections.
-  -strip-all              Strip all non-essential metadata (recommended for maximum size reduction; includes debug and symbols).
+Metadata Stripping Options:
+  -strip-debug, -d        Strip debug sections from the file.
+  -strip-symbols, -y      Strip symbol table sections.
+  -strip-all, -S          Strip all non-essential metadata (recommended for maximum size reduction; includes debug and symbols).
 
-Metadata Stripping Options (Short form):
-  -d                      Strip debug sections (short for -strip-debug).
-  -y                      Strip symbol table sections (short for -strip-symbols).
-  -S                      Strip all non-essential metadata (short for -strip-all).
-
-Obfuscation Options (Long form):
-  -obf-names              Randomize section names to hinder analysis.
-  -obf-base               Obfuscate base addresses (if applicable to format).
-  -obf-all                Apply all available obfuscation techniques (includes name randomization and base address obfuscation).
-
-Obfuscation Options (Short form):
-  -n                      Randomize section names (short for -obf-names).
-  -b                      Obfuscate base addresses (short for -obf-base).
-  -O                      Apply all available obfuscation techniques (short for -obf-all).
+Obfuscation Options:
+  -obf-names, -n          Randomize section names to hinder analysis.
+  -obf-base, -b           Obfuscate base addresses (if applicable to format).
+  -obf-load-config, -l    Obfuscate load configuration directory (PE files only).
+  -obf-import-table, -i   Obfuscate import table metadata (PE files only).
+  -obf-imports, -m        Obfuscate import table entries by randomizing names (PE files only).
+  -obf-all, -O            Apply all available obfuscation techniques.
 
 Examples:
+  # Basic operations:
   go-super-strip -file a.out -S                    # Strip all metadata (short form)
   go-super-strip -file a.out -strip-all            # Strip all metadata (long form)
   go-super-strip -file myapp.exe -d -y -s "Build"  # Strip debug, symbols, and custom pattern
+    # Obfuscation operations:
   go-super-strip -file service.elf -O              # Apply all obfuscations (short form)
-  go-super-strip -file lib.dll -n -b               # Randomize names and obfuscate base (short form)
-  go-super-strip -file binary -S -O                # Strip everything and obfuscate everything`)
+  go-super-strip -file lib.dll -n -b               # Randomize names and obfuscate base (short form)  go-super-strip -file app.exe -l                  # Obfuscate load config only (short form)
+  go-super-strip -file app.exe -i                  # Obfuscate import table only (short form)
+  go-super-strip -file app.exe -obf-import-table   # Obfuscate import table only (long form)
+  go-super-strip -file app.exe -obf-imports        # Aggressive import name obfuscation (long form)
+  go-super-strip -file binary -S -O                # Strip everything and obfuscate everything
+
+⚠️  WARNING: Some operations can break executables. See README.md for risk analysis.`)
 }
 
 // --- ELF Handler ---
 
 type ELFHandler struct{ e *elfrw.ELFFile }
-
-func (h *ELFHandler) PrintInfo() {
-	fmt.Println("Format: ELF")
-	fmt.Printf("File: %s\n", h.e.FileName)
-	fmt.Printf("Sections:\n")
-	for _, s := range h.e.Sections {
-		fmt.Printf("  %s (offset: 0x%x, size: 0x%x)\n", s.Name, s.Offset, s.Size)
-	}
-	fmt.Printf("Segments:\n")
-	for _, seg := range h.e.Segments {
-		fmt.Printf("  Type: %d, Offset: 0x%x, Size: 0x%x\n", seg.Type, seg.Offset, seg.Size)
-	}
-}
 
 func (h *ELFHandler) Strip(opts map[string]bool) {
 	if opts["all"] {
@@ -250,18 +283,15 @@ func (h *ELFHandler) StripRegex(pat string) {
 
 // --- PE Handler ---
 
-type PEHandler struct{ p *perw.PEFile }
-
-func (h *PEHandler) PrintInfo() {
-	fmt.Println("Format: PE")
-	fmt.Printf("File: %s\n", h.p.FileName)
-	fmt.Printf("Sections:\n")
-	for _, s := range h.p.Sections {
-		fmt.Printf("  %s (offset: 0x%x, size: 0x%x)\n", s.Name, s.Offset, s.Size)
-	}
+type PEHandler struct {
+	p                  *perw.PEFile
+	needsHeaderUpdates bool
+	wasStripped        bool
 }
 
 func (h *PEHandler) Strip(opts map[string]bool) {
+	h.wasStripped = true // Mark that stripping operations were performed
+
 	if opts["all"] {
 		checkErr(h.p.StripAllMetadata(false))
 	} else {
@@ -275,31 +305,70 @@ func (h *PEHandler) Strip(opts map[string]bool) {
 }
 
 func (h *PEHandler) Obfuscate(opts map[string]bool) {
+	var needsHeaderUpdates bool
+
 	if opts["all"] {
 		checkErr(h.p.ObfuscateAll())
-	} else {
+		needsHeaderUpdates = false // For now, don't use header updates for any obfuscation	} else {
 		if opts["names"] {
 			checkErr(h.p.RandomizeSectionNames())
+			// Section name randomization modifies headers directly, doesn't need header updates
 		}
 		if opts["base"] {
 			checkErr(h.p.ObfuscateBaseAddresses())
+			needsHeaderUpdates = false // Base address obfuscation also modifies raw data directly
+		}
+		if opts["loadconfig"] {
+			checkErr(h.p.ObfuscateLoadConfig())
+			needsHeaderUpdates = false // Load config obfuscation modifies raw data directly
+		}
+		if opts["importtable"] {
+			checkErr(h.p.ObfuscateImportTable())
+			needsHeaderUpdates = false // Import table obfuscation modifies raw data directly
+		}
+		if opts["imports"] {
+			checkErr(h.p.ObfuscateImportNames())
+			needsHeaderUpdates = false // Import name obfuscation modifies raw data directly
 		}
 	}
+
+	// Store whether this obfuscation needs header updates
+	h.needsHeaderUpdates = needsHeaderUpdates
 }
 
 func (h *PEHandler) Commit() {
+	// For obfuscation-only operations, preserve original file size
+	// For stripping operations, use calculated physical size
+	var size int64
+
+	if h.wasStripped {
+		// If stripping was performed, calculate the reduced size
+		calculatedSize, err := h.p.CalculatePhysicalFileSize()
+		checkErr(err)
+		size = int64(calculatedSize)
+	} else {
+		// If only obfuscation was performed, preserve original size
+		// Pass 0 to CommitChangesSimple to use full RawData length
+		size = 0
+	}
+
+	// Use simple commit to avoid header corruption issues
+	checkErr(h.p.CommitChangesSimple(size))
+}
+
+func (h *PEHandler) CommitWithHeaders() {
 	size, err := h.p.CalculatePhysicalFileSize()
 	checkErr(err)
-	size, err = h.p.TruncateZeros(size)
-	checkErr(err)
+	// Full commit with header updates for obfuscation operations
 	checkErr(h.p.CommitChanges(int64(size)))
 }
 
-// StripRegex overwrites byte patterns matching a regex in all sections
 func (h *PEHandler) StripRegex(pat string) {
+	h.wasStripped = true // Mark that stripping operations were performed
+
 	re := regexp.MustCompile(pat)
 	fmt.Printf("PE: attempting to strip pattern '%s'\n", pat)
-	matches, err := h.p.StripByteRegex(re, false)
+	matches, err := h.p.StripBytePattern(re, perw.ZeroFill)
 	checkErr(err)
 	fmt.Printf("PE: stripped %d matches\n", matches)
 }

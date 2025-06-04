@@ -126,3 +126,50 @@ func (p *PEFile) checkSectionFlag(index int, flag uint32) (bool, error) {
 	}
 	return flags&flag != 0, nil
 }
+
+// GetExecutableSections returns all executable sections
+func (p *PEFile) GetExecutableSections() []Section {
+	var execSections []Section
+	for _, section := range p.Sections {
+		if (section.Flags & pe.IMAGE_SCN_CNT_CODE) != 0 {
+			execSections = append(execSections, section)
+		}
+	}
+	return execSections
+}
+
+// IsExecutableOrShared checks if file is executable or DLL
+func (p *PEFile) IsExecutableOrShared() bool {
+	if p.PE == nil {
+		return false
+	}
+	c := p.PE.FileHeader.Characteristics
+	return (c&pe.IMAGE_FILE_EXECUTABLE_IMAGE) != 0 || (c&pe.IMAGE_FILE_DLL) != 0
+}
+
+// --- Section Type Utilities ---
+
+// GetSectionTypeDescription returns a human-readable description of a section type
+func GetSectionTypeDescription(sectionType SectionType) string {
+	if matcher, exists := sectionMatchers[sectionType]; exists {
+		return matcher.Description
+	}
+	return "unknown section type"
+}
+
+// IsSectionTypeRisky returns whether stripping a section type might break functionality
+func IsSectionTypeRisky(sectionType SectionType) bool {
+	if matcher, exists := sectionMatchers[sectionType]; exists {
+		return matcher.IsRisky
+	}
+	return true // Assume risky if unknown
+}
+
+// shouldStripForFileType determines if a section type should be stripped for the current file type
+func (p *PEFile) shouldStripForFileType(sectionType SectionType) bool {
+	matcher := sectionMatchers[sectionType]
+	if p.IsDLL() {
+		return matcher.StripForDLL
+	}
+	return matcher.StripForEXE
+}

@@ -2,110 +2,193 @@ package perw
 
 import (
 	"crypto/rand"
-	"encoding/binary"
 	"fmt"
 	"regexp"
 	"strings"
 )
 
-// --- Section Name Lists (Unexported) ---
-var (
-	// DebugSectionsExact lists names of sections commonly containing debugging information.
-	debugSectionsExact = []string{
-		".debug",   // Generic DWARF debug info (less common in PE but possible)
-		".pdata",   // Procedure data for exception handling, also used by debuggers
-		".xdata",   // Exception data, also used by debuggers
-		".debug$S", // CodeView Symbols
-		".debug$T", // CodeView Types
-		".debug$P", // CodeView Precompiled Headers
-		".debug$F", // CodeView FPO (Frame Pointer Omission) data
-		// Other common CodeView section prefixes: .debug$ anything else
-	}
-	debugSectionsPrefix = []string{
-		".debug$", // Covers all CodeView debug sections not explicitly listed
-	}
+// SectionType represents the type of sections for stripping
+type SectionType int
 
-	// SymbolSectionsExact lists names of sections containing symbol table information.
-	// Note: PE files typically embed symbols within the debug directory or CodeView data,
-	// rather than having a dedicated .symtab like ELF.
-	symbolSectionsExact = []string{
-		// PE files don't usually have a .symtab or .strtab in the same way ELF does.
-		// Symbols are often in the debug directory (e.g., CodeView format) or stripped.
-		// This list might be empty or contain very specific/rare section names if found.
-	}
-
-	// RelocSectionsExact lists names of sections containing base relocation information.
-	// Stripping this from a non-ASLR DLL or an EXE that can't be loaded at its preferred base is problematic.
-	relocSectionsExact = []string{
-		".reloc",
-	}
-
-	// NonEssentialSectionsExact lists sections often considered non-essential for execution.
-	// WARNING: Stripping .rsrc will remove icons, version info, dialogs etc.
-	nonEssentialSectionsExact = []string{
-		".comment", // Linker/compiler comments
-		".note",    // Note sections, similar to ELF
-		".drectve", // Linker directives
-		".rsrc",    // Resource section (icons, version, dialogs, etc.)
-		".shared",  // Sections for shared data among instances (rare)
-		".cormeta", // CLR metadata section (.NET)
-		".sxdata",  // Registered SEH handlers (part of exception handling)
-	}
-
-	// ExceptionSectionsExact lists names of sections critical for structured exception handling (SEH).
-	// WARNING: Stripping these will likely break exception handling, especially in 64-bit code.
-	exceptionSectionsExact = []string{
-		".pdata", // Procedure data (function entry/exit points, unwind info)
-		".xdata", // Unwind codes and exception handler addresses
-		// .sxdata is also related but often grouped with non-essential for some strip tools
-	}
-
-	// BuildInfoSectionsExact lists sections that might contain build IDs or toolchain info.
-	buildInfoSectionsExact = []string{
-		".buildid", // Similar to ELF build ID
-		".gfids",   // Control Flow Guard (CFG) function IDs
-		".giats",   // CFG IAT table addresses
-		".gljmp",   // CFG long jump targets
-		".textbss", // MSVC specific, sometimes considered for stripping
-	}
+const (
+	DebugSections SectionType = iota
+	SymbolSections
+	RelocationSections
+	NonEssentialSections
+	ExceptionSections
+	BuildInfoSections
 )
 
-// --- Helper Functions ---
-
-// ZeroFill fills a memory region with zeros.
-func (p *PEFile) ZeroFill(offset int64, size int) error {
-	if offset+int64(size) > int64(len(p.RawData)) {
-		return fmt.Errorf("write beyond file limits: offset %d, size %d", offset, size)
-	}
-	for i := int64(0); i < int64(size); i++ {
-		p.RawData[offset+i] = 0
-	}
-	return nil
+// SectionMatcher holds section matching rules
+type SectionMatcher struct {
+	ExactNames  []string
+	PrefixNames []string
+	Description string
+	StripForDLL bool // Whether to strip for DLL files
+	StripForEXE bool // Whether to strip for EXE files
+	IsRisky     bool // Whether stripping might break functionality
 }
 
-// RandomFill fills a memory region with cryptographically secure random bytes.
-func (p *PEFile) RandomFill(offset int64, size int) error {
+// sectionMatchers defines all section types and their matching rules
+var sectionMatchers = map[SectionType]SectionMatcher{
+	DebugSections: {
+		ExactNames: []string{
+			".debug", ".pdata", ".xdata", ".debug$S",
+			".debug$T", ".debug$P", ".debug$F",
+		},
+		PrefixNames: []string{".debug$"},
+		Description: "debugging information",
+		StripForDLL: true,
+		StripForEXE: true,
+		IsRisky:     false,
+	},
+	SymbolSections: {
+		ExactNames:  []string{}, // PE files typically don't have .symtab
+		PrefixNames: []string{},
+		Description: "symbol table information",
+		StripForDLL: true,
+		StripForEXE: true,
+		IsRisky:     false,
+	},
+	RelocationSections: {
+		ExactNames:  []string{".reloc"},
+		PrefixNames: []string{},
+		Description: "base relocation information",
+		StripForDLL: true,
+		StripForEXE: false, // Risky for EXE files
+		IsRisky:     true,
+	},
+	NonEssentialSections: {
+		ExactNames: []string{
+			".comment", ".note", ".drectve", ".rsrc",
+			".shared", ".cormeta", ".sxdata",
+		},
+		PrefixNames: []string{},
+		Description: "non-essential metadata",
+		StripForDLL: true,
+		StripForEXE: true,
+		IsRisky:     false,
+	},
+	ExceptionSections: {
+		ExactNames:  []string{".pdata", ".xdata"},
+		PrefixNames: []string{},
+		Description: "structured exception handling data",
+		StripForDLL: false,
+		StripForEXE: false,
+		IsRisky:     true,
+	},
+	BuildInfoSections: {
+		ExactNames: []string{
+			".buildid", ".gfids", ".giats", ".gljmp", ".textbss",
+		},
+		PrefixNames: []string{},
+		Description: "build information and toolchain metadata",
+		StripForDLL: true,
+		StripForEXE: true,
+		IsRisky:     false,
+	},
+}
+
+// FillMode represents the type of data filling
+type FillMode int
+
+const (
+	ZeroFill FillMode = iota
+	RandomFill
+)
+
+// --- Core Helper Functions ---
+
+// fillRegion fills a memory region with zeros or random bytes
+func (p *PEFile) fillRegion(offset int64, size int, mode FillMode) error {
 	if offset < 0 || size < 0 || offset+int64(size) > int64(len(p.RawData)) {
-		return fmt.Errorf("invalid offset/size for random fill: offset %d, size %d, total %d", offset, size, len(p.RawData))
+		return fmt.Errorf("invalid region: offset %d, size %d, total %d", offset, size, len(p.RawData))
 	}
+
 	if size == 0 {
 		return nil
 	}
-	fillBytes := make([]byte, size)
-	_, err := rand.Read(fillBytes)
-	if err != nil {
-		return fmt.Errorf("failed to generate random bytes: %w", err)
+
+	switch mode {
+	case ZeroFill:
+		for i := int64(0); i < int64(size); i++ {
+			p.RawData[offset+i] = 0
+		}
+	case RandomFill:
+		fillBytes := make([]byte, size)
+		if _, err := rand.Read(fillBytes); err != nil {
+			return fmt.Errorf("failed to generate random bytes: %w", err)
+		}
+		copy(p.RawData[offset:offset+int64(size)], fillBytes)
+	default:
+		return fmt.Errorf("unknown fill mode: %v", mode)
 	}
-	copy(p.RawData[offset:offset+int64(size)], fillBytes)
+
 	return nil
+}
+
+// sectionMatches checks if a section name matches the given matcher
+func sectionMatches(sectionName string, matcher SectionMatcher) bool {
+	// Check exact matches
+	for _, name := range matcher.ExactNames {
+		if sectionName == name {
+			return true
+		}
+	}
+
+	// Check prefix matches
+	for _, prefix := range matcher.PrefixNames {
+		if strings.HasPrefix(sectionName, prefix) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // --- Core Stripping Logic ---
 
-// StripSectionsByNames processes sections based on name match (exact or prefix).
-// It can fill the section data with zeros or random bytes.
+// StripSectionsByType strips sections based on their type
+func (p *PEFile) StripSectionsByType(sectionType SectionType, fillMode FillMode) error {
+	matcher, exists := sectionMatchers[sectionType]
+	if !exists {
+		return fmt.Errorf("unknown section type: %v", sectionType)
+	}
+
+	// Check if we should strip this type for the current file
+	if !p.shouldStripForFileType(sectionType) {
+		return nil // Skip stripping for this file type
+	}
+
+	strippedCount := 0
+	for _, section := range p.Sections {
+		if !sectionMatches(section.Name, matcher) {
+			continue
+		}
+
+		if section.Offset > 0 && section.Size > 0 {
+			if err := p.fillRegion(section.Offset, int(section.Size), fillMode); err != nil {
+				return fmt.Errorf("failed to fill section %s: %w", section.Name, err)
+			}
+		}
+
+		// Just mark the section as processed, don't zero out the headers
+		// PE files need valid section headers even if the content is stripped
+		strippedCount++
+	}
+
+	// No need to update section headers since we're not changing the structure
+	return nil
+}
+
+// StripSectionsByNames provides the original interface for backward compatibility
 func (p *PEFile) StripSectionsByNames(names []string, prefix bool, useRandomFill bool) error {
-	for i, section := range p.Sections {
+	fillMode := ZeroFill
+	if useRandomFill {
+		fillMode = RandomFill
+	}
+
+	for _, section := range p.Sections {
 		match := false
 		for _, name := range names {
 			if (prefix && strings.HasPrefix(section.Name, name)) || (!prefix && section.Name == name) {
@@ -113,41 +196,31 @@ func (p *PEFile) StripSectionsByNames(names []string, prefix bool, useRandomFill
 				break
 			}
 		}
-		if match {
-			if section.Offset > 0 && section.Size > 0 {
-				var err error
-				if useRandomFill {
-					err = p.RandomFill(section.Offset, int(section.Size))
-				} else {
-					err = p.ZeroFill(section.Offset, int(section.Size))
-				}
-				if err != nil {
-					return fmt.Errorf("failed to fill section %s: %w", section.Name, err)
-				}
-			}
-			// Mark section as stripped by nullifying its size and offset in our internal list.
-			// The actual removal from the file occurs if this space isn't covered by SizeOfImage
-			// or if the section header entry itself is modified to have zero size.
-			p.Sections[i].Offset = 0
-			p.Sections[i].Size = 0
-			// RVA also becomes meaningless if size is 0, though it's not directly zeroed here
-			// as UpdateSectionHeaders will write size as 0.
+
+		if !match {
+			continue
 		}
+
+		if section.Offset > 0 && section.Size > 0 {
+			if err := p.fillRegion(section.Offset, int(section.Size), fillMode); err != nil {
+				return fmt.Errorf("failed to fill section %s: %w", section.Name, err)
+			}
+		}
+
+		// Don't modify section headers, just clear content
 	}
-	// After modifying sections, the section headers in RawData need to be updated.
-	return p.UpdateSectionHeaders() // Assumes this method exists in perw/write.go
+
+	return nil
 }
 
-// StripByteRegex overwrites byte patterns matching a regex in sections.
-// It can fill the matched data with zeros or random bytes.
-func (p *PEFile) StripByteRegex(pattern *regexp.Regexp, useRandomFill bool) (int, error) {
+// StripBytePattern overwrites byte patterns matching a regex in sections
+func (p *PEFile) StripBytePattern(pattern *regexp.Regexp, fillMode FillMode) (int, error) {
 	if pattern == nil {
 		return 0, fmt.Errorf("regex pattern cannot be nil")
 	}
 
-	matchesTotal := 0
-	for i := range p.Sections {
-		section := &p.Sections[i]
+	totalMatches := 0
+	for _, section := range p.Sections {
 		if section.Offset <= 0 || section.Size <= 0 {
 			continue
 		}
@@ -160,159 +233,129 @@ func (p *PEFile) StripByteRegex(pattern *regexp.Regexp, useRandomFill bool) (int
 			}
 		}
 
-		sectionDataSlice := p.RawData[section.Offset : section.Offset+readSize]
-		indices := pattern.FindAllIndex(sectionDataSlice, -1)
-		if len(indices) == 0 {
-			continue
-		}
+		sectionData := p.RawData[section.Offset : section.Offset+readSize]
+		matches := pattern.FindAllIndex(sectionData, -1)
 
-		for _, idx := range indices {
-			start := idx[0]
-			end := idx[1]
-			for k := start; k < end; k++ {
-				if useRandomFill {
-					b := make([]byte, 1)
-					_, err := rand.Read(b) // crypto/rand
-					if err != nil {
-						sectionDataSlice[k] = 0 // Fallback or handle error
-						continue
-					}
-					sectionDataSlice[k] = b[0]
-				} else {
-					sectionDataSlice[k] = 0
-				}
+		for _, match := range matches {
+			start, end := match[0], match[1]
+			if err := p.fillRegion(section.Offset+int64(start), end-start, fillMode); err != nil {
+				return totalMatches, fmt.Errorf("failed to fill pattern match: %w", err)
 			}
-			matchesTotal++
+			totalMatches++
 		}
 	}
-	return matchesTotal, nil
+
+	return totalMatches, nil
 }
 
-// --- Specific Stripping Functions ---
+// --- Convenience Functions ---
 
-// StripDebugSections removes common debugging information.
+// StripDebugSections removes debugging information
 func (p *PEFile) StripDebugSections(useRandomFill bool) error {
-	if err := p.StripSectionsByNames(debugSectionsExact, false, useRandomFill); err != nil {
-		return fmt.Errorf("stripping exact debug sections: %w", err)
+	fillMode := ZeroFill
+	if useRandomFill {
+		fillMode = RandomFill
 	}
-	return p.StripSectionsByNames(debugSectionsPrefix, true, useRandomFill)
+	return p.StripSectionsByType(DebugSections, fillMode)
 }
 
-// StripSymbolTables is a placeholder as PE files usually don't have distinct .symtab sections like ELF.
-// Symbols are typically in CodeView/.debug$ or stripped via the Debug Directory.
+// StripSymbolTables removes symbol table information (usually no-op for PE)
 func (p *PEFile) StripSymbolTables(useRandomFill bool) error {
-	// If specific symbol table section names are identified for PE, add them to symbolSectionsExact.
-	// For now, this will likely do nothing unless symbolSectionsExact is populated.
-	return p.StripSectionsByNames(symbolSectionsExact, false, useRandomFill)
+	fillMode := ZeroFill
+	if useRandomFill {
+		fillMode = RandomFill
+	}
+	return p.StripSectionsByType(SymbolSections, fillMode)
 }
 
-// StripRelocationTable removes the .reloc section.
-// WARNING: This can break executables if they are not DLLs or cannot be loaded at their preferred base address.
+// StripRelocationTable removes base relocation information
 func (p *PEFile) StripRelocationTable(useRandomFill bool) error {
-	return p.StripSectionsByNames(relocSectionsExact, false, useRandomFill)
+	fillMode := ZeroFill
+	if useRandomFill {
+		fillMode = RandomFill
+	}
+	return p.StripSectionsByType(RelocationSections, fillMode)
 }
 
-// StripNonEssentialSections removes a curated list of sections generally not critical for execution.
-// WARNING: This includes .rsrc, which contains icons, version info, etc.
+// StripNonEssentialSections removes non-essential metadata
 func (p *PEFile) StripNonEssentialSections(useRandomFill bool) error {
-	return p.StripSectionsByNames(nonEssentialSectionsExact, false, useRandomFill)
+	fillMode := ZeroFill
+	if useRandomFill {
+		fillMode = RandomFill
+	}
+	return p.StripSectionsByType(NonEssentialSections, fillMode)
 }
 
-// StripExceptionHandlingData removes .pdata and .xdata sections.
-// WARNING: This will likely break structured exception handling (SEH), especially in 64-bit applications.
+// StripExceptionHandlingData removes exception handling data (risky)
 func (p *PEFile) StripExceptionHandlingData(useRandomFill bool) error {
-	return p.StripSectionsByNames(exceptionSectionsExact, false, useRandomFill)
+	fillMode := ZeroFill
+	if useRandomFill {
+		fillMode = RandomFill
+	}
+	return p.StripSectionsByType(ExceptionSections, fillMode)
 }
 
-// StripBuildInfoSections removes sections containing build IDs or specific toolchain/compiler info.
+// StripBuildInfoSections removes build information
 func (p *PEFile) StripBuildInfoSections(useRandomFill bool) error {
-	return p.StripSectionsByNames(buildInfoSectionsExact, false, useRandomFill)
+	fillMode := ZeroFill
+	if useRandomFill {
+		fillMode = RandomFill
+	}
+	return p.StripSectionsByType(BuildInfoSections, fillMode)
 }
 
-// StripAllMetadata attempts to remove a wide range of non-essential metadata.
-// It can use zero-filling or random-filling.
-// WARNING: This is aggressive and can break executables if not used carefully.
+// StripAllMetadata removes a wide range of non-essential metadata
 func (p *PEFile) StripAllMetadata(useRandomFill bool) error {
-	if err := p.StripDebugSections(useRandomFill); err != nil {
-		return fmt.Errorf("StripDebugSections failed: %w", err)
+	fillMode := ZeroFill
+	if useRandomFill {
+		fillMode = RandomFill
 	}
-	// p.StripSymbolTables(useRandomFill) // Usually no-op for PE, symbols are in debug data
 
-	// Conditionally strip relocations: typically safer for DLLs.
-	// For EXEs, stripping .reloc can be problematic if ASLR is active or base conflicts occur.
-	if p.IsDLL() { // Assumes IsDLL() method exists
-		if err := p.StripRelocationTable(useRandomFill); err != nil {
-			return fmt.Errorf("StripRelocationTable for DLL failed: %w", err)
+	// Strip safe sections
+	safeSections := []SectionType{
+		DebugSections,
+		SymbolSections,
+		NonEssentialSections,
+		BuildInfoSections,
+	}
+
+	for _, sectionType := range safeSections {
+		if err := p.StripSectionsByType(sectionType, fillMode); err != nil {
+			return fmt.Errorf("failed to strip %s: %w",
+				sectionMatchers[sectionType].Description, err)
 		}
-	} else {
-		// Consider making .reloc stripping for EXEs an explicit, separate option due to risk.
-		// For now, let's not strip it by default from EXEs in StripAllMetadata.
-		// fmt.Println("Skipping .reloc stripping for non-DLL file in StripAllMetadata.")
 	}
 
-	if err := p.StripNonEssentialSections(useRandomFill); err != nil {
-		// Contains .rsrc, removing it has visual/functional impact.
-		return fmt.Errorf("StripNonEssentialSections failed: %w", err)
+	// Conditionally strip relocations (safer for DLLs)
+	if err := p.StripSectionsByType(RelocationSections, fillMode); err != nil {
+		return fmt.Errorf("failed to strip relocations: %w", err)
 	}
 
-	// Highly risky, often breaks executables:
-	// if err := p.StripExceptionHandlingData(useRandomFill); err != nil {
-	// 	 return fmt.Errorf("StripExceptionHandlingData failed: %w", err)
-	// }
-
-	if err := p.StripBuildInfoSections(useRandomFill); err != nil {
-		return fmt.Errorf("StripBuildInfoSections failed: %w", err)
-	}
-
-	// Randomizing section names is an obfuscation, not strictly stripping.
+	// Apply obfuscation
 	if err := p.RandomizeSectionNames(); err != nil {
-		return fmt.Errorf("RandomizeSectionNames failed: %w", err)
+		return fmt.Errorf("failed to randomize section names: %w", err)
 	}
-
-	// ModifyPEHeader is also an obfuscation.
-	// if err := p.ModifyPEHeader(); err != nil { // Ensure it uses crypto/rand
-	// 	 return fmt.Errorf("ModifyPEHeader failed: %w", err)
-	// }
 
 	return nil
 }
 
-// --- Obfuscation Functions ---
+// --- File Size Calculation ---
 
-// ModifyPEHeader modifies non-essential PE header fields using crypto/rand.
-// Example: Randomizes the TimeDateStamp in the COFF File Header.
-func (p *PEFile) ModifyPEHeader() error {
-	if len(p.RawData) < 0x40 { // Basic check for DOS header size
-		return fmt.Errorf("file too small for DOS header: %d bytes", len(p.RawData))
-	}
-	eLfanewOffset := int64(0x3C)
-	if eLfanewOffset+4 > int64(len(p.RawData)) {
-		return fmt.Errorf("cannot read e_lfanew, file too small")
-	}
-	eLfanew := int64(binary.LittleEndian.Uint32(p.RawData[eLfanewOffset : eLfanewOffset+4]))
-
-	// COFF File Header starts at eLfanew + 4 (after PE signature)
-	// TimeDateStamp is at offset 4 within the COFF File Header (so eLfanew + 4 + 4)
-	tsOffset := eLfanew + 8
-	if tsOffset+4 > int64(len(p.RawData)) { // Check if TimeDateStamp is within bounds
-		return fmt.Errorf("TimeDateStamp offset out of bounds: %d", tsOffset)
+// CalculatePhysicalFileSize computes the actual used file size
+func (p *PEFile) CalculatePhysicalFileSize() (uint64, error) {
+	if p.PE == nil {
+		return 0, fmt.Errorf("PE file not initialized")
 	}
 
-	randBytes := make([]byte, 4)
-	_, err := rand.Read(randBytes) // crypto/rand
-	if err != nil {
-		return fmt.Errorf("failed to generate random bytes for TimeDateStamp: %w", err)
+	maxSize := uint64(p.SizeOfHeaders)
+	for _, s := range p.Sections {
+		if s.Size > 0 {
+			end := uint64(s.Offset) + uint64(s.Size)
+			if end > maxSize {
+				maxSize = end
+			}
+		}
 	}
-	copy(p.RawData[tsOffset:tsOffset+4], randBytes)
-	return nil
+
+	return maxSize, nil
 }
-
-// IsDLL checks if the PE file is a DLL.
-// This is a simplified check based on characteristics.
-// func (p *PEFile) IsDLL() bool { // This function is now in perw/utils.go
-//     if p.PE == nil {
-//         return false // Cannot determine
-//     }
-//     // IMAGE_FILE_DLL characteristic
-//     return (p.PE.FileHeader.Characteristics & 0x2000) != 0
-// }
