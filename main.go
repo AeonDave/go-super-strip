@@ -110,6 +110,19 @@ func main() {
 		}
 	}
 
+	// Special handling for UPX signature removal before full PE parsing
+	if *stripRegex == "UPX!" {
+		fmt.Println("Detected UPX signature removal request - using raw file method")
+		matches, err := perw.StripUPXSignatureFromRawPE(*filePath)
+		if err != nil {
+			fmt.Printf("UPX signature removal failed: %v\n", err)
+			checkErr(err)
+		} else {
+			fmt.Printf("Successfully removed %d UPX signature(s)\n", matches)
+			return
+		}
+	}
+
 	// Open file with read-write permissions
 	f, err := os.OpenFile(*filePath, os.O_RDWR, 0)
 	checkErr(err)
@@ -366,8 +379,25 @@ func (h *PEHandler) CommitWithHeaders() {
 func (h *PEHandler) StripRegex(pat string) {
 	h.wasStripped = true // Mark that stripping operations were performed
 
-	re := regexp.MustCompile(pat)
 	fmt.Printf("PE: attempting to strip pattern '%s'\n", pat)
+
+	// Special handling for UPX signatures on potentially packed files
+	if pat == "UPX!" {
+		fmt.Println("PE: Detected UPX signature pattern, using raw file method for packed PE compatibility")
+		matches, err := perw.StripUPXSignatureFromRawPE(h.p.FileName)
+		if err != nil {
+			fmt.Printf("PE: Raw UPX signature stripping failed, trying standard method: %v\n", err)
+			// Fallback to standard method
+			re := regexp.MustCompile(pat)
+			matches, err = h.p.StripBytePattern(re, perw.ZeroFill)
+			checkErr(err)
+		}
+		fmt.Printf("PE: stripped %d UPX signature matches\n", matches)
+		return
+	}
+
+	// Standard regex stripping for other patterns
+	re := regexp.MustCompile(pat)
 	matches, err := h.p.StripBytePattern(re, perw.ZeroFill)
 	checkErr(err)
 	fmt.Printf("PE: stripped %d matches\n", matches)
