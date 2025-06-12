@@ -380,6 +380,8 @@ func (h *ELFHandler) Commit() {
 	checkErr(err)
 	size, err = h.e.TruncateZeros(size)
 	checkErr(err)
+	// Fix section header integrity after size calculation to prevent UPX issues
+	checkErr(h.e.FixSectionHeaderIntegrityWithSize(size))
 	checkErr(h.e.CommitChanges(size))
 }
 

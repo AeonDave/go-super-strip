@@ -1,6 +1,7 @@
 package elfrw
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
@@ -480,4 +481,162 @@ func GetSectionCategories() map[string]SectionCategory {
 		result[k] = v
 	}
 	return result
+}
+
+// FixSectionHeaderIntegrity ensures section header table is valid after stripping operations.
+// This prevents issues with tools like UPX that validate e_shoff.
+func (e *ELFFile) FixSectionHeaderIntegrity() error {
+	if err := e.validateELF(); err != nil {
+		return fmt.Errorf("ELF validation failed: %w", err)
+	}
+
+	shoffPos, shNumPos, shStrNdxPos := e.getHeaderPositions()
+	sectionHeaderOffset := e.getSectionHeaderOffset(shoffPos)
+
+	// If section header offset is beyond file bounds or invalid, zero it out
+	if sectionHeaderOffset >= uint64(len(e.RawData)) || sectionHeaderOffset == 0 {
+		return e.clearSectionHeaders(shoffPos, shNumPos, shStrNdxPos)
+	}
+
+	// Calculate expected section header table size
+	shNum := e.readUint16(shNumPos)
+	var entrySize uint64
+	if e.Is64Bit {
+		entrySize = uint64(e.readUint16(58)) // e_shentsize for 64-bit
+	} else {
+		entrySize = uint64(e.readUint16(46)) // e_shentsize for 32-bit
+	}
+
+	expectedTableSize := uint64(shNum) * entrySize
+
+	// If section header table would extend beyond file, zero out the header references
+	if sectionHeaderOffset+expectedTableSize > uint64(len(e.RawData)) {
+		return e.clearSectionHeaders(shoffPos, shNumPos, shStrNdxPos)
+	}
+
+	// Validate that each section header entry is within bounds
+	for i := uint16(0); i < shNum; i++ {
+		headerPos := sectionHeaderOffset + uint64(i)*entrySize
+		if headerPos+entrySize > uint64(len(e.RawData)) {
+			// If any section header is out of bounds, zero the entire table
+			return e.clearSectionHeaders(shoffPos, shNumPos, shStrNdxPos)
+		}
+	}
+
+	return nil
+}
+
+// FixSectionHeaderIntegrityWithSize ensures section header table is valid for a specific file size.
+// This is used during commit to prevent issues with tools like UPX after file truncation.
+func (e *ELFFile) FixSectionHeaderIntegrityWithSize(newFileSize uint64) error {
+	if err := e.validateELF(); err != nil {
+		return fmt.Errorf("ELF validation failed: %w", err)
+	}
+
+	shoffPos, shNumPos, shStrNdxPos := e.getHeaderPositions()
+	sectionHeaderOffset := e.getSectionHeaderOffset(shoffPos)
+
+	// If section header offset is beyond new file bounds or invalid, zero it out
+	if sectionHeaderOffset >= newFileSize || sectionHeaderOffset == 0 {
+		return e.clearSectionHeaders(shoffPos, shNumPos, shStrNdxPos)
+	}
+
+	// Calculate expected section header table size
+	shNum := e.readUint16(shNumPos)
+	var entrySize uint64
+	if e.Is64Bit {
+		entrySize = uint64(e.readUint16(58)) // e_shentsize for 64-bit
+	} else {
+		entrySize = uint64(e.readUint16(46)) // e_shentsize for 32-bit
+	}
+
+	expectedTableSize := uint64(shNum) * entrySize
+
+	// If section header table would extend beyond new file size, zero out the header references
+	if sectionHeaderOffset+expectedTableSize > newFileSize {
+		return e.clearSectionHeaders(shoffPos, shNumPos, shStrNdxPos)
+	}
+
+	// Validate that each section header entry is within new file bounds
+	for i := uint16(0); i < shNum; i++ {
+		headerPos := sectionHeaderOffset + uint64(i)*entrySize
+		if headerPos+entrySize > newFileSize {
+			// If any section header is out of bounds, zero the entire table
+			return e.clearSectionHeaders(shoffPos, shNumPos, shStrNdxPos)
+		}
+	}
+
+	return nil
+}
+
+// clearSectionHeaders helper function (moved from write.go for better access)
+func (e *ELFFile) clearSectionHeaders(shoffPos, shNumPos, shStrNdxPos int) error {
+	if err := e.writeAtOffset(shoffPos, uint64(0)); err != nil {
+		return err
+	}
+	if err := e.writeAtOffset(shNumPos, uint16(0)); err != nil {
+		return err
+	}
+	return e.writeAtOffset(shStrNdxPos, uint16(0))
+}
+
+// getHeaderPositions helper function (moved from write.go for better access)
+func (e *ELFFile) getHeaderPositions() (int, int, int) {
+	if e.Is64Bit {
+		return 40, 60, 62 // e_shoff, e_shnum, e_shstrndx for 64-bit
+	}
+	return 32, 48, 50 // e_shoff, e_shnum, e_shstrndx for 32-bit
+}
+
+// getSectionHeaderOffset helper function (moved from write.go for better access)
+func (e *ELFFile) getSectionHeaderOffset(shoffPos int) uint64 {
+	if e.Is64Bit {
+		return e.readUint64(shoffPos)
+	}
+	return uint64(e.readUint32(shoffPos))
+}
+
+// Helper methods for reading/writing values (moved from write.go for better access)
+func (e *ELFFile) readUint64(pos int) uint64 {
+	if e.RawData[5] == 1 {
+		return binary.LittleEndian.Uint64(e.RawData[pos : pos+8])
+	}
+	return binary.BigEndian.Uint64(e.RawData[pos : pos+8])
+}
+
+func (e *ELFFile) readUint32(pos int) uint32 {
+	if e.RawData[5] == 1 {
+		return binary.LittleEndian.Uint32(e.RawData[pos : pos+4])
+	}
+	return binary.BigEndian.Uint32(e.RawData[pos : pos+4])
+}
+
+func (e *ELFFile) readUint16(pos int) uint16 {
+	if e.RawData[5] == 1 {
+		return binary.LittleEndian.Uint16(e.RawData[pos : pos+2])
+	}
+	return binary.BigEndian.Uint16(e.RawData[pos : pos+2])
+}
+
+func (e *ELFFile) writeAtOffset(pos int, value interface{}) error {
+	var size int
+	switch value.(type) {
+	case uint16:
+		size = 2
+	case uint32:
+		size = 4
+	case uint64:
+		size = 8
+	default:
+		size = len(e.RawData) - pos
+	}
+	if pos < 0 || pos+size > len(e.RawData) {
+		return fmt.Errorf("offset out of bounds: %d (size %d)", pos, size)
+	}
+	buf := new(bytes.Buffer)
+	if err := binary.Write(buf, e.GetEndian(), value); err != nil {
+		return fmt.Errorf("failed to write value: %w", err)
+	}
+	copy(e.RawData[pos:], buf.Bytes())
+	return nil
 }

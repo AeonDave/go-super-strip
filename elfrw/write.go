@@ -1,7 +1,6 @@
 package elfrw
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -35,8 +34,8 @@ func (e *ELFFile) UpdateRawData() error {
 }
 
 func (e *ELFFile) CommitChanges(newSize uint64) error {
-	if err := e.UpdateRawData(); err != nil {
-		return fmt.Errorf("failed to update raw data: %w", err)
+	if err := e.ModifyHeaders(newSize); err != nil {
+		return fmt.Errorf("failed to modify headers: %w", err)
 	}
 	if _, err := e.File.Seek(0, io.SeekStart); err != nil {
 		return fmt.Errorf("failed to reposition file: %w", err)
@@ -48,30 +47,6 @@ func (e *ELFFile) CommitChanges(newSize uint64) error {
 		return fmt.Errorf("failed to resize file: %w", err)
 	}
 	return nil
-}
-
-func (e *ELFFile) getHeaderPositions() (int, int, int) {
-	if e.Is64Bit {
-		return 40, 60, 62
-	}
-	return 32, 48, 50
-}
-
-func (e *ELFFile) getSectionHeaderOffset(shoffPos int) uint64 {
-	if e.Is64Bit {
-		return e.readUint64(shoffPos)
-	}
-	return uint64(e.readUint32(shoffPos))
-}
-
-func (e *ELFFile) clearSectionHeaders(shoffPos, shNumPos, shStrNdxPos int) error {
-	if err := e.writeAtOffset(shoffPos, uint64(0)); err != nil {
-		return err
-	}
-	if err := e.writeAtOffset(shNumPos, uint16(0)); err != nil {
-		return err
-	}
-	return e.writeAtOffset(shStrNdxPos, uint16(0))
 }
 
 func (e *ELFFile) updateProgramHeader(index uint16, newSize uint64) error {
@@ -170,50 +145,6 @@ func (e *ELFFile) UpdateProgramHeaders() error {
 			}
 		}
 	}
-	return nil
-}
-
-func (e *ELFFile) readUint64(pos int) uint64 {
-	if e.RawData[5] == 1 {
-		return binary.LittleEndian.Uint64(e.RawData[pos : pos+8])
-	}
-	return binary.BigEndian.Uint64(e.RawData[pos : pos+8])
-}
-
-func (e *ELFFile) readUint32(pos int) uint32 {
-	if e.RawData[5] == 1 {
-		return binary.LittleEndian.Uint32(e.RawData[pos : pos+4])
-	}
-	return binary.BigEndian.Uint32(e.RawData[pos : pos+4])
-}
-
-func (e *ELFFile) readUint16(pos int) uint16 {
-	if e.RawData[5] == 1 {
-		return binary.LittleEndian.Uint16(e.RawData[pos : pos+2])
-	}
-	return binary.BigEndian.Uint16(e.RawData[pos : pos+2])
-}
-
-func (e *ELFFile) writeAtOffset(pos int, value interface{}) error {
-	var size int
-	switch value.(type) {
-	case uint16:
-		size = 2
-	case uint32:
-		size = 4
-	case uint64:
-		size = 8
-	default:
-		size = len(e.RawData) - pos
-	}
-	if pos < 0 || pos+size > len(e.RawData) {
-		return fmt.Errorf("offset out of bounds: %d (size %d)", pos, size)
-	}
-	buf := new(bytes.Buffer)
-	if err := binary.Write(buf, e.GetEndian(), value); err != nil {
-		return fmt.Errorf("failed to write value: %w", err)
-	}
-	copy(e.RawData[pos:], buf.Bytes())
 	return nil
 }
 

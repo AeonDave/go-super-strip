@@ -17,39 +17,18 @@ provides advanced techniques for reducing file size and increasing resistance to
 
 ---
 
-## 🎯 Supported Formats
+## Supported Formats
 
 - **ELF** — Executable and Linkable Format (Linux/Unix)
 - **PE** — Portable Executable (Windows)
 
----
-
-## ✨ Key Features
-
-- **Regex-based Stripping**
-    - Remove specific byte patterns using regular expressions
-- **Metadata Stripping**
-    - Debug sections removal
-    - Symbol table stripping
-    - Comprehensive metadata removal
-- **Advanced Obfuscation**
-    - Section name randomization
-    - Base address obfuscation
-    - Header field randomization
-    - Padding obfuscation
-- **Multi-Format Support**
-    - Dedicated handlers for ELF and PE formats
-    - Format-specific optimization techniques
-
----
-
-## ⚙️ Requirements
+## Requirements
 
 - [Go](https://golang.org/dl/) version **1.24** or higher
 
 ---
 
-## 📦 Installation
+## Installation
 
 1. Ensure Go is installed on your system.
 2. Clone the repository:
@@ -64,7 +43,7 @@ provides advanced techniques for reducing file size and increasing resistance to
 
 ---
 
-## 🚀 Usage
+## Usage
 
 **Basic Syntax:**
 
@@ -195,7 +174,7 @@ Multiple techniques can be combined:
 
 ---
 
-## 📊 ELF Techniques & Risk Analysis
+## ELF Techniques & Risk Analysis
 
 The following table details all stripping and obfuscation techniques available for ELF executables:
 
@@ -219,7 +198,7 @@ The following table details all stripping and obfuscation techniques available f
 
 ---
 
-## 📊 PE Techniques & Risk Analysis
+## PE Techniques & Risk Analysis
 
 The following table details all stripping and obfuscation techniques available for PE executables:
 
@@ -242,12 +221,13 @@ The following table details all stripping and obfuscation techniques available f
 
 *Failure rates for PE files. **Lower for DLLs (~5%), higher for EXEs with ASLR.
 
-## ⚠️ Important Notes
+## Important Notes
 
 - **Backup your files:** Always work on copies of executables, never originals
 - **Test thoroughly:** Verify functionality after modification, especially with medium/high risk techniques
 - **Format-specific behavior:** Some techniques are more aggressive on certain architectures or linking types
 - **Static vs Dynamic:** Static executables generally have lower failure rates than dynamically linked ones
+analysis tools
 - **PE Import Obfuscation Levels:**
     - `-obf-import-table` (Low Risk): Only modifies metadata, preserves functionality
     - `-obf-imports` (Medium Risk): **AGGRESSIVE** - randomizes function names, may break dynamic loading
@@ -300,13 +280,3 @@ The following table details all stripping and obfuscation techniques available f
 # Short form
 ./go-super-strip static_program -S -O -s "BuildInfo"
 ```
-
----
-
-## 🔧 Development & Extension
-
-The modular architecture allows for easy extension:
-
-- **New techniques:** Add functions in `elfrw/` or `perw/` packages
-- **CLI options:** Extend argument parsing in `main.go`
-- **Format support:** Implement new handlers following the `FileHandler` interface
