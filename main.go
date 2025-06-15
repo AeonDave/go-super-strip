@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"gosstrip/common"
 	"gosstrip/elfrw"
 	"gosstrip/perw"
 	"os"
@@ -37,8 +38,8 @@ var (
 	analyzeFlag     = flag.Bool("a", false, "Analyze executable file structure and exit")
 	analyzeFlagLong = flag.Bool("analyze", false, "Analyze executable file structure and exit")
 
-	insertFlag     = flag.String("i", "", "Add section (format: name:filepath)")
-	insertFlagLong = flag.String("insert", "", "Add section (format: name:filepath)")
+	insertFlag     = flag.String("i", "", "Add hex section (format: name:filepath or name:filepath:password)")
+	insertFlagLong = flag.String("insert", "", "Add hex section (format: name:filepath or name:filepath:password)")
 
 	verboseFlag = flag.Bool("v", false, "Enable verbose output")
 )
@@ -250,7 +251,7 @@ func runObfuscate(config *Configuration, isPE, isELF bool) error {
 		// PE obfuscation techniques
 		techniques := []struct {
 			name string
-			fn   func(string) *perw.OperationResult
+			fn   func(string) *common.OperationResult
 		}{
 			{"Section names", perw.ObfuscateSectionNamesDetailed},
 			{"Base addresses", perw.ObfuscateBaseAddressesDetailed},
@@ -275,7 +276,7 @@ func runObfuscate(config *Configuration, isPE, isELF bool) error {
 		} // ELF obfuscation techniques
 		techniques := []struct {
 			name      string
-			fn        func(string) *elfrw.OperationResult
+			fn        func(string) *common.OperationResult
 			skipForGo bool
 		}{
 			{"Section names", elfrw.ObfuscateSectionNamesDetailed, false},
@@ -338,33 +339,42 @@ func runRegex(config *Configuration, isPE, isELF bool) error {
 func runInsert(config *Configuration, isPE, isELF bool) error {
 	fmt.Println("=== Insert Operations ===")
 
-	// Parse section specification: name:filepath
-	parts := strings.SplitN(config.Insert, ":", 2)
-	if len(parts) != 2 {
-		return fmt.Errorf("invalid section format, expected 'name:filepath'")
+	// Parse section specification: name:filepath[:password]
+	parts := strings.SplitN(config.Insert, ":", 3)
+	if len(parts) < 2 || len(parts) > 3 {
+		return fmt.Errorf("invalid section format, expected 'name:filepath' or 'name:filepath:password'")
 	}
 
 	sectionName := parts[0]
 	sourceFile := parts[1]
+	var password string
+	hasPassword := len(parts) == 3
+	if hasPassword {
+		password = parts[2]
+	}
 
 	// Validate source file exists
 	if _, err := os.Stat(sourceFile); os.IsNotExist(err) {
 		return fmt.Errorf("source file does not exist: %s", sourceFile)
 	}
 
-	fmt.Printf("Adding section '%s' from file: %s\n", sectionName, sourceFile)
+	if hasPassword {
+		fmt.Printf("Adding encrypted hexadecimal section '%s' from file: %s\n", sectionName, sourceFile)
+	} else {
+		fmt.Printf("Adding hexadecimal section '%s' from file: %s\n", sectionName, sourceFile)
+	}
 
 	if isPE {
-		if err := perw.AddSection(config.FilePath, sectionName, sourceFile); err != nil {
-			fmt.Printf("Add section: SKIPPED (%v)\n", err)
+		if err := perw.AddHexSection(config.FilePath, sectionName, sourceFile, password); err != nil {
+			fmt.Printf("Add hex section: SKIPPED (%v)\n", err)
 		} else {
-			fmt.Println("Add section: APPLIED")
+			fmt.Println("Add hex section: APPLIED")
 		}
 	} else if isELF {
-		if err := elfrw.AddSection(config.FilePath, sectionName, sourceFile); err != nil {
-			fmt.Printf("Add section: SKIPPED (%v)\n", err)
+		if err := elfrw.AddHexSection(config.FilePath, sectionName, sourceFile, password); err != nil {
+			fmt.Printf("Add hex section: SKIPPED (%v)\n", err)
 		} else {
-			fmt.Println("Add section: APPLIED")
+			fmt.Println("Add hex section: APPLIED")
 		}
 	}
 
@@ -387,7 +397,7 @@ OPTIONS:
     -o, --obfuscate      Apply obfuscation techniques (section names, metadata, etc.)
     -r, --regex <pattern> Strip bytes matching regex pattern
     -a, --analyze        Analyze executable file structure and exit (ignores other flags)
-    -i, --insert <spec>  Add section (format: name:filepath, performed last)
+    -i, --insert <spec>  Add hex section (format: name:filepath or name:filepath:password, performed last)
     
     -v                   Enable verbose output
     -h                   Show this help
@@ -398,8 +408,9 @@ EXAMPLES:
     %s -o program                   	# Apply obfuscation techniques
     %s -s -o program                	# Strip and obfuscate
     %s -r "golang.*" program        	# Strip bytes matching regex
-    %s -i "custom:data.bin" program  	# Add section from file
-    %s -s -o -i "data:payload.bin" prog # Strip, obfuscate, and add section
+    %s -i "custom:data.bin" program      	# Add hex section (like xxd)
+    %s -i "custom:data.bin:mypass" program  	# Add encrypted hex section
+    %s -s -o -i "data:payload.bin:secret" prog # Strip, obfuscate, and add encrypted hex section
 
 SUPPORTED FILES:
     - PE files (.exe, .dll)
@@ -410,5 +421,5 @@ NOTE:
     - Use -a alone for analysis without modification
     - Operations are performed in fixed order for predictable results
     - Insert operations are always performed last
-`, os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0])
+`, os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0])
 }

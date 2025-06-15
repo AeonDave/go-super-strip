@@ -2,6 +2,7 @@ package elfrw
 
 import (
 	"fmt"
+	"gosstrip/common"
 	"os"
 	"regexp"
 )
@@ -25,10 +26,10 @@ func AnalyzeELF(filePath string) error {
 }
 
 // StripDebugSectionsDetailed strips debug sections from an ELF file with detailed result
-func StripDebugSectionsDetailed(filePath string) *OperationResult {
+func StripDebugSectionsDetailed(filePath string) *common.OperationResult {
 	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
 	if err != nil {
-		return NewSkipped(fmt.Sprintf("failed to open file: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
 	}
 	defer func(file *os.File) {
 		_ = file.Close()
@@ -36,25 +37,25 @@ func StripDebugSectionsDetailed(filePath string) *OperationResult {
 
 	elfFile, err := ReadELF(file)
 	if err != nil {
-		return NewSkipped(fmt.Sprintf("failed to read ELF file: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to read ELF file: %v", err))
 	}
 	result := elfFile.StripDebugSections(false)
 	if !result.Applied {
-		return result
+		return &common.OperationResult{Applied: result.Applied, Message: result.Message, Count: result.Count}
 	}
 
 	if err := elfFile.CommitChanges(uint64(len(elfFile.RawData))); err != nil {
-		return NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
 	}
 
-	return result
+	return &common.OperationResult{Applied: result.Applied, Message: result.Message, Count: result.Count}
 }
 
 // StripSymbolSectionsDetailed strips symbol sections from an ELF file with detailed result
-func StripSymbolSectionsDetailed(filePath string) *OperationResult {
+func StripSymbolSectionsDetailed(filePath string) *common.OperationResult {
 	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
 	if err != nil {
-		return NewSkipped(fmt.Sprintf("failed to open file: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
 	}
 	defer func(file *os.File) {
 		_ = file.Close()
@@ -62,7 +63,7 @@ func StripSymbolSectionsDetailed(filePath string) *OperationResult {
 
 	elfFile, err := ReadELF(file)
 	if err != nil {
-		return NewSkipped(fmt.Sprintf("failed to read ELF file: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to read ELF file: %v", err))
 	}
 	result := elfFile.StripSymbolTables(false)
 	if !result.Applied {
@@ -70,17 +71,17 @@ func StripSymbolSectionsDetailed(filePath string) *OperationResult {
 	}
 
 	if err := elfFile.CommitChanges(uint64(len(elfFile.RawData))); err != nil {
-		return NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
 	}
 
 	return result
 }
 
 // ObfuscateSectionNamesDetailed obfuscates section names in an ELF file with detailed result
-func ObfuscateSectionNamesDetailed(filePath string) *OperationResult {
+func ObfuscateSectionNamesDetailed(filePath string) *common.OperationResult {
 	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
 	if err != nil {
-		return NewSkipped(fmt.Sprintf("failed to open file: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
 	}
 	defer func(file *os.File) {
 		_ = file.Close()
@@ -88,7 +89,7 @@ func ObfuscateSectionNamesDetailed(filePath string) *OperationResult {
 
 	elfFile, err := ReadELF(file)
 	if err != nil {
-		return NewSkipped(fmt.Sprintf("failed to read ELF file: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to read ELF file: %v", err))
 	}
 	result := elfFile.RandomizeSectionNames()
 	if !result.Applied {
@@ -96,7 +97,7 @@ func ObfuscateSectionNamesDetailed(filePath string) *OperationResult {
 	}
 
 	if err := elfFile.CommitChanges(uint64(len(elfFile.RawData))); err != nil {
-		return NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
 	}
 
 	return result
@@ -128,20 +129,11 @@ func StripRegexBytes(filePath string, regex *regexp.Regexp) error {
 	return elfFile.CommitChanges(uint64(len(elfFile.RawData)))
 }
 
-// AddSection adds a new section to an ELF file
-func AddSection(filePath, sectionName, sourceFile string) error {
-	result := AddSectionDetailed(filePath, sectionName, sourceFile)
-	if !result.Applied {
-		return fmt.Errorf("%s", result.Message)
-	}
-	return nil
-}
-
 // AddSectionDetailed adds a new section to an ELF file with detailed result
-func AddSectionDetailed(filePath, sectionName, sourceFile string) *OperationResult {
+func AddSectionDetailed(filePath, sectionName, sourceFile string) *common.OperationResult {
 	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
 	if err != nil {
-		return NewSkipped(fmt.Sprintf("failed to open file: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
 	}
 	defer func(file *os.File) {
 		_ = file.Close()
@@ -149,39 +141,48 @@ func AddSectionDetailed(filePath, sectionName, sourceFile string) *OperationResu
 
 	elfFile, err := ReadELF(file)
 	if err != nil {
-		return NewSkipped(fmt.Sprintf("failed to read ELF file: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to read ELF file: %v", err))
 	}
 
 	// Check if section with same name already exists
 	for _, section := range elfFile.Sections {
 		if section.Name == sectionName {
-			return NewSkipped(fmt.Sprintf("section '%s' already exists", sectionName))
+			return common.NewSkipped(fmt.Sprintf("section '%s' already exists", sectionName))
 		}
 	}
 
 	// Get source file size for reporting
 	info, err := os.Stat(sourceFile)
 	if err != nil {
-		return NewSkipped(fmt.Sprintf("failed to stat source file: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to stat source file: %v", err))
 	}
 
 	if err := elfFile.AddSection(sectionName, sourceFile); err != nil {
-		return NewSkipped(fmt.Sprintf("failed to add section: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to add section: %v", err))
 	}
 
 	if err := elfFile.CommitChanges(uint64(len(elfFile.RawData))); err != nil {
-		return NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
 	}
 
 	message := fmt.Sprintf("added section '%s' (%d bytes) from '%s'", sectionName, info.Size(), sourceFile)
-	return NewApplied(message, 1)
+	return common.NewApplied(message, 1)
 }
 
-// ObfuscateAllDetailed applies all obfuscation techniques to an ELF file with detailed result
-func ObfuscateAllDetailed(filePath string) *OperationResult {
+// AddHexSection adds a hex section to an ELF file (with optional encryption)
+func AddHexSection(filePath, sectionName, sourceFile, password string) error {
+	result := AddHexSectionDetailed(filePath, sectionName, sourceFile, password)
+	if !result.Applied {
+		return fmt.Errorf("%s", result.Message)
+	}
+	return nil
+}
+
+// AddHexSectionDetailed adds a hex section to an ELF file with detailed result
+func AddHexSectionDetailed(filePath, sectionName, sourceFile, password string) *common.OperationResult {
 	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
 	if err != nil {
-		return NewSkipped(fmt.Sprintf("failed to open file: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
 	}
 	defer func(file *os.File) {
 		_ = file.Close()
@@ -189,7 +190,46 @@ func ObfuscateAllDetailed(filePath string) *OperationResult {
 
 	elfFile, err := ReadELF(file)
 	if err != nil {
-		return NewSkipped(fmt.Sprintf("failed to read ELF file: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to read ELF file: %v", err))
+	}
+
+	// Check if section with same name already exists
+	for _, section := range elfFile.Sections {
+		if section.Name == sectionName {
+			return common.NewSkipped(fmt.Sprintf("section '%s' already exists", sectionName))
+		}
+	}
+
+	// Add hex section
+	if err := elfFile.AddHexSection(sectionName, sourceFile, password); err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to add hex section: %v", err))
+	}
+
+	// Commit changes
+	if err := elfFile.CommitChanges(uint64(len(elfFile.RawData))); err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to commit changes: %v", err))
+	}
+
+	message := fmt.Sprintf("added hex section '%s'", sectionName)
+	if password != "" {
+		message += " (encrypted)"
+	}
+	return common.NewApplied(message, 1)
+}
+
+// ObfuscateAllDetailed applies all obfuscation techniques to an ELF file with detailed result
+func ObfuscateAllDetailed(filePath string) *common.OperationResult {
+	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
+	if err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
+	}
+	defer func(file *os.File) {
+		_ = file.Close()
+	}(file)
+
+	elfFile, err := ReadELF(file)
+	if err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to read ELF file: %v", err))
 	}
 	result := elfFile.ObfuscateAll()
 	if !result.Applied {
@@ -197,17 +237,17 @@ func ObfuscateAllDetailed(filePath string) *OperationResult {
 	}
 
 	if err := elfFile.CommitChanges(uint64(len(elfFile.RawData))); err != nil {
-		return NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
 	}
 
 	return result
 }
 
 // ObfuscateBaseAddressesDetailed obfuscates base addresses in an ELF file with detailed result
-func ObfuscateBaseAddressesDetailed(filePath string) *OperationResult {
+func ObfuscateBaseAddressesDetailed(filePath string) *common.OperationResult {
 	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
 	if err != nil {
-		return NewSkipped(fmt.Sprintf("failed to open file: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
 	}
 	defer func(file *os.File) {
 		_ = file.Close()
@@ -215,12 +255,12 @@ func ObfuscateBaseAddressesDetailed(filePath string) *OperationResult {
 
 	elfFile, err := ReadELF(file)
 	if err != nil {
-		return NewSkipped(fmt.Sprintf("failed to read ELF file: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to read ELF file: %v", err))
 	}
 
 	// Check if this is a Go binary before obfuscation
 	if elfFile.isGoBinary() {
-		return NewSkipped("skipping base address randomization for Go binary (would break runtime)")
+		return common.NewSkipped("skipping base address randomization for Go binary (would break runtime)")
 	}
 
 	result := elfFile.ObfuscateBaseAddresses()
@@ -229,7 +269,7 @@ func ObfuscateBaseAddressesDetailed(filePath string) *OperationResult {
 	}
 
 	if err := elfFile.CommitChanges(uint64(len(elfFile.RawData))); err != nil {
-		return NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
 	}
 
 	return result

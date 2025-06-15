@@ -3,6 +3,7 @@ package elfrw
 import (
 	"encoding/binary"
 	"fmt"
+	"gosstrip/common"
 	"io"
 	"os"
 )
@@ -570,3 +571,99 @@ func (e *ELFFile) clearNameOffsetCache() {
 }
 
 // AnalyzeELF provides detailed analysis of ELF file structure
+
+// AddHexSection adds a new section to the ELF file with hex-encoded content from the specified file
+// If password is provided, the hex data is encrypted with AES-256-GCM before storage
+func (e *ELFFile) AddHexSection(sectionName string, contentFilePath string, password string) error {
+	var finalContent []byte
+	var encrypted bool
+	var err error
+
+	if password != "" {
+		// Use common crypto functions for processing with password
+		finalContent, err = common.ProcessFileForInsertion(contentFilePath, password)
+		if err != nil {
+			return fmt.Errorf("failed to process file with encryption: %w", err)
+		}
+		encrypted = true
+	} else {
+		// No password - just convert to hex
+		finalContent, err = common.FileToHex(contentFilePath)
+		if err != nil {
+			return fmt.Errorf("failed to convert file to hex: %w", err)
+		}
+		encrypted = false
+	}
+
+	// Now proceed with the normal section addition logic using finalContent
+	return e.addSectionWithContent(sectionName, finalContent, encrypted)
+}
+
+// addSectionWithContent adds a section with the provided raw content
+func (e *ELFFile) addSectionWithContent(sectionName string, content []byte, encrypted bool) error {
+	// Validate that we can add sections
+	if err := e.validateForSectionAddition(); err != nil {
+		return fmt.Errorf("cannot add section: %w", err)
+	}
+
+	// Calculate alignment (typically 16 bytes for data sections)
+	alignment := uint64(16)
+	contentSize := uint64(len(content))
+	alignedSize := (contentSize + alignment - 1) &^ (alignment - 1)
+
+	// Find appropriate location for new section data
+	newDataOffset := e.findSectionDataLocation()
+
+	// Pad content to alignment
+	paddedContent := make([]byte, alignedSize)
+	copy(paddedContent, content)
+
+	// Create new section metadata
+	newSection := Section{
+		Name:   sectionName,
+		Offset: newDataOffset,
+		Size:   contentSize,
+		Type:   1, // SHT_PROGBITS
+		Flags:  2, // SHF_ALLOC
+		Index:  uint16(len(e.Sections)),
+	}
+
+	// Update string table with new section name
+	if err := e.addSectionNameToStringTable(sectionName); err != nil {
+		return fmt.Errorf("failed to update string table: %w", err)
+	}
+
+	// Add section to list
+	e.Sections = append(e.Sections, newSection)
+
+	// Rebuild section headers
+	if err := e.rebuildSectionHeaders(); err != nil {
+		return fmt.Errorf("failed to rebuild section headers: %w", err)
+	}
+
+	// Clear the name offsets cache
+	e.clearNameOffsetCache()
+
+	// Extend raw data if necessary and write new section data
+	requiredSize := newDataOffset + alignedSize
+	if requiredSize > uint64(len(e.RawData)) {
+		newRawData := make([]byte, requiredSize)
+		copy(newRawData, e.RawData)
+		e.RawData = newRawData
+	}
+
+	// Write section content
+	copy(e.RawData[newDataOffset:newDataOffset+contentSize], content)
+
+	// Zero-fill padding
+	for i := newDataOffset + contentSize; i < newDataOffset+alignedSize; i++ {
+		e.RawData[i] = 0
+	}
+
+	fmt.Printf("Hex section '%s' added successfully", sectionName)
+	if encrypted {
+		fmt.Printf(" (encrypted)")
+	}
+	fmt.Printf("\n")
+	return nil
+}

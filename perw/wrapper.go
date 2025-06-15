@@ -2,6 +2,7 @@ package perw
 
 import (
 	"fmt"
+	"gosstrip/common"
 	"os"
 	"regexp"
 )
@@ -28,10 +29,10 @@ func AnalyzePE(filePath string) error {
 }
 
 // ObfuscateBaseAddressesDetailed obfuscates base addresses in a PE file with detailed result
-func ObfuscateBaseAddressesDetailed(filePath string) *OperationResult {
+func ObfuscateBaseAddressesDetailed(filePath string) *common.OperationResult {
 	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
 	if err != nil {
-		return NewSkipped(fmt.Sprintf("failed to open file: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
 	}
 	defer func(file *os.File) {
 		_ = file.Close()
@@ -39,7 +40,7 @@ func ObfuscateBaseAddressesDetailed(filePath string) *OperationResult {
 
 	peFile, err := ReadPE(file)
 	if err != nil {
-		return NewSkipped(fmt.Sprintf("failed to read PE file: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to read PE file: %v", err))
 	}
 
 	result := peFile.ObfuscateBaseAddresses()
@@ -48,7 +49,7 @@ func ObfuscateBaseAddressesDetailed(filePath string) *OperationResult {
 	}
 
 	if err := peFile.CommitChangesSimple(-1); err != nil {
-		return NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
 	}
 
 	return result
@@ -76,8 +77,8 @@ func StripRegexBytes(filePath string, regex *regexp.Regexp) error {
 	return peFile.CommitChangesSimple(-1)
 }
 
-// AddSection adds a section to a PE file
-func AddSection(filePath, sectionName, sourceFile string) error {
+// AddHexSection adds a hex section to a PE file (with optional encryption)
+func AddHexSection(filePath, sectionName, sourceFile, password string) error {
 	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
 	if err != nil {
 		return err
@@ -91,7 +92,7 @@ func AddSection(filePath, sectionName, sourceFile string) error {
 		return err
 	}
 
-	if err := peFile.AddSection(sectionName, sourceFile); err != nil {
+	if err := peFile.AddHexSection(sectionName, sourceFile, password); err != nil {
 		return err
 	}
 
@@ -101,10 +102,10 @@ func AddSection(filePath, sectionName, sourceFile string) error {
 // --- New detailed wrapper functions that return OperationResult ---
 
 // StripDebugSectionsDetailed strips debug sections and returns detailed results
-func StripDebugSectionsDetailed(filePath string) *OperationResult {
+func StripDebugSectionsDetailed(filePath string) *common.OperationResult {
 	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
 	if err != nil {
-		return NewSkipped(fmt.Sprintf("failed to open file: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
 	}
 	defer func(file *os.File) {
 		_ = file.Close()
@@ -112,7 +113,7 @@ func StripDebugSectionsDetailed(filePath string) *OperationResult {
 
 	peFile, err := ReadPE(file)
 	if err != nil {
-		return NewSkipped(fmt.Sprintf("failed to read PE: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to read PE: %v", err))
 	}
 
 	result := peFile.StripDebugSections(false)
@@ -121,17 +122,17 @@ func StripDebugSectionsDetailed(filePath string) *OperationResult {
 	}
 
 	if err := peFile.CommitChangesSimple(-1); err != nil {
-		return NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
 	}
 
 	return result
 }
 
 // StripSymbolSectionsDetailed strips symbol sections and returns detailed results
-func StripSymbolSectionsDetailed(filePath string) *OperationResult {
+func StripSymbolSectionsDetailed(filePath string) *common.OperationResult {
 	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
 	if err != nil {
-		return NewSkipped(fmt.Sprintf("failed to open file: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
 	}
 	defer func(file *os.File) {
 		_ = file.Close()
@@ -139,7 +140,7 @@ func StripSymbolSectionsDetailed(filePath string) *OperationResult {
 
 	peFile, err := ReadPE(file)
 	if err != nil {
-		return NewSkipped(fmt.Sprintf("failed to read PE: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to read PE: %v", err))
 	}
 
 	result := peFile.StripSymbolTables(false)
@@ -148,17 +149,17 @@ func StripSymbolSectionsDetailed(filePath string) *OperationResult {
 	}
 
 	if err := peFile.CommitChangesSimple(-1); err != nil {
-		return NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
 	}
 
 	return result
 }
 
 // ObfuscateSectionNamesDetailed obfuscates section names and returns detailed results
-func ObfuscateSectionNamesDetailed(filePath string) *OperationResult {
+func ObfuscateSectionNamesDetailed(filePath string) *common.OperationResult {
 	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
 	if err != nil {
-		return NewSkipped(fmt.Sprintf("failed to open file: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
 	}
 	defer func(file *os.File) {
 		_ = file.Close()
@@ -166,7 +167,7 @@ func ObfuscateSectionNamesDetailed(filePath string) *OperationResult {
 
 	peFile, err := ReadPE(file)
 	if err != nil {
-		return NewSkipped(fmt.Sprintf("failed to read PE: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to read PE: %v", err))
 	}
 
 	result := peFile.RandomizeSectionNames()
@@ -175,17 +176,17 @@ func ObfuscateSectionNamesDetailed(filePath string) *OperationResult {
 	}
 
 	if err := peFile.CommitChangesSimple(-1); err != nil {
-		return NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
 	}
 
 	return result
 }
 
 // ObfuscateLoadConfigurationDetailed obfuscates load configuration with detailed result
-func ObfuscateLoadConfigurationDetailed(filePath string) *OperationResult {
+func ObfuscateLoadConfigurationDetailed(filePath string) *common.OperationResult {
 	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
 	if err != nil {
-		return NewSkipped(fmt.Sprintf("failed to open file: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
 	}
 	defer func(file *os.File) {
 		_ = file.Close()
@@ -193,7 +194,7 @@ func ObfuscateLoadConfigurationDetailed(filePath string) *OperationResult {
 
 	peFile, err := ReadPE(file)
 	if err != nil {
-		return NewSkipped(fmt.Sprintf("failed to read PE file: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to read PE file: %v", err))
 	}
 
 	result := peFile.ObfuscateLoadConfig()
@@ -202,17 +203,17 @@ func ObfuscateLoadConfigurationDetailed(filePath string) *OperationResult {
 	}
 
 	if err := peFile.CommitChangesSimple(-1); err != nil {
-		return NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
 	}
 
 	return result
 }
 
 // ObfuscateImportTableDetailed obfuscates import table with detailed result
-func ObfuscateImportTableDetailed(filePath string) *OperationResult {
+func ObfuscateImportTableDetailed(filePath string) *common.OperationResult {
 	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
 	if err != nil {
-		return NewSkipped(fmt.Sprintf("failed to open file: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
 	}
 	defer func(file *os.File) {
 		_ = file.Close()
@@ -220,7 +221,7 @@ func ObfuscateImportTableDetailed(filePath string) *OperationResult {
 
 	peFile, err := ReadPE(file)
 	if err != nil {
-		return NewSkipped(fmt.Sprintf("failed to read PE file: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to read PE file: %v", err))
 	}
 
 	result := peFile.ObfuscateImportTable()
@@ -229,17 +230,17 @@ func ObfuscateImportTableDetailed(filePath string) *OperationResult {
 	}
 
 	if err := peFile.CommitChangesSimple(-1); err != nil {
-		return NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
 	}
 
 	return result
 }
 
 // ObfuscateImportNamesDetailed obfuscates import names with detailed result
-func ObfuscateImportNamesDetailed(filePath string) *OperationResult {
+func ObfuscateImportNamesDetailed(filePath string) *common.OperationResult {
 	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
 	if err != nil {
-		return NewSkipped(fmt.Sprintf("failed to open file: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
 	}
 	defer func(file *os.File) {
 		_ = file.Close()
@@ -247,7 +248,7 @@ func ObfuscateImportNamesDetailed(filePath string) *OperationResult {
 
 	peFile, err := ReadPE(file)
 	if err != nil {
-		return NewSkipped(fmt.Sprintf("failed to read PE file: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to read PE file: %v", err))
 	}
 
 	result := peFile.ObfuscateImportNames()
@@ -256,17 +257,17 @@ func ObfuscateImportNamesDetailed(filePath string) *OperationResult {
 	}
 
 	if err := peFile.CommitChangesSimple(-1); err != nil {
-		return NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
 	}
 
 	return result
 }
 
 // ObfuscateRichHeaderDetailed obfuscates Rich header with detailed result
-func ObfuscateRichHeaderDetailed(filePath string) *OperationResult {
+func ObfuscateRichHeaderDetailed(filePath string) *common.OperationResult {
 	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
 	if err != nil {
-		return NewSkipped(fmt.Sprintf("failed to open file: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
 	}
 	defer func(file *os.File) {
 		_ = file.Close()
@@ -274,7 +275,7 @@ func ObfuscateRichHeaderDetailed(filePath string) *OperationResult {
 
 	peFile, err := ReadPE(file)
 	if err != nil {
-		return NewSkipped(fmt.Sprintf("failed to read PE file: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to read PE file: %v", err))
 	}
 
 	result := peFile.ObfuscateRichHeader()
@@ -283,17 +284,17 @@ func ObfuscateRichHeaderDetailed(filePath string) *OperationResult {
 	}
 
 	if err := peFile.CommitChangesSimple(-1); err != nil {
-		return NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
 	}
 
 	return result
 }
 
 // ObfuscateResourceDirectoryDetailed obfuscates resource directory with detailed result
-func ObfuscateResourceDirectoryDetailed(filePath string) *OperationResult {
+func ObfuscateResourceDirectoryDetailed(filePath string) *common.OperationResult {
 	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
 	if err != nil {
-		return NewSkipped(fmt.Sprintf("failed to open file: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
 	}
 	defer func(file *os.File) {
 		_ = file.Close()
@@ -301,7 +302,7 @@ func ObfuscateResourceDirectoryDetailed(filePath string) *OperationResult {
 
 	peFile, err := ReadPE(file)
 	if err != nil {
-		return NewSkipped(fmt.Sprintf("failed to read PE file: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to read PE file: %v", err))
 	}
 
 	result := peFile.ObfuscateResourceDirectory()
@@ -310,17 +311,17 @@ func ObfuscateResourceDirectoryDetailed(filePath string) *OperationResult {
 	}
 
 	if err := peFile.CommitChangesSimple(-1); err != nil {
-		return NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
 	}
 
 	return result
 }
 
 // ObfuscateExportTableDetailed obfuscates export table with detailed result
-func ObfuscateExportTableDetailed(filePath string) *OperationResult {
+func ObfuscateExportTableDetailed(filePath string) *common.OperationResult {
 	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
 	if err != nil {
-		return NewSkipped(fmt.Sprintf("failed to open file: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
 	}
 	defer func(file *os.File) {
 		_ = file.Close()
@@ -328,7 +329,7 @@ func ObfuscateExportTableDetailed(filePath string) *OperationResult {
 
 	peFile, err := ReadPE(file)
 	if err != nil {
-		return NewSkipped(fmt.Sprintf("failed to read PE file: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to read PE file: %v", err))
 	}
 
 	result := peFile.ObfuscateExportTable()
@@ -337,7 +338,7 @@ func ObfuscateExportTableDetailed(filePath string) *OperationResult {
 	}
 
 	if err := peFile.CommitChangesSimple(-1); err != nil {
-		return NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
 	}
 
 	return result

@@ -4,6 +4,7 @@ import (
 	"debug/pe"
 	"encoding/binary"
 	"fmt"
+	"gosstrip/common"
 	"strings"
 )
 
@@ -201,21 +202,7 @@ func (p *PEFile) shouldStripForFileType(sectionType SectionType) bool {
 
 // sectionMatches checks if a section name matches the given matcher
 func sectionMatches(sectionName string, matcher SectionMatcher) bool {
-	// Check exact matches
-	for _, name := range matcher.ExactNames {
-		if sectionName == name {
-			return true
-		}
-	}
-
-	// Check prefix matches
-	for _, prefix := range matcher.PrefixNames {
-		if strings.HasPrefix(sectionName, prefix) {
-			return true
-		}
-	}
-
-	return false
+	return common.MatchesPattern(sectionName, matcher.ExactNames, matcher.PrefixNames)
 }
 
 // findSectionByName finds a section by its name (internal helper, returns pointer or nil)

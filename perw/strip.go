@@ -3,6 +3,7 @@ package perw
 import (
 	"crypto/rand"
 	"fmt"
+	"gosstrip/common"
 	"regexp"
 	"strings"
 )
@@ -128,15 +129,15 @@ func (p *PEFile) fillRegion(offset int64, size int, mode FillMode) error {
 // --- Core Stripping Logic ---
 
 // StripSectionsByType strips sections based on their type
-func (p *PEFile) StripSectionsByType(sectionType SectionType, fillMode FillMode) *OperationResult {
+func (p *PEFile) StripSectionsByType(sectionType SectionType, fillMode FillMode) *common.OperationResult {
 	matcher, exists := sectionMatchers[sectionType]
 	if !exists {
-		return NewSkipped(fmt.Sprintf("unknown section type: %v", sectionType))
+		return common.NewSkipped(fmt.Sprintf("unknown section type: %v", sectionType))
 	}
 
 	// Check if we should strip this type for the current file
 	if !p.shouldStripForFileType(sectionType) {
-		return NewSkipped("not applicable for this file type")
+		return common.NewSkipped("not applicable for this file type")
 	}
 
 	strippedCount := 0
@@ -148,7 +149,7 @@ func (p *PEFile) StripSectionsByType(sectionType SectionType, fillMode FillMode)
 
 		if section.Offset > 0 && section.Size > 0 {
 			if err := p.fillRegion(section.Offset, int(section.Size), fillMode); err != nil {
-				return NewSkipped(fmt.Sprintf("failed to fill section %s: %v", section.Name, err))
+				return common.NewSkipped(fmt.Sprintf("failed to fill section %s: %v", section.Name, err))
 			}
 			strippedSections = append(strippedSections, section.Name)
 		}
@@ -157,11 +158,11 @@ func (p *PEFile) StripSectionsByType(sectionType SectionType, fillMode FillMode)
 	}
 
 	if strippedCount == 0 {
-		return NewSkipped("no matching sections found")
+		return common.NewSkipped("no matching sections found")
 	}
 
 	message := fmt.Sprintf("stripped sections: %s", strings.Join(strippedSections, ", "))
-	return NewApplied(message, strippedCount)
+	return common.NewApplied(message, strippedCount)
 }
 
 // StripSectionsByNames provides the original interface for backward compatibility
@@ -234,7 +235,7 @@ func (p *PEFile) StripBytePattern(pattern *regexp.Regexp, fillMode FillMode) (in
 // --- Convenience Functions ---
 
 // StripDebugSections removes debugging information
-func (p *PEFile) StripDebugSections(useRandomFill bool) *OperationResult {
+func (p *PEFile) StripDebugSections(useRandomFill bool) *common.OperationResult {
 	fillMode := ZeroFill
 	if useRandomFill {
 		fillMode = RandomFill
@@ -243,7 +244,7 @@ func (p *PEFile) StripDebugSections(useRandomFill bool) *OperationResult {
 }
 
 // StripSymbolTables removes symbol table information (usually no-op for PE)
-func (p *PEFile) StripSymbolTables(useRandomFill bool) *OperationResult {
+func (p *PEFile) StripSymbolTables(useRandomFill bool) *common.OperationResult {
 	fillMode := ZeroFill
 	if useRandomFill {
 		fillMode = RandomFill
@@ -252,7 +253,7 @@ func (p *PEFile) StripSymbolTables(useRandomFill bool) *OperationResult {
 }
 
 // StripRelocationTable removes base relocation information
-func (p *PEFile) StripRelocationTable(useRandomFill bool) *OperationResult {
+func (p *PEFile) StripRelocationTable(useRandomFill bool) *common.OperationResult {
 	fillMode := ZeroFill
 	if useRandomFill {
 		fillMode = RandomFill
@@ -261,7 +262,7 @@ func (p *PEFile) StripRelocationTable(useRandomFill bool) *OperationResult {
 }
 
 // StripNonEssentialSections removes non-essential metadata
-func (p *PEFile) StripNonEssentialSections(useRandomFill bool) *OperationResult {
+func (p *PEFile) StripNonEssentialSections(useRandomFill bool) *common.OperationResult {
 	fillMode := ZeroFill
 	if useRandomFill {
 		fillMode = RandomFill
@@ -270,7 +271,7 @@ func (p *PEFile) StripNonEssentialSections(useRandomFill bool) *OperationResult 
 }
 
 // StripExceptionHandlingData removes exception handling data (risky)
-func (p *PEFile) StripExceptionHandlingData(useRandomFill bool) *OperationResult {
+func (p *PEFile) StripExceptionHandlingData(useRandomFill bool) *common.OperationResult {
 	fillMode := ZeroFill
 	if useRandomFill {
 		fillMode = RandomFill
@@ -279,7 +280,7 @@ func (p *PEFile) StripExceptionHandlingData(useRandomFill bool) *OperationResult
 }
 
 // StripBuildInfoSections removes build information
-func (p *PEFile) StripBuildInfoSections(useRandomFill bool) *OperationResult {
+func (p *PEFile) StripBuildInfoSections(useRandomFill bool) *common.OperationResult {
 	fillMode := ZeroFill
 	if useRandomFill {
 		fillMode = RandomFill

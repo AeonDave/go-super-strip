@@ -3,6 +3,7 @@ package perw
 import (
 	"encoding/binary"
 	"fmt"
+	"gosstrip/common"
 	"io"
 	"os"
 )
@@ -296,6 +297,109 @@ func (p *PEFile) AddSection(sectionName string, contentFilePath string) error {
 	}
 
 	fmt.Printf("Section '%s' added successfully\n", sectionName)
+	return nil
+}
+
+// AddHexSection adds a new section to the PE file with hex-encoded content from the specified file
+// If password is provided, the hex data is encrypted with AES-256-GCM before storage
+func (p *PEFile) AddHexSection(sectionName string, contentFilePath string, password string) error {
+	// Use common crypto functions
+	finalContent, err := common.ProcessFileForInsertion(contentFilePath, password)
+	if err != nil {
+		return fmt.Errorf("failed to process file for insertion: %w", err)
+	}
+
+	// Now proceed with the normal section addition logic using finalContent
+	return p.addSectionWithContent(sectionName, finalContent, password != "")
+}
+
+// addSectionWithContent adds a section with the provided raw content
+func (p *PEFile) addSectionWithContent(sectionName string, content []byte, encrypted bool) error {
+	// Get alignments from PE headers
+	peHeaderOffset := int64(binary.LittleEndian.Uint32(p.RawData[60:64]))
+	optionalHeaderOffset := peHeaderOffset + 4 + 20
+
+	// Read file and section alignment (these are in the same positions for 32/64 bit)
+	fileAlignment := binary.LittleEndian.Uint32(p.RawData[optionalHeaderOffset+36 : optionalHeaderOffset+40])
+	sectionAlignment := binary.LittleEndian.Uint32(p.RawData[optionalHeaderOffset+32 : optionalHeaderOffset+36])
+
+	// Calculate aligned content size
+	rawDataSize := uint32(len(content))
+	alignedSize := (rawDataSize + fileAlignment - 1) &^ (fileAlignment - 1)
+
+	// Find the end of the file to place our new section
+	fileSize := int64(len(p.RawData))
+	newOffset := (fileSize + int64(fileAlignment) - 1) &^ (int64(fileAlignment) - 1)
+
+	// Calculate virtual address for new section
+	var newVirtualAddress uint32
+	if len(p.Sections) > 0 {
+		// Find the section with the highest RVA + VirtualSize
+		maxVirtualEnd := uint32(0)
+		for _, section := range p.Sections {
+			virtualEnd := section.RVA + ((section.VirtualSize + sectionAlignment - 1) &^ (sectionAlignment - 1))
+			if virtualEnd > maxVirtualEnd {
+				maxVirtualEnd = virtualEnd
+			}
+		}
+		newVirtualAddress = maxVirtualEnd
+	} else {
+		newVirtualAddress = sectionAlignment
+	}
+
+	// Extend RawData to fit the new section
+	neededSize := newOffset + int64(alignedSize)
+	if neededSize > int64(len(p.RawData)) {
+		newRawData := make([]byte, neededSize)
+		copy(newRawData, p.RawData)
+		p.RawData = newRawData
+	}
+
+	// Copy content to the new section location and zero-pad
+	copy(p.RawData[newOffset:newOffset+int64(len(content))], content)
+	for i := newOffset + int64(len(content)); i < newOffset+int64(alignedSize); i++ {
+		p.RawData[i] = 0
+	}
+
+	// Create new section
+	newSection := Section{
+		Name:           sectionName,
+		Offset:         newOffset,
+		Size:           int64(alignedSize),
+		VirtualAddress: newVirtualAddress,
+		VirtualSize:    rawDataSize,
+		Index:          len(p.Sections),
+		Flags:          0x40000040, // IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ
+		RVA:            newVirtualAddress,
+	}
+
+	// Add section to list
+	p.Sections = append(p.Sections, newSection)
+
+	// Update section count in COFF header
+	newSectionCount := uint16(len(p.Sections))
+	if err := WriteAtOffset(p.RawData, peHeaderOffset+6, newSectionCount); err != nil {
+		return fmt.Errorf("failed to update section count: %w", err)
+	}
+	// Write the new section header
+	optionalHeaderSize := binary.LittleEndian.Uint16(p.RawData[peHeaderOffset+20 : peHeaderOffset+22])
+	sectionHeaderOffset := peHeaderOffset + 4 + 20 + int64(optionalHeaderSize)
+	newHeaderOffset := sectionHeaderOffset + int64((newSection.Index)*40)
+
+	if err := p.writeSectionHeader(&newSection, newHeaderOffset); err != nil {
+		return fmt.Errorf("failed to write section header: %w", err)
+	}
+
+	// Update SizeOfImage in Optional Header
+	if err := p.updateSizeOfImage(sectionAlignment); err != nil {
+		return fmt.Errorf("failed to update SizeOfImage: %w", err)
+	}
+
+	fmt.Printf("Hex section '%s' added successfully", sectionName)
+	if encrypted {
+		fmt.Printf(" (encrypted)")
+	}
+	fmt.Printf("\n")
 	return nil
 }
 
