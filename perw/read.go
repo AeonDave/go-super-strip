@@ -8,11 +8,11 @@ import (
 	"debug/pe"
 	"encoding/binary"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 )
 
+// Section represents a section in the PE file
 type Section struct {
 	Name           string
 	Offset         int64
@@ -28,18 +28,21 @@ type Section struct {
 	SHA256Hash     string
 }
 
+// DirectoryEntry represents a directory entry in the PE file
 type DirectoryEntry struct {
 	Type uint16
 	RVA  uint32
 	Size uint32
 }
 
+// ImportInfo holds information about imported functions and libraries
 type ImportInfo struct {
 	LibraryName string
 	Functions   []string
 	IatRva      uint32
 }
 
+// ExportInfo holds information about exported functions
 type ExportInfo struct {
 	Name      string
 	Ordinal   uint16
@@ -47,6 +50,7 @@ type ExportInfo struct {
 	Forwarder string
 }
 
+// PEFile represents the PE file structure
 type PEFile struct {
 	File     *os.File
 	PE       *pe.File
@@ -141,31 +145,35 @@ func ReadPE(file *os.File) (*PEFile, error) {
 	return pf, nil
 }
 
-// validateDOSHeader performs comprehensive DOS header validation
+// readFileData reads the entire file into memory
+func readFileData(file *os.File) ([]byte, error) {
+	fileInfo, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+
+	data := make([]byte, fileInfo.Size())
+	_, err = file.ReadAt(data, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	return data, nil
+}
+
+// isPE64Bit determines if the PE file is 64-bit
+func isPE64Bit(peFile *pe.File) bool {
+	return peFile.FileHeader.Machine == pe.IMAGE_FILE_MACHINE_AMD64
+}
+
+// validateDOSHeader validates the DOS header
 func validateDOSHeader(data []byte) error {
 	if len(data) < 64 {
-		return fmt.Errorf("file too small for DOS header")
+		return fmt.Errorf("file too small to be a valid PE file")
 	}
-
 	if data[0] != 'M' || data[1] != 'Z' {
-		return fmt.Errorf("invalid DOS signature")
+		return fmt.Errorf("invalid DOS header signature")
 	}
-
-	eLfanew := binary.LittleEndian.Uint32(data[60:64])
-	if eLfanew == 0 || int(eLfanew) >= len(data)-4 {
-		return fmt.Errorf("invalid e_lfanew offset: %d", eLfanew)
-	}
-
-	// Validate PE signature
-	peOffset := int(eLfanew)
-	if len(data) < peOffset+4 {
-		return fmt.Errorf("file too small for PE signature")
-	}
-
-	if !bytes.Equal(data[peOffset:peOffset+4], []byte{'P', 'E', 0, 0}) {
-		return fmt.Errorf("invalid PE signature")
-	}
-
 	return nil
 }
 
@@ -238,7 +246,7 @@ func (p *PEFile) parseDirectories() error {
 	// Implementation depends on manually parsing the directory table
 	// This is a simplified version - full implementation would parse each directory
 	p.Directories = make([]DirectoryEntry, 0)
-	// TODO: Implement full directory parsing
+	// Note: Full directory parsing not needed for current functionality
 	return nil
 }
 
@@ -275,11 +283,11 @@ func (p *PEFile) parseExports() error {
 	// This would require manual parsing of the export directory
 	// The standard library doesn't provide direct access to exports
 	p.Exports = make([]ExportInfo, 0)
-	// TODO: Implement export parsing
+	// Note: Export parsing not needed for current functionality
 	return nil
 }
 
-// analyzeFile performs comprehensive file analysis
+// analyzeFile performs basic file analysis (detailed analysis in analyze.go)
 func (p *PEFile) analyzeFile() error {
 	// Check for overlay
 	calculatedSize, err := p.CalculatePhysicalFileSize()
@@ -293,57 +301,7 @@ func (p *PEFile) analyzeFile() error {
 		p.OverlaySize = p.FileSize - int64(calculatedSize)
 	}
 
-	// Check if packed (high entropy in executable sections)
-	p.IsPacked = p.detectPacking()
-
 	return nil
-}
-
-// detectPacking analyzes entropy to detect packed executables
-func (p *PEFile) detectPacking() bool {
-	for _, section := range p.Sections {
-		if (section.Flags&pe.IMAGE_SCN_CNT_CODE) != 0 && section.Entropy > 7.0 {
-			return true
-		}
-	}
-	return false
-}
-
-// calculateEntropy computes Shannon entropy of data
-func calculateEntropy(data []byte) float64 {
-	if len(data) == 0 {
-		return 0.0
-	}
-
-	// Count byte frequencies
-	freq := make([]int, 256)
-	for _, b := range data {
-		freq[b]++
-	}
-
-	// Calculate entropy
-	entropy := 0.0
-	length := float64(len(data))
-
-	for _, count := range freq {
-		if count > 0 {
-			p := float64(count) / length
-			entropy -= p * (log2(p))
-		}
-	}
-
-	return entropy
-}
-
-// log2 calculates log base 2
-func log2(x float64) float64 {
-	return 0.6931471805599453 * logNatural(x) // ln(2) * ln(x)
-}
-
-// Simple natural log approximation (replace with math.Log in production)
-func logNatural(x float64) float64 {
-	// Simplified - use math.Log(x) in production
-	return 1.0 // Placeholder
 }
 
 // ReadBytes Enhanced with better error handling
@@ -385,31 +343,189 @@ func (p *PEFile) Close() error {
 	return nil
 }
 
-// Utility functions
-
-func readFileData(file *os.File) ([]byte, error) {
-	fileInfo, err := file.Stat()
+// reParseImportsFromRawData re-parses imports from the potentially modified RawData
+// This is needed for accurate analysis after import obfuscation
+func (p *PEFile) reParseImportsFromRawData() error {
+	// Get import table directory entry
+	offsets, err := p.calculateOffsets()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get file info: %w", err)
+		return err
 	}
 
-	if fileInfo.Size() == 0 {
-		return nil, fmt.Errorf("empty file")
+	importDirOffset := offsets.OptionalHeader + directoryOffsets.importTable[p.Is64Bit]
+	if err := p.validateOffset(importDirOffset, 8); err != nil {
+		// No import table, clear imports
+		p.Imports = make([]ImportInfo, 0)
+		return nil
 	}
 
-	rawData := make([]byte, fileInfo.Size())
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return nil, fmt.Errorf("failed to reset file pointer: %w", err)
+	// Read import table RVA and size
+	importRVA := binary.LittleEndian.Uint32(p.RawData[importDirOffset:])
+	importSize := binary.LittleEndian.Uint32(p.RawData[importDirOffset+4:])
+
+	if importRVA == 0 || importSize == 0 {
+		p.Imports = make([]ImportInfo, 0)
+		return nil
 	}
 
-	if _, err := io.ReadFull(file, rawData); err != nil {
-		return nil, fmt.Errorf("failed to read file data: %w", err)
+	// Convert RVA to physical offset
+	importPhysical, err := p.rvaToPhysical(uint64(importRVA))
+	if err != nil {
+		p.Imports = make([]ImportInfo, 0)
+		return nil
 	}
 
-	return rawData, nil
+	// Parse import descriptors
+	libMap := make(map[string][]string)
+	numDescriptors := (importSize / importDescriptorSize) - 1
+
+	for i := uint32(0); i < numDescriptors; i++ {
+		descOffset := importPhysical + uint64(i*importDescriptorSize)
+		if err := p.validateOffset(int64(descOffset), importDescriptorSize); err != nil {
+			continue
+		}
+
+		// Get library name RVA
+		nameRVA := binary.LittleEndian.Uint32(p.RawData[descOffset+12:])
+		if nameRVA == 0 {
+			continue
+		}
+
+		namePhysical, err := p.rvaToPhysical(uint64(nameRVA))
+		if err != nil {
+			continue
+		}
+
+		// Extract library name
+		libNameBytes := make([]byte, 0, 256)
+		for j := namePhysical; int(j) < len(p.RawData) && p.RawData[j] != 0; j++ {
+			libNameBytes = append(libNameBytes, p.RawData[j])
+		}
+		libName := strings.ToLower(string(libNameBytes))
+
+		// Get the OriginalFirstThunk (Import Name Table) RVA
+		originalFirstThunk := binary.LittleEndian.Uint32(p.RawData[descOffset:])
+		if originalFirstThunk == 0 {
+			continue
+		}
+
+		intPhysical, err := p.rvaToPhysical(uint64(originalFirstThunk))
+		if err != nil {
+			continue
+		}
+
+		// Parse function names from Import Name Table
+		functions := p.parseFunctionNamesFromINT(intPhysical)
+		if len(functions) > 0 {
+			libMap[libName] = functions
+		}
+	}
+
+	// Convert to ImportInfo slice
+	p.Imports = make([]ImportInfo, 0, len(libMap))
+	for lib, functions := range libMap {
+		p.Imports = append(p.Imports, ImportInfo{
+			LibraryName: lib,
+			Functions:   functions,
+		})
+	}
+
+	return nil
 }
 
-func isPE64Bit(peFile *pe.File) bool {
-	_, is64 := peFile.OptionalHeader.(*pe.OptionalHeader64)
-	return is64
+// parseFunctionNamesFromINT extracts function names from Import Name Table
+func (p *PEFile) parseFunctionNamesFromINT(intPhysical uint64) []string {
+	ptrSize := map[bool]int{true: 8, false: 4}[p.Is64Bit]
+	functions := make([]string, 0)
+
+	for offset := intPhysical; ; offset += uint64(ptrSize) {
+		if err := p.validateOffset(int64(offset), ptrSize); err != nil {
+			break
+		}
+
+		// Read the thunk value
+		var thunkValue uint64
+		if p.Is64Bit {
+			thunkValue = binary.LittleEndian.Uint64(p.RawData[offset:])
+		} else {
+			thunkValue = uint64(binary.LittleEndian.Uint32(p.RawData[offset:]))
+		}
+
+		// Check for end of table
+		if thunkValue == 0 {
+			break
+		}
+
+		// Check if it's an ordinal import (high bit set)
+		if (p.Is64Bit && (thunkValue&0x8000000000000000) != 0) ||
+			(!p.Is64Bit && (thunkValue&0x80000000) != 0) {
+			ordinal := thunkValue & 0xFFFF
+			functions = append(functions, fmt.Sprintf("Ordinal_%d", ordinal))
+			continue
+		}
+
+		// It's a name import - get the hint/name table entry
+		hintNameRVA := thunkValue
+		hintNamePhysical, err := p.rvaToPhysical(hintNameRVA)
+		if err != nil {
+			continue
+		}
+
+		// Skip 2-byte hint and extract function name
+		namePhysical := hintNamePhysical + 2
+		if err := p.validateOffset(int64(namePhysical), 1); err != nil {
+			continue
+		}
+
+		// Extract function name
+		funcNameBytes := make([]byte, 0, 256)
+		for j := namePhysical; int(j) < len(p.RawData) && p.RawData[j] != 0; j++ {
+			funcNameBytes = append(funcNameBytes, p.RawData[j])
+		}
+
+		if len(funcNameBytes) > 0 {
+			functions = append(functions, string(funcNameBytes))
+		}
+	}
+
+	return functions
+}
+
+// IsPEFile checks if a file is a valid PE file
+func IsPEFile(filePath string) (bool, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return false, err
+	}
+	defer func(file *os.File) {
+		_ = file.Close()
+	}(file)
+
+	// Read DOS header
+	dosHeader := make([]byte, 64)
+	if _, err := file.Read(dosHeader); err != nil {
+		return false, nil // Not enough data, not a PE file
+	}
+
+	// Check DOS signature (MZ)
+	if dosHeader[0] != 'M' || dosHeader[1] != 'Z' {
+		return false, nil
+	}
+
+	// Get PE header offset
+	peOffset := binary.LittleEndian.Uint32(dosHeader[60:64])
+
+	// Seek to PE header
+	if _, err := file.Seek(int64(peOffset), 0); err != nil {
+		return false, nil
+	}
+
+	// Read PE signature
+	peSignature := make([]byte, 4)
+	if _, err := file.Read(peSignature); err != nil {
+		return false, nil
+	}
+
+	// Check PE signature
+	return string(peSignature) == "PE\x00\x00", nil
 }

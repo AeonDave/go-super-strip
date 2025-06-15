@@ -40,13 +40,14 @@ type Segment struct {
 }
 
 type ELFFile struct {
-	File     *os.File
-	RawData  []byte
-	ELF      elf_reader.ELFFile
-	Is64Bit  bool
-	FileName string
-	Sections []Section
-	Segments []Segment
+	File        *os.File
+	RawData     []byte
+	ELF         elf_reader.ELFFile
+	Is64Bit     bool
+	FileName    string
+	Sections    []Section
+	Segments    []Segment
+	nameOffsets map[string]uint32 // Cache for string table offsets during section insertion
 }
 
 func ReadELF(file *os.File) (*ELFFile, error) {
@@ -235,4 +236,24 @@ func parseFlags(flags elf_reader.ELFSectionFlags) uint64 {
 		result |= 0x1
 	}
 	return result
+}
+
+// IsELFFile checks if a file is a valid ELF file
+func IsELFFile(filePath string) (bool, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return false, err
+	}
+	defer func(file *os.File) {
+		_ = file.Close()
+	}(file)
+
+	// Read ELF header
+	elfHeader := make([]byte, 16)
+	if _, err := file.Read(elfHeader); err != nil {
+		return false, nil // Not enough data, not an ELF file
+	}
+
+	// Check ELF signature (0x7f + "ELF")
+	return elfHeader[0] == 0x7f && elfHeader[1] == 'E' && elfHeader[2] == 'L' && elfHeader[3] == 'F', nil
 }

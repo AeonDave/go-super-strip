@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"os"
 )
 
 // WriteAtOffset writes a value to rawData at a specific offset, ensuring bounds and endianness.
@@ -204,4 +205,156 @@ func (p *PEFile) UpdateCOFFHeader() error {
 
 	numberOfSections := uint16(len(p.Sections))
 	return WriteAtOffset(p.RawData, coffHeaderOffset+2, numberOfSections)
+}
+
+// AddSection adds a new section to the PE file with content from the specified file
+func (p *PEFile) AddSection(sectionName string, contentFilePath string) error {
+	// Read content from file
+	content, err := os.ReadFile(contentFilePath)
+	if err != nil {
+		return fmt.Errorf("failed to read content file: %w", err)
+	}
+
+	// Get alignments from PE headers
+	peHeaderOffset := int64(binary.LittleEndian.Uint32(p.RawData[60:64]))
+	optionalHeaderOffset := peHeaderOffset + 4 + 20
+
+	// Read file and section alignment (these are in the same positions for 32/64 bit)
+	fileAlignment := binary.LittleEndian.Uint32(p.RawData[optionalHeaderOffset+36 : optionalHeaderOffset+40])
+	sectionAlignment := binary.LittleEndian.Uint32(p.RawData[optionalHeaderOffset+32 : optionalHeaderOffset+36])
+
+	// Calculate aligned content size
+	rawDataSize := uint32(len(content))
+	alignedSize := (rawDataSize + fileAlignment - 1) &^ (fileAlignment - 1)
+
+	// Find the end of the file to place our new section
+	fileSize := int64(len(p.RawData))
+	newOffset := (fileSize + int64(fileAlignment) - 1) &^ (int64(fileAlignment) - 1)
+
+	// Calculate virtual address for new section
+	var newVirtualAddress uint32
+	if len(p.Sections) > 0 {
+		// Find the section with the highest RVA + VirtualSize
+		maxVirtualEnd := uint32(0)
+		for _, section := range p.Sections {
+			virtualEnd := section.RVA + ((section.VirtualSize + sectionAlignment - 1) &^ (sectionAlignment - 1))
+			if virtualEnd > maxVirtualEnd {
+				maxVirtualEnd = virtualEnd
+			}
+		}
+		newVirtualAddress = maxVirtualEnd
+	} else {
+		newVirtualAddress = sectionAlignment
+	}
+
+	// Extend RawData to fit the new section
+	neededSize := newOffset + int64(alignedSize)
+	if neededSize > int64(len(p.RawData)) {
+		newRawData := make([]byte, neededSize)
+		copy(newRawData, p.RawData)
+		p.RawData = newRawData
+	}
+
+	// Copy content to the new section location and zero-pad
+	copy(p.RawData[newOffset:newOffset+int64(len(content))], content)
+	for i := newOffset + int64(len(content)); i < newOffset+int64(alignedSize); i++ {
+		p.RawData[i] = 0
+	}
+
+	// Create new section
+	newSection := Section{
+		Name:           sectionName,
+		Offset:         newOffset,
+		Size:           int64(alignedSize),
+		VirtualAddress: newVirtualAddress,
+		VirtualSize:    rawDataSize,
+		Index:          len(p.Sections),
+		Flags:          0x40000040, // IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ
+		RVA:            newVirtualAddress,
+	}
+
+	// Add section to list
+	p.Sections = append(p.Sections, newSection)
+
+	// Update section count in COFF header
+	newSectionCount := uint16(len(p.Sections))
+	if err := WriteAtOffset(p.RawData, peHeaderOffset+6, newSectionCount); err != nil {
+		return fmt.Errorf("failed to update section count: %w", err)
+	}
+	// Write the new section header
+	optionalHeaderSize := binary.LittleEndian.Uint16(p.RawData[peHeaderOffset+20 : peHeaderOffset+22])
+	sectionHeaderOffset := peHeaderOffset + 4 + 20 + int64(optionalHeaderSize)
+	newHeaderOffset := sectionHeaderOffset + int64((newSection.Index)*40)
+
+	if err := p.writeSectionHeader(&newSection, newHeaderOffset); err != nil {
+		return fmt.Errorf("failed to write section header: %w", err)
+	}
+
+	// Update SizeOfImage in Optional Header
+	if err := p.updateSizeOfImage(sectionAlignment); err != nil {
+		return fmt.Errorf("failed to update SizeOfImage: %w", err)
+	}
+
+	fmt.Printf("Section '%s' added successfully\n", sectionName)
+	return nil
+}
+
+// updateSizeOfImage updates the SizeOfImage field in the Optional Header
+func (p *PEFile) updateSizeOfImage(sectionAlignment uint32) error {
+	peHeaderOffset := int64(binary.LittleEndian.Uint32(p.RawData[60:64]))
+	optionalHeaderOffset := peHeaderOffset + 4 + 20
+
+	// Find the highest virtual address + virtual size
+	var maxVirtualEnd uint32
+	for _, section := range p.Sections {
+		virtualEnd := section.RVA + ((section.VirtualSize + sectionAlignment - 1) &^ (sectionAlignment - 1))
+		if virtualEnd > maxVirtualEnd {
+			maxVirtualEnd = virtualEnd
+		}
+	}
+
+	// SizeOfImage is at offset 56 in both 32-bit and 64-bit Optional Headers
+	return WriteAtOffset(p.RawData, optionalHeaderOffset+56, maxVirtualEnd)
+}
+
+// writeSectionHeader writes a section header at the specified offset
+func (p *PEFile) writeSectionHeader(section *Section, headerOffset int64) error {
+	// Write section header fields
+	name := make([]byte, 8)
+	copy(name, section.Name)
+	if err := WriteAtOffset(p.RawData, headerOffset, name); err != nil {
+		return err
+	}
+
+	if err := WriteAtOffset(p.RawData, headerOffset+8, uint32(section.VirtualSize)); err != nil {
+		return err
+	}
+	if err := WriteAtOffset(p.RawData, headerOffset+12, section.RVA); err != nil {
+		return err
+	}
+	if err := WriteAtOffset(p.RawData, headerOffset+16, uint32(section.Size)); err != nil {
+		return err
+	}
+	if err := WriteAtOffset(p.RawData, headerOffset+20, uint32(section.Offset)); err != nil {
+		return err
+	}
+	// Skip relocations and line numbers (offset 24-32)
+	if err := WriteAtOffset(p.RawData, headerOffset+24, uint32(0)); err != nil {
+		return err
+	}
+	if err := WriteAtOffset(p.RawData, headerOffset+28, uint32(0)); err != nil {
+		return err
+	}
+	if err := WriteAtOffset(p.RawData, headerOffset+32, uint16(0)); err != nil {
+		return err
+	}
+	if err := WriteAtOffset(p.RawData, headerOffset+34, uint16(0)); err != nil {
+		return err
+	}
+	// Write characteristics
+	if err := WriteAtOffset(p.RawData, headerOffset+36, section.Flags); err != nil {
+		return err
+	}
+
+	return nil
 }

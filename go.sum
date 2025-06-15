@@ -1,4 +1,2 @@
-github.com/RIscRIpt/pecoff v0.0.0-20200923152459-a332238caa87 h1:QJKfqX8iCuRT9HZoQGU7cUjnTjKJrypSCghfmAX2vW0=
-github.com/RIscRIpt/pecoff v0.0.0-20200923152459-a332238caa87/go.mod h1:fA0yvj8xMccdfkCwUABhuLZTrRXgyvg3b1k/B/EqHu4=
 github.com/yalue/elf_reader v1.0.1 h1:cGeZnBP4g8u06YlEb1cef9uJBx8shQ4XM/Gyk2e4ls8=
 github.com/yalue/elf_reader v1.0.1/go.mod h1:2WMcv9f54UGq8H2MU4EHstdkSl0L0v2AycubDcDtpVU=

@@ -229,6 +229,40 @@ func (e *ELFFile) StripSectionsByCategory(categoryName string, useRandom bool) e
 	return e.UpdateSectionHeaders()
 }
 
+// StripSectionsByCategoryDetailed strips sections by their category with detailed result
+func (e *ELFFile) StripSectionsByCategoryDetailed(categoryName string, useRandom bool) *OperationResult {
+	if err := e.validateELF(); err != nil {
+		return NewSkipped(fmt.Sprintf("ELF validation failed: %v", err))
+	}
+
+	category, exists := sectionCategories[categoryName]
+	if !exists {
+		return NewSkipped(fmt.Sprintf("unknown section category: %s", categoryName))
+	}
+
+	strippedSections := []string{}
+	for i, section := range e.Sections {
+		if matchSectionName(section.Name, category.ExactNames, category.PrefixNames) {
+			if err := e.stripSectionData(i, useRandom); err != nil {
+				return NewSkipped(fmt.Sprintf("failed to strip section %s: %v", section.Name, err))
+			}
+			strippedSections = append(strippedSections, section.Name)
+		}
+	}
+
+	if len(strippedSections) == 0 {
+		return NewSkipped(fmt.Sprintf("no %s sections found", category.Description))
+	}
+
+	// Update section headers after modification
+	if err := e.UpdateSectionHeaders(); err != nil {
+		return NewSkipped(fmt.Sprintf("failed to update section headers: %v", err))
+	}
+
+	message := fmt.Sprintf("stripped %s sections: %s", category.Description, strings.Join(strippedSections, ", "))
+	return NewApplied(message, len(strippedSections))
+}
+
 // StripSectionsByNames processes sections based on name match (exact or prefix).
 func (e *ELFFile) StripSectionsByNames(names []string, usePrefix, useRandom bool) error {
 	if err := e.validateELF(); err != nil {
@@ -392,95 +426,105 @@ func (e *ELFFile) StripNonLoadableSegments(useRandom bool) error {
 // --- High-Level Stripping Functions ---
 
 // StripDebugSections removes debugging information.
-func (e *ELFFile) StripDebugSections(useRandom bool) error {
-	return e.StripSectionsByCategory("debug", useRandom)
+func (e *ELFFile) StripDebugSections(useRandom bool) *OperationResult {
+	return e.StripSectionsByCategoryDetailed("debug", useRandom)
 }
 
 // StripSymbolTables removes symbol table sections.
-func (e *ELFFile) StripSymbolTables(useRandom bool) error {
-	return e.StripSectionsByCategory("symbols", useRandom)
+func (e *ELFFile) StripSymbolTables(useRandom bool) *OperationResult {
+	return e.StripSectionsByCategoryDetailed("symbols", useRandom)
 }
 
 // StripStringTables removes general string table sections.
-func (e *ELFFile) StripStringTables(useRandom bool) error {
-	return e.StripSectionsByCategory("strings", useRandom)
+func (e *ELFFile) StripStringTables(useRandom bool) *OperationResult {
+	return e.StripSectionsByCategoryDetailed("strings", useRandom)
 }
 
 // StripBuildInfoSections removes build information sections.
-func (e *ELFFile) StripBuildInfoSections(useRandom bool) error {
-	return e.StripSectionsByCategory("buildinfo", useRandom)
+func (e *ELFFile) StripBuildInfoSections(useRandom bool) *OperationResult {
+	return e.StripSectionsByCategoryDetailed("buildinfo", useRandom)
 }
 
 // StripProfilingSections removes profiling related sections.
-func (e *ELFFile) StripProfilingSections(useRandom bool) error {
-	return e.StripSectionsByCategory("profiling", useRandom)
+func (e *ELFFile) StripProfilingSections(useRandom bool) *OperationResult {
+	return e.StripSectionsByCategoryDetailed("profiling", useRandom)
 }
 
 // StripExceptionSections removes exception handling sections.
 // WARNING: This can break C++ exception handling and debugger stack unwinding.
-func (e *ELFFile) StripExceptionSections(useRandom bool) error {
-	return e.StripSectionsByCategory("exceptions", useRandom)
+func (e *ELFFile) StripExceptionSections(useRandom bool) *OperationResult {
+	return e.StripSectionsByCategoryDetailed("exceptions", useRandom)
 }
 
 // StripArchSections removes architecture-specific sections.
-func (e *ELFFile) StripArchSections(useRandom bool) error {
-	return e.StripSectionsByCategory("arch", useRandom)
+func (e *ELFFile) StripArchSections(useRandom bool) *OperationResult {
+	return e.StripSectionsByCategoryDetailed("arch", useRandom)
 }
 
 // StripRelocationSections removes relocation sections.
 // WARNING: This will break dynamically linked executables.
-func (e *ELFFile) StripRelocationSections(useRandom bool) error {
-	return e.StripSectionsByCategory("relocations", useRandom)
+func (e *ELFFile) StripRelocationSections(useRandom bool) *OperationResult {
+	return e.StripSectionsByCategoryDetailed("relocations", useRandom)
 }
 
 // StripDynamicLinkingData removes sections critical for dynamic linking.
 // WARNING: This will break dynamically linked executables.
-func (e *ELFFile) StripDynamicLinkingData(useRandom bool) error {
-	if err := e.StripSectionsByCategory("dynamic", useRandom); err != nil {
-		return fmt.Errorf("stripping dynamic linking sections: %w", err)
+func (e *ELFFile) StripDynamicLinkingData(useRandom bool) *OperationResult {
+	dynamicResult := e.StripSectionsByCategoryDetailed("dynamic", useRandom)
+	if !dynamicResult.Applied {
+		// If dynamic sections weren't stripped, still try relocations
+		relResult := e.StripRelocationSections(useRandom)
+		if relResult.Applied {
+			return NewApplied(fmt.Sprintf("dynamic sections skipped, but %s", relResult.Message), relResult.Count)
+		}
+		return NewSkipped("no dynamic linking or relocation sections found")
 	}
+
 	// Also strip relocations as they are tightly coupled
-	if err := e.StripRelocationSections(useRandom); err != nil {
-		return fmt.Errorf("stripping relocations during dynamic linking strip: %w", err)
+	relResult := e.StripRelocationSections(useRandom)
+	totalCount := dynamicResult.Count + relResult.Count
+
+	if relResult.Applied {
+		return NewApplied(fmt.Sprintf("%s; %s", dynamicResult.Message, relResult.Message), totalCount)
 	}
-	return nil
+	return NewApplied(dynamicResult.Message, dynamicResult.Count)
 }
 
 // StripAllMetadata removes a wide range of non-essential metadata.
 // This is a safer version that preserves critical sections for dynamic linking.
-func (e *ELFFile) StripAllMetadata(useRandom bool) error {
+func (e *ELFFile) StripAllMetadata(useRandom bool) *OperationResult {
 	// Define stripping operations in order of safety (safest first)
 	// Note: We do NOT strip the section table to preserve runtime functionality
 	operations := []struct {
 		name string
-		fn   func(bool) error
+		fn   func(bool) *OperationResult
 	}{
 		{"debug sections", e.StripDebugSections},
 		{"symbol tables", e.StripSymbolTables},
-		{"build info", e.StripBuildInfoSections},
-		{"profiling", e.StripProfilingSections},
+		{"build info sections", e.StripBuildInfoSections},
+		{"profiling sections", e.StripProfilingSections},
 		// Skip exception sections and arch sections for better compatibility
 		// Skip string tables as they may contain essential dynamic linking strings
 	}
 
+	appliedOperations := []string{}
+	totalCount := 0
+
 	// Execute each operation
 	for _, op := range operations {
-		if err := op.fn(useRandom); err != nil {
-			return fmt.Errorf("%s stripping failed: %w", op.name, err)
+		result := op.fn(useRandom)
+		if result.Applied {
+			appliedOperations = append(appliedOperations, result.Message)
+			totalCount += result.Count
 		}
 	}
 
-	return nil
-}
-
-// GetSectionCategories returns information about available section categories
-func GetSectionCategories() map[string]SectionCategory {
-	// Return a copy to prevent external modification
-	result := make(map[string]SectionCategory)
-	for k, v := range sectionCategories {
-		result[k] = v
+	if len(appliedOperations) == 0 {
+		return NewSkipped("no metadata sections found to strip")
 	}
-	return result
+
+	message := fmt.Sprintf("stripped metadata: %s", strings.Join(appliedOperations, "; "))
+	return NewApplied(message, totalCount)
 }
 
 // FixSectionHeaderIntegrity ensures section header table is valid after stripping operations.

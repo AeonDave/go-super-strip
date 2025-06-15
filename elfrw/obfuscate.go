@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
+	"strings"
 )
 
 // ELF header field positions
@@ -154,9 +155,9 @@ func (e *ELFFile) validateELF() error {
 }
 
 // RandomizeSectionNames randomizes ELF section names
-func (e *ELFFile) RandomizeSectionNames() error {
+func (e *ELFFile) RandomizeSectionNames() *OperationResult {
 	if err := e.validateELF(); err != nil {
-		return fmt.Errorf("ELF validation failed: %w", err)
+		return NewSkipped(fmt.Sprintf("ELF validation failed: %v", err))
 	}
 
 	offsets := e.getELFOffsets()
@@ -164,24 +165,25 @@ func (e *ELFFile) RandomizeSectionNames() error {
 	// Check if file has sections (UPX-packed files have e_shnum = 0)
 	shCount := e.readValue16(offsets.shNum)
 	if shCount == 0 || len(e.Sections) == 0 {
-		return nil // No sections to randomize - silently succeed
+		return NewSkipped("no sections found to randomize")
 	}
 
 	shstrtabIndex := e.readValue16(offsets.shStrNdx)
 
 	shstrtabContent, err := e.ELF.GetSectionContent(shstrtabIndex)
 	if err != nil {
-		return fmt.Errorf("failed to read string table: %w", err)
+		return NewSkipped(fmt.Sprintf("failed to read string table: %v", err))
 	}
 
 	shstrtabHeader, err := e.ELF.GetSectionHeader(shstrtabIndex)
 	if err != nil {
-		return fmt.Errorf("failed to read string table header: %w", err)
+		return NewSkipped(fmt.Sprintf("failed to read string table header: %v", err))
 	}
 
 	// Build new string table
 	newShstrtab := []byte{0} // Start with null terminator
 	nameOffsets := make(map[string]uint32)
+	renamedSections := []string{}
 
 	for i := range e.Sections {
 		if e.Sections[i].Name == "" {
@@ -190,13 +192,19 @@ func (e *ELFFile) RandomizeSectionNames() error {
 
 		randomName, err := generateRandomName()
 		if err != nil {
-			return err
+			return NewSkipped(fmt.Sprintf("failed to generate random name: %v", err))
 		}
 
 		nameOffsets[e.Sections[i].Name] = uint32(len(newShstrtab))
 		newShstrtab = append(newShstrtab, []byte(randomName)...)
 		newShstrtab = append(newShstrtab, 0)
+
+		renamedSections = append(renamedSections, fmt.Sprintf("%s→%s", e.Sections[i].Name, randomName))
 		e.Sections[i].Name = randomName
+	}
+
+	if len(renamedSections) == 0 {
+		return NewSkipped("no section names to randomize")
 	}
 
 	// Update string table in file
@@ -227,28 +235,31 @@ func (e *ELFFile) RandomizeSectionNames() error {
 
 		if newOffset, ok := nameOffsets[oldName]; ok {
 			if err := WriteAtOffset(e.RawData, shdrOffset, e.GetEndian(), newOffset); err != nil {
-				return fmt.Errorf("failed to write name offset: %w", err)
+				return NewSkipped(fmt.Sprintf("failed to write name offset: %v", err))
 			}
 		}
 	}
 
-	return nil
+	message := fmt.Sprintf("renamed sections: %s", strings.Join(renamedSections, ", "))
+	return NewApplied(message, len(renamedSections))
 }
 
 // ObfuscateBaseAddresses randomly modifies virtual base addresses
-func (e *ELFFile) ObfuscateBaseAddresses() error {
+func (e *ELFFile) ObfuscateBaseAddresses() *OperationResult {
 	if err := e.validateELF(); err != nil {
-		return fmt.Errorf("ELF validation failed: %w", err)
+		return NewSkipped(fmt.Sprintf("ELF validation failed: %v", err))
 	}
 
 	randomOffset, err := generateRandomOffset()
 	if err != nil {
-		return err
+		return NewSkipped(fmt.Sprintf("failed to generate random offset: %v", err))
 	}
 
 	offsets := e.getELFOffsets()
 	phdrTableOffset := e.readValue(offsets.phOff, e.Is64Bit)
 	phdrEntrySize := e.readValue16(offsets.phEntSize)
+
+	modifiedSegments := []string{}
 
 	// Update loadable segments
 	for i, segment := range e.Segments {
@@ -268,16 +279,17 @@ func (e *ELFFile) ObfuscateBaseAddresses() error {
 		newVaddr := originalVaddr + randomOffset
 
 		if err := e.writeValue(vaddrPos, newVaddr, e.Is64Bit); err != nil {
-			return err
+			return NewSkipped(fmt.Sprintf("failed to update virtual address: %v", err))
 		}
 
 		// Update physical address
 		paddrPos := phdrPos + getPAddrOffset(e.Is64Bit)
 		if err := e.writeValue(paddrPos, newVaddr, e.Is64Bit); err != nil {
-			return err
+			return NewSkipped(fmt.Sprintf("failed to update physical address: %v", err))
 		}
 
 		e.Segments[i].Offset = segment.Offset
+		modifiedSegments = append(modifiedSegments, fmt.Sprintf("segment%d(0x%x→0x%x)", i, originalVaddr, newVaddr))
 	}
 
 	// Update entry point
@@ -285,11 +297,17 @@ func (e *ELFFile) ObfuscateBaseAddresses() error {
 	if originalEntryPoint != 0 {
 		newEntryPoint := originalEntryPoint + randomOffset
 		if err := e.writeValue(uint64(offsets.entryPoint), newEntryPoint, e.Is64Bit); err != nil {
-			return err
+			return NewSkipped(fmt.Sprintf("failed to update entry point: %v", err))
 		}
+		modifiedSegments = append(modifiedSegments, fmt.Sprintf("entry(0x%x→0x%x)", originalEntryPoint, newEntryPoint))
 	}
 
-	return nil
+	if len(modifiedSegments) == 0 {
+		return NewSkipped("no loadable segments or entry point found")
+	}
+
+	message := fmt.Sprintf("randomized base addresses: %s", strings.Join(modifiedSegments, ", "))
+	return NewApplied(message, len(modifiedSegments))
 }
 
 // Helper functions for program header offsets
@@ -316,7 +334,9 @@ func (e *ELFFile) writeValue(offset, value uint64, is64bit bool) error {
 }
 
 // ObfuscateSectionPadding randomizes padding between sections
-func (e *ELFFile) ObfuscateSectionPadding() {
+func (e *ELFFile) ObfuscateSectionPadding() *OperationResult {
+	paddingCount := 0
+
 	for i := 0; i < len(e.Sections)-1; i++ {
 		end := e.Sections[i].Offset + e.Sections[i].Size
 		next := e.Sections[i+1].Offset
@@ -326,49 +346,72 @@ func (e *ELFFile) ObfuscateSectionPadding() {
 			randomPadding := make([]byte, paddingSize)
 			if _, err := rand.Read(randomPadding); err == nil {
 				copy(e.RawData[end:next], randomPadding)
+				paddingCount++
 			}
 		}
 	}
+
+	if paddingCount == 0 {
+		return NewSkipped("no section padding found to obfuscate")
+	}
+
+	return NewApplied(fmt.Sprintf("obfuscated padding between %d section pairs", paddingCount), paddingCount)
 }
 
 // ObfuscateReservedHeaderFields randomizes reserved fields in ELF header
-func (e *ELFFile) ObfuscateReservedHeaderFields() error {
+func (e *ELFFile) ObfuscateReservedHeaderFields() *OperationResult {
+	modifiedFields := []string{}
+
 	// Randomize e_ident[9:16] (padding)
 	randBytes := make([]byte, 7)
 	if _, err := rand.Read(randBytes); err != nil {
-		return fmt.Errorf("failed to generate random header bytes: %w", err)
+		return NewSkipped(fmt.Sprintf("failed to generate random header bytes: %v", err))
 	}
 	copy(e.RawData[9:16], randBytes)
+	modifiedFields = append(modifiedFields, "header padding")
 
 	// Randomize e_flags
 	offsets := e.getELFOffsets()
 	if offsets.flags+4 <= len(e.RawData) {
 		randFlags := make([]byte, 4)
 		if _, err := rand.Read(randFlags); err != nil {
-			return fmt.Errorf("failed to generate random flags: %w", err)
+			return NewSkipped(fmt.Sprintf("failed to generate random flags: %v", err))
 		}
 		copy(e.RawData[offsets.flags:offsets.flags+4], randFlags)
+		modifiedFields = append(modifiedFields, "processor flags")
 	}
 
-	return nil
+	if len(modifiedFields) == 0 {
+		return NewSkipped("no header fields available for obfuscation")
+	}
+
+	message := fmt.Sprintf("obfuscated reserved header fields: %s", strings.Join(modifiedFields, ", "))
+	return NewApplied(message, len(modifiedFields))
 }
 
 // ObfuscateSecondaryTimestamps randomizes timestamps in note/debug sections
-func (e *ELFFile) ObfuscateSecondaryTimestamps() error {
+func (e *ELFFile) ObfuscateSecondaryTimestamps() *OperationResult {
 	timestampSections := []string{".note", ".note.gnu.build-id", ".comment"}
 	sections := e.findSections(timestampSections)
 
-	for _, section := range sections {
+	obfuscatedSections := []string{}
+	for name, section := range sections {
 		if section == nil {
 			continue
 		}
 
 		if err := e.obfuscateTimestampsInSection(section); err != nil {
-			return err
+			continue // Skip sections that fail
 		}
+		obfuscatedSections = append(obfuscatedSections, name)
 	}
 
-	return nil
+	if len(obfuscatedSections) == 0 {
+		return NewSkipped("no timestamp sections found")
+	}
+
+	message := fmt.Sprintf("obfuscated timestamps in sections: %s", strings.Join(obfuscatedSections, ", "))
+	return NewApplied(message, len(obfuscatedSections))
 }
 
 // obfuscateTimestampsInSection randomizes timestamps in a section
@@ -391,29 +434,45 @@ func (e *ELFFile) obfuscateTimestampsInSection(section *Section) error {
 }
 
 // ObfuscateAll applies all obfuscation techniques
-func (e *ELFFile) ObfuscateAll() error {
+func (e *ELFFile) ObfuscateAll() *OperationResult {
 	if err := e.validateELF(); err != nil {
-		return fmt.Errorf("ELF validation failed: %w", err)
+		return NewSkipped(fmt.Sprintf("ELF validation failed: %v", err))
 	}
+
+	// Check if this is a Go binary BEFORE any obfuscation
+	isGoBinary := e.isGoBinary()
 
 	obfuscationSteps := []struct {
 		name string
-		fn   func() error
+		fn   func() *OperationResult
 	}{
 		{"RandomizeSectionNames", e.RandomizeSectionNames},
-		{"ObfuscateBaseAddresses", e.ObfuscateBaseAddresses},
+		{"ObfuscateBaseAddresses", func() *OperationResult {
+			if isGoBinary {
+				return NewSkipped("skipping base address randomization for Go binary (would break runtime)")
+			}
+			return e.ObfuscateBaseAddresses()
+		}},
 		{"ObfuscateReservedHeaderFields", e.ObfuscateReservedHeaderFields},
 		{"ObfuscateSecondaryTimestamps", e.ObfuscateSecondaryTimestamps},
+		{"ObfuscateSectionPadding", e.ObfuscateSectionPadding},
 	}
 
+	appliedOperations := []string{}
+	totalCount := 0
+
 	for _, step := range obfuscationSteps {
-		if err := step.fn(); err != nil {
-			return fmt.Errorf("%s failed: %w", step.name, err)
+		result := step.fn()
+		if result.Applied {
+			appliedOperations = append(appliedOperations, result.Message)
+			totalCount += result.Count
 		}
 	}
 
-	// This one doesn't return an error
-	e.ObfuscateSectionPadding()
+	if len(appliedOperations) == 0 {
+		return NewSkipped("no obfuscation operations could be applied")
+	}
 
-	return nil
+	message := fmt.Sprintf("applied obfuscation: %s", strings.Join(appliedOperations, "; "))
+	return NewApplied(message, totalCount)
 }

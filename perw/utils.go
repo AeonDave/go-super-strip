@@ -2,9 +2,50 @@ package perw
 
 import (
 	"debug/pe"
+	"encoding/binary"
 	"fmt"
 	"strings"
 )
+
+// PEOffsets holds commonly used PE file offsets
+type PEOffsets struct {
+	ELfanew          int64
+	OptionalHeader   int64
+	FirstSectionHdr  int64
+	NumberOfSections int
+	OptionalHdrSize  int
+}
+
+// calculateOffsets computes all necessary PE file offsets in one pass
+func (p *PEFile) calculateOffsets() (*PEOffsets, error) {
+	const (
+		dosHeaderSize   = 0x40
+		peSignatureSize = 4
+		coffHeaderSize  = 20
+	)
+
+	if len(p.RawData) < dosHeaderSize {
+		return nil, fmt.Errorf("file too small for DOS header")
+	}
+
+	offsets := &PEOffsets{
+		ELfanew: int64(binary.LittleEndian.Uint32(p.RawData[0x3C:0x40])),
+	}
+
+	coffHeaderOffset := offsets.ELfanew + peSignatureSize
+	offsets.OptionalHeader = coffHeaderOffset + coffHeaderSize
+
+	// Validate we can read COFF header fields
+	if int(coffHeaderOffset+coffHeaderSize) > len(p.RawData) {
+		return nil, fmt.Errorf("file too small for COFF header")
+	}
+
+	offsets.NumberOfSections = int(binary.LittleEndian.Uint16(p.RawData[coffHeaderOffset+2 : coffHeaderOffset+4]))
+	offsets.OptionalHdrSize = int(binary.LittleEndian.Uint16(p.RawData[coffHeaderOffset+16 : coffHeaderOffset+18]))
+	offsets.FirstSectionHdr = offsets.OptionalHeader + int64(offsets.OptionalHdrSize)
+
+	return offsets, nil
+}
 
 func (p *PEFile) GetFileType() string {
 	if p.PE == nil {
@@ -149,22 +190,6 @@ func (p *PEFile) IsExecutableOrShared() bool {
 
 // --- Section Type Utilities ---
 
-// GetSectionTypeDescription returns a human-readable description of a section type
-func GetSectionTypeDescription(sectionType SectionType) string {
-	if matcher, exists := sectionMatchers[sectionType]; exists {
-		return matcher.Description
-	}
-	return "unknown section type"
-}
-
-// IsSectionTypeRisky returns whether stripping a section type might break functionality
-func IsSectionTypeRisky(sectionType SectionType) bool {
-	if matcher, exists := sectionMatchers[sectionType]; exists {
-		return matcher.IsRisky
-	}
-	return true // Assume risky if unknown
-}
-
 // shouldStripForFileType determines if a section type should be stripped for the current file type
 func (p *PEFile) shouldStripForFileType(sectionType SectionType) bool {
 	matcher := sectionMatchers[sectionType]
@@ -172,4 +197,60 @@ func (p *PEFile) shouldStripForFileType(sectionType SectionType) bool {
 		return matcher.StripForDLL
 	}
 	return matcher.StripForEXE
+}
+
+// sectionMatches checks if a section name matches the given matcher
+func sectionMatches(sectionName string, matcher SectionMatcher) bool {
+	// Check exact matches
+	for _, name := range matcher.ExactNames {
+		if sectionName == name {
+			return true
+		}
+	}
+
+	// Check prefix matches
+	for _, prefix := range matcher.PrefixNames {
+		if strings.HasPrefix(sectionName, prefix) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// findSectionByName finds a section by its name (internal helper, returns pointer or nil)
+func (p *PEFile) findSectionByName(name string) *Section {
+	for i := range p.Sections {
+		if strings.EqualFold(p.Sections[i].Name, name) {
+			return &p.Sections[i]
+		}
+	}
+	return nil
+}
+
+// validateOffset checks if an offset and size are within file bounds
+func (p *PEFile) validateOffset(offset int64, size int) error {
+	if int(offset+int64(size)) > len(p.RawData) {
+		return fmt.Errorf("offset %d + size %d exceeds file size %d", offset, size, len(p.RawData))
+	}
+	return nil
+}
+
+// CalculatePhysicalFileSize computes the actual used file size
+func (p *PEFile) CalculatePhysicalFileSize() (uint64, error) {
+	if p.PE == nil {
+		return 0, fmt.Errorf("PE file not initialized")
+	}
+
+	maxSize := uint64(p.SizeOfHeaders)
+	for _, s := range p.Sections {
+		if s.Size > 0 {
+			end := uint64(s.Offset) + uint64(s.Size)
+			if end > maxSize {
+				maxSize = end
+			}
+		}
+	}
+
+	return maxSize, nil
 }

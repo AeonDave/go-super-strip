@@ -30,18 +30,17 @@ type SectionMatcher struct {
 }
 
 // sectionMatchers defines all section types and their matching rules
-var sectionMatchers = map[SectionType]SectionMatcher{
-	DebugSections: {
-		ExactNames: []string{
-			".debug", ".pdata", ".xdata", ".debug$S",
-			".debug$T", ".debug$P", ".debug$F",
-		},
-		PrefixNames: []string{".debug$"},
-		Description: "debugging information",
-		StripForDLL: true,
-		StripForEXE: true,
-		IsRisky:     false,
+var sectionMatchers = map[SectionType]SectionMatcher{DebugSections: {
+	ExactNames: []string{
+		".debug", ".pdata", ".xdata", ".debug$S",
+		".debug$T", ".debug$P", ".debug$F",
 	},
+	PrefixNames: []string{".debug$", ".zdebug_", ".debug_"},
+	Description: "debugging information",
+	StripForDLL: true,
+	StripForEXE: true,
+	IsRisky:     false,
+},
 	SymbolSections: {
 		ExactNames:  []string{}, // PE files typically don't have .symtab
 		PrefixNames: []string{},
@@ -123,44 +122,25 @@ func (p *PEFile) fillRegion(offset int64, size int, mode FillMode) error {
 	default:
 		return fmt.Errorf("unknown fill mode: %v", mode)
 	}
-
 	return nil
-}
-
-// sectionMatches checks if a section name matches the given matcher
-func sectionMatches(sectionName string, matcher SectionMatcher) bool {
-	// Check exact matches
-	for _, name := range matcher.ExactNames {
-		if sectionName == name {
-			return true
-		}
-	}
-
-	// Check prefix matches
-	for _, prefix := range matcher.PrefixNames {
-		if strings.HasPrefix(sectionName, prefix) {
-			return true
-		}
-	}
-
-	return false
 }
 
 // --- Core Stripping Logic ---
 
 // StripSectionsByType strips sections based on their type
-func (p *PEFile) StripSectionsByType(sectionType SectionType, fillMode FillMode) error {
+func (p *PEFile) StripSectionsByType(sectionType SectionType, fillMode FillMode) *OperationResult {
 	matcher, exists := sectionMatchers[sectionType]
 	if !exists {
-		return fmt.Errorf("unknown section type: %v", sectionType)
+		return NewSkipped(fmt.Sprintf("unknown section type: %v", sectionType))
 	}
 
 	// Check if we should strip this type for the current file
 	if !p.shouldStripForFileType(sectionType) {
-		return nil // Skip stripping for this file type
+		return NewSkipped("not applicable for this file type")
 	}
 
 	strippedCount := 0
+	var strippedSections []string
 	for _, section := range p.Sections {
 		if !sectionMatches(section.Name, matcher) {
 			continue
@@ -168,17 +148,20 @@ func (p *PEFile) StripSectionsByType(sectionType SectionType, fillMode FillMode)
 
 		if section.Offset > 0 && section.Size > 0 {
 			if err := p.fillRegion(section.Offset, int(section.Size), fillMode); err != nil {
-				return fmt.Errorf("failed to fill section %s: %w", section.Name, err)
+				return NewSkipped(fmt.Sprintf("failed to fill section %s: %v", section.Name, err))
 			}
+			strippedSections = append(strippedSections, section.Name)
 		}
 
-		// Just mark the section as processed, don't zero out the headers
-		// PE files need valid section headers even if the content is stripped
 		strippedCount++
 	}
 
-	// No need to update section headers since we're not changing the structure
-	return nil
+	if strippedCount == 0 {
+		return NewSkipped("no matching sections found")
+	}
+
+	message := fmt.Sprintf("stripped sections: %s", strings.Join(strippedSections, ", "))
+	return NewApplied(message, strippedCount)
 }
 
 // StripSectionsByNames provides the original interface for backward compatibility
@@ -251,7 +234,7 @@ func (p *PEFile) StripBytePattern(pattern *regexp.Regexp, fillMode FillMode) (in
 // --- Convenience Functions ---
 
 // StripDebugSections removes debugging information
-func (p *PEFile) StripDebugSections(useRandomFill bool) error {
+func (p *PEFile) StripDebugSections(useRandomFill bool) *OperationResult {
 	fillMode := ZeroFill
 	if useRandomFill {
 		fillMode = RandomFill
@@ -260,7 +243,7 @@ func (p *PEFile) StripDebugSections(useRandomFill bool) error {
 }
 
 // StripSymbolTables removes symbol table information (usually no-op for PE)
-func (p *PEFile) StripSymbolTables(useRandomFill bool) error {
+func (p *PEFile) StripSymbolTables(useRandomFill bool) *OperationResult {
 	fillMode := ZeroFill
 	if useRandomFill {
 		fillMode = RandomFill
@@ -269,7 +252,7 @@ func (p *PEFile) StripSymbolTables(useRandomFill bool) error {
 }
 
 // StripRelocationTable removes base relocation information
-func (p *PEFile) StripRelocationTable(useRandomFill bool) error {
+func (p *PEFile) StripRelocationTable(useRandomFill bool) *OperationResult {
 	fillMode := ZeroFill
 	if useRandomFill {
 		fillMode = RandomFill
@@ -278,7 +261,7 @@ func (p *PEFile) StripRelocationTable(useRandomFill bool) error {
 }
 
 // StripNonEssentialSections removes non-essential metadata
-func (p *PEFile) StripNonEssentialSections(useRandomFill bool) error {
+func (p *PEFile) StripNonEssentialSections(useRandomFill bool) *OperationResult {
 	fillMode := ZeroFill
 	if useRandomFill {
 		fillMode = RandomFill
@@ -287,7 +270,7 @@ func (p *PEFile) StripNonEssentialSections(useRandomFill bool) error {
 }
 
 // StripExceptionHandlingData removes exception handling data (risky)
-func (p *PEFile) StripExceptionHandlingData(useRandomFill bool) error {
+func (p *PEFile) StripExceptionHandlingData(useRandomFill bool) *OperationResult {
 	fillMode := ZeroFill
 	if useRandomFill {
 		fillMode = RandomFill
@@ -296,7 +279,7 @@ func (p *PEFile) StripExceptionHandlingData(useRandomFill bool) error {
 }
 
 // StripBuildInfoSections removes build information
-func (p *PEFile) StripBuildInfoSections(useRandomFill bool) error {
+func (p *PEFile) StripBuildInfoSections(useRandomFill bool) *OperationResult {
 	fillMode := ZeroFill
 	if useRandomFill {
 		fillMode = RandomFill
@@ -335,27 +318,5 @@ func (p *PEFile) StripAllMetadata(useRandomFill bool) error {
 	if err := p.RandomizeSectionNames(); err != nil {
 		return fmt.Errorf("failed to randomize section names: %w", err)
 	}
-
 	return nil
-}
-
-// --- File Size Calculation ---
-
-// CalculatePhysicalFileSize computes the actual used file size
-func (p *PEFile) CalculatePhysicalFileSize() (uint64, error) {
-	if p.PE == nil {
-		return 0, fmt.Errorf("PE file not initialized")
-	}
-
-	maxSize := uint64(p.SizeOfHeaders)
-	for _, s := range p.Sections {
-		if s.Size > 0 {
-			end := uint64(s.Offset) + uint64(s.Size)
-			if end > maxSize {
-				maxSize = end
-			}
-		}
-	}
-
-	return maxSize, nil
 }
