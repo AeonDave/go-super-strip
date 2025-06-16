@@ -25,58 +25,6 @@ func AnalyzeELF(filePath string) error {
 	return elfFile.Analyze()
 }
 
-// StripDebugSectionsDetailed strips debug sections from an ELF file with detailed result
-func StripDebugSectionsDetailed(filePath string) *common.OperationResult {
-	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
-	}
-	defer func(file *os.File) {
-		_ = file.Close()
-	}(file)
-
-	elfFile, err := ReadELF(file)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to read ELF file: %v", err))
-	}
-	result := elfFile.StripDebugSections(false)
-	if !result.Applied {
-		return &common.OperationResult{Applied: result.Applied, Message: result.Message, Count: result.Count}
-	}
-
-	if err := elfFile.CommitChanges(uint64(len(elfFile.RawData))); err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
-	}
-
-	return &common.OperationResult{Applied: result.Applied, Message: result.Message, Count: result.Count}
-}
-
-// StripSymbolSectionsDetailed strips symbol sections from an ELF file with detailed result
-func StripSymbolSectionsDetailed(filePath string) *common.OperationResult {
-	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
-	}
-	defer func(file *os.File) {
-		_ = file.Close()
-	}(file)
-
-	elfFile, err := ReadELF(file)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to read ELF file: %v", err))
-	}
-	result := elfFile.StripSymbolTables(false)
-	if !result.Applied {
-		return result
-	}
-
-	if err := elfFile.CommitChanges(uint64(len(elfFile.RawData))); err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
-	}
-
-	return result
-}
-
 // ObfuscateSectionNamesDetailed obfuscates section names in an ELF file with detailed result
 func ObfuscateSectionNamesDetailed(filePath string) *common.OperationResult {
 	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
@@ -127,46 +75,6 @@ func StripRegexBytes(filePath string, regex *regexp.Regexp) error {
 	}
 
 	return elfFile.CommitChanges(uint64(len(elfFile.RawData)))
-}
-
-// AddSectionDetailed adds a new section to an ELF file with detailed result
-func AddSectionDetailed(filePath, sectionName, sourceFile string) *common.OperationResult {
-	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
-	}
-	defer func(file *os.File) {
-		_ = file.Close()
-	}(file)
-
-	elfFile, err := ReadELF(file)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to read ELF file: %v", err))
-	}
-
-	// Check if section with same name already exists
-	for _, section := range elfFile.Sections {
-		if section.Name == sectionName {
-			return common.NewSkipped(fmt.Sprintf("section '%s' already exists", sectionName))
-		}
-	}
-
-	// Get source file size for reporting
-	info, err := os.Stat(sourceFile)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to stat source file: %v", err))
-	}
-
-	if err := elfFile.AddSection(sectionName, sourceFile); err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to add section: %v", err))
-	}
-
-	if err := elfFile.CommitChanges(uint64(len(elfFile.RawData))); err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
-	}
-
-	message := fmt.Sprintf("added section '%s' (%d bytes) from '%s'", sectionName, info.Size(), sourceFile)
-	return common.NewApplied(message, 1)
 }
 
 // AddHexSection adds a hex section to an ELF file (with optional encryption)
@@ -291,4 +199,62 @@ func IsGoBinary(filePath string) (bool, error) {
 	}
 
 	return elfFile.isGoBinary(), nil
+}
+
+// AdvancedStripELFDetailed performs comprehensive ELF stripping with optional size reduction
+func AdvancedStripELFDetailed(filePath string, compact bool) *common.OperationResult {
+	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
+	if err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
+	}
+	defer func(file *os.File) {
+		_ = file.Close()
+	}(file)
+
+	elfFile, err := ReadELF(file)
+	if err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to read ELF file: %v", err))
+	}
+
+	result := elfFile.AdvancedStripDetailed(compact)
+	if !result.Applied {
+		return result
+	}
+
+	if err := elfFile.CommitChanges(uint64(len(elfFile.RawData))); err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
+	}
+
+	return result
+}
+
+// CompactELFDetailed performs aggressive ELF compaction with section removal
+func CompactELFDetailed(filePath string, removeNonEssential bool) *common.OperationResult {
+	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
+	if err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
+	}
+	defer func(file *os.File) {
+		_ = file.Close()
+	}(file)
+
+	elfFile, err := ReadELF(file)
+	if err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to read ELF file: %v", err))
+	}
+
+	result, err := elfFile.CompactAndStrip(removeNonEssential)
+	if err != nil {
+		return common.NewSkipped(fmt.Sprintf("compaction failed: %v", err))
+	}
+
+	if !result.Applied {
+		return result
+	}
+
+	if err := elfFile.CommitChanges(uint64(len(elfFile.RawData))); err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
+	}
+
+	return result
 }

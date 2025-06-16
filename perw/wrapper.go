@@ -70,7 +70,7 @@ func StripRegexBytes(filePath string, regex *regexp.Regexp) error {
 		return err
 	}
 
-	if _, err := peFile.StripBytePattern(regex, RandomFill); err != nil {
+	if _, err := peFile.StripBytePattern(regex, common.RandomFill); err != nil {
 		return err
 	}
 
@@ -96,63 +96,7 @@ func AddHexSection(filePath, sectionName, sourceFile, password string) error {
 		return err
 	}
 
-	return peFile.CommitChanges(-1)
-}
-
-// --- New detailed wrapper functions that return OperationResult ---
-
-// StripDebugSectionsDetailed strips debug sections and returns detailed results
-func StripDebugSectionsDetailed(filePath string) *common.OperationResult {
-	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
-	}
-	defer func(file *os.File) {
-		_ = file.Close()
-	}(file)
-
-	peFile, err := ReadPE(file)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to read PE: %v", err))
-	}
-
-	result := peFile.StripDebugSections(false)
-	if !result.Applied {
-		return result
-	}
-
-	if err := peFile.CommitChangesSimple(-1); err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
-	}
-
-	return result
-}
-
-// StripSymbolSectionsDetailed strips symbol sections and returns detailed results
-func StripSymbolSectionsDetailed(filePath string) *common.OperationResult {
-	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
-	}
-	defer func(file *os.File) {
-		_ = file.Close()
-	}(file)
-
-	peFile, err := ReadPE(file)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to read PE: %v", err))
-	}
-
-	result := peFile.StripSymbolTables(false)
-	if !result.Applied {
-		return result
-	}
-
-	if err := peFile.CommitChangesSimple(-1); err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
-	}
-
-	return result
+	return peFile.CommitChangesSimple(-1)
 }
 
 // ObfuscateSectionNamesDetailed obfuscates section names and returns detailed results
@@ -263,33 +207,6 @@ func ObfuscateImportNamesDetailed(filePath string) *common.OperationResult {
 	return result
 }
 
-// ObfuscateRichHeaderDetailed obfuscates Rich header with detailed result
-func ObfuscateRichHeaderDetailed(filePath string) *common.OperationResult {
-	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
-	}
-	defer func(file *os.File) {
-		_ = file.Close()
-	}(file)
-
-	peFile, err := ReadPE(file)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to read PE file: %v", err))
-	}
-
-	result := peFile.ObfuscateRichHeader()
-	if !result.Applied {
-		return result
-	}
-
-	if err := peFile.CommitChangesSimple(-1); err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
-	}
-
-	return result
-}
-
 // ObfuscateResourceDirectoryDetailed obfuscates resource directory with detailed result
 func ObfuscateResourceDirectoryDetailed(filePath string) *common.OperationResult {
 	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
@@ -333,6 +250,60 @@ func ObfuscateExportTableDetailed(filePath string) *common.OperationResult {
 	}
 
 	result := peFile.ObfuscateExportTable()
+	if !result.Applied {
+		return result
+	}
+
+	if err := peFile.CommitChangesSimple(-1); err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
+	}
+
+	return result
+}
+
+// AdvancedStripPEDetailed performs comprehensive PE stripping with optional size reduction
+func AdvancedStripPEDetailed(filePath string, compact bool) *common.OperationResult {
+	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
+	if err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
+	}
+	defer func(file *os.File) {
+		_ = file.Close()
+	}(file)
+
+	peFile, err := ReadPE(file)
+	if err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to read PE file: %v", err))
+	}
+
+	result := peFile.AdvancedStripPEDetailed(compact)
+	if !result.Applied {
+		return result
+	}
+
+	if err := peFile.CommitChangesSimple(-1); err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
+	}
+
+	return result
+}
+
+// CompactOnlyPEDetailed performs PE compaction without stripping
+func CompactOnlyPEDetailed(filePath string) *common.OperationResult {
+	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
+	if err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
+	}
+	defer func(file *os.File) {
+		_ = file.Close()
+	}(file)
+
+	peFile, err := ReadPE(file)
+	if err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to read PE file: %v", err))
+	}
+
+	result := peFile.CompactOnlyPEDetailed()
 	if !result.Applied {
 		return result
 	}

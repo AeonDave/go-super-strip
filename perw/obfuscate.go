@@ -402,7 +402,6 @@ func (p *PEFile) ObfuscateAll() *common.OperationResult {
 		{"obfuscate base addresses", p.ObfuscateBaseAddresses},
 		{"obfuscate load config", p.ObfuscateLoadConfig},
 		{"obfuscate import table", p.ObfuscateImportTable},
-		{"obfuscate rich header", p.ObfuscateRichHeader},
 		{"obfuscate resource directory", p.ObfuscateResourceDirectory},
 		{"obfuscate export table", p.ObfuscateExportTable},
 	}

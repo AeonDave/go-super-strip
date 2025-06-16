@@ -671,3 +671,285 @@ func (e *ELFFile) writeAtOffset(pos int, value interface{}) error {
 	copy(e.RawData[pos:], buf.Bytes())
 	return nil
 }
+
+// --- Advanced Stripping and Compaction ---
+
+// CompactAndStrip performs aggressive stripping with actual file size reduction
+// This implements functionality similar to sstrip for maximum size reduction
+func (e *ELFFile) CompactAndStrip(removeNonEssential bool) (*common.OperationResult, error) {
+	if err := e.validateELF(); err != nil {
+		return nil, fmt.Errorf("ELF validation failed: %w", err)
+	}
+
+	originalSize := uint64(len(e.RawData))
+
+	// Step 1: Calculate minimum required file size based on program headers
+	newSize, err := e.calculateMinimumFileSize()
+	if err != nil {
+		return nil, fmt.Errorf("failed to calculate minimum file size: %w", err)
+	}
+
+	// Step 2: Remove non-essential sections if requested
+	removedSections := []string{}
+	if removeNonEssential {
+		removed := e.removeNonEssentialSections()
+		removedSections = append(removedSections, removed...)
+	}
+
+	// Step 3: Truncate trailing zeros if they exist
+	newSize = e.truncateTrailingZeros(newSize)
+
+	// Step 4: Update headers to reflect new file size
+	if err := e.modifyHeadersForSize(newSize); err != nil {
+		return nil, fmt.Errorf("failed to modify headers: %w", err)
+	}
+
+	// Step 5: Truncate the file
+	e.RawData = e.RawData[:newSize]
+
+	savedBytes := originalSize - newSize
+	percentage := float64(savedBytes) * 100.0 / float64(originalSize)
+
+	message := fmt.Sprintf("compacted file: %d -> %d bytes (%.1f%% reduction)",
+		originalSize, newSize, percentage)
+
+	if len(removedSections) > 0 {
+		message += fmt.Sprintf(", removed sections: %s", strings.Join(removedSections, ", "))
+	}
+
+	return common.NewApplied(message, int(savedBytes)), nil
+}
+
+// calculateMinimumFileSize determines the minimum file size needed based on program headers
+// This is similar to getmemorysize() in sstrip.c
+func (e *ELFFile) calculateMinimumFileSize() (uint64, error) {
+	// Start with ELF header size
+	headerSize := uint64(64) // 64-bit ELF header
+	if !e.Is64Bit {
+		headerSize = 52 // 32-bit ELF header
+	}
+
+	// Include program header table
+	phdrSize := uint64(0)
+	if len(e.Segments) > 0 {
+		phdrEntrySize := uint64(56) // 64-bit program header entry
+		if !e.Is64Bit {
+			phdrEntrySize = 32 // 32-bit program header entry
+		}
+
+		// Calculate program header table offset and size
+		phdrOffset := e.readProgramHeaderOffset()
+		phdrSize = phdrOffset + uint64(len(e.Segments))*phdrEntrySize
+	}
+
+	minSize := headerSize
+	if phdrSize > minSize {
+		minSize = phdrSize
+	}
+
+	// Include all data referenced by loadable segments
+	for _, segment := range e.Segments {
+		if segment.Type == 1 { // PT_LOAD
+			segmentEnd := segment.Offset + segment.Size
+			if segmentEnd > minSize {
+				minSize = segmentEnd
+			}
+		}
+	}
+
+	return minSize, nil
+}
+
+// removeNonEssentialSections removes sections that are not needed for execution
+func (e *ELFFile) removeNonEssentialSections() []string {
+	removed := []string{}
+
+	// Categories of sections that can be safely removed
+	safeToRemove := []string{"debug", "symbols", "strings", "buildinfo", "profiling"}
+
+	for _, category := range safeToRemove {
+		if cat, exists := sectionCategories[category]; exists {
+			for i := len(e.Sections) - 1; i >= 0; i-- {
+				section := e.Sections[i]
+				if matchSectionName(section.Name, cat.ExactNames, cat.PrefixNames) {
+					// Skip critical sections like .shstrtab
+					if section.Name == ".shstrtab" {
+						continue
+					}
+					removed = append(removed, section.Name)
+					// Remove section from slice
+					e.Sections = append(e.Sections[:i], e.Sections[i+1:]...)
+				}
+			}
+		}
+	}
+
+	return removed
+}
+
+// truncateTrailingZeros removes trailing zero bytes from the end of the file
+func (e *ELFFile) truncateTrailingZeros(size uint64) uint64 {
+	if size == 0 || size > uint64(len(e.RawData)) {
+		return size
+	}
+
+	// Scan backwards from the proposed end to find last non-zero byte
+	for size > 0 && e.RawData[size-1] == 0 {
+		size--
+	}
+
+	// Sanity check - don't truncate to nothing
+	if size == 0 {
+		size = 64 // Minimum ELF header size
+	}
+
+	return size
+}
+
+// modifyHeadersForSize updates ELF headers for the new file size
+// This is similar to modifyheaders() in sstrip.c
+func (e *ELFFile) modifyHeadersForSize(newSize uint64) error {
+	// If section header table is beyond new size, remove references to it
+	shOffset := e.readSectionHeaderOffset()
+	if shOffset >= newSize {
+		if err := e.StripSectionTable(); err != nil {
+			return fmt.Errorf("failed to strip section table: %w", err)
+		}
+	}
+
+	// Update program headers that extend beyond new file size
+	phdrOffset := e.readProgramHeaderOffset()
+	phdrEntrySize := uint64(56) // 64-bit
+	if !e.Is64Bit {
+		phdrEntrySize = 32 // 32-bit
+	}
+
+	for i, segment := range e.Segments {
+		phdrPos := phdrOffset + uint64(i)*phdrEntrySize
+
+		if segment.Offset >= newSize {
+			// Segment is completely beyond new file size - zero it out
+			e.Segments[i].Offset = newSize
+			e.Segments[i].Size = 0
+
+			// Update in raw data
+			err := e.writeProgramHeaderEntry(phdrPos, e.Segments[i])
+			if err != nil {
+				return err
+			}
+		} else if segment.Offset+segment.Size > newSize {
+			// Segment extends beyond new file size - truncate it
+			e.Segments[i].Size = newSize - segment.Offset
+
+			// Update in raw data
+			err := e.writeProgramHeaderEntry(phdrPos, e.Segments[i])
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// Helper functions for reading header offsets
+func (e *ELFFile) readProgramHeaderOffset() uint64 {
+	if e.Is64Bit {
+		return e.readUint64(32) // e_phoff for 64-bit
+	}
+	return uint64(e.readUint32(28)) // e_phoff for 32-bit
+}
+
+func (e *ELFFile) readSectionHeaderOffset() uint64 {
+	if e.Is64Bit {
+		return e.readUint64(40) // e_shoff for 64-bit
+	}
+	return uint64(e.readUint32(32)) // e_shoff for 32-bit
+}
+
+// writeProgramHeaderEntry updates a program header entry in raw data
+func (e *ELFFile) writeProgramHeaderEntry(offset uint64, segment Segment) error {
+	if offset+56 > uint64(len(e.RawData)) { // 64-bit header size
+		return fmt.Errorf("program header offset out of bounds")
+	}
+
+	endian := e.GetEndian()
+
+	if e.Is64Bit {
+		// Write p_offset (64-bit)
+		endian.PutUint64(e.RawData[offset+8:], segment.Offset)
+		// Write p_filesz (64-bit)
+		endian.PutUint64(e.RawData[offset+32:], segment.Size)
+	} else {
+		// 32-bit program header
+		if offset+32 > uint64(len(e.RawData)) {
+			return fmt.Errorf("32-bit program header offset out of bounds")
+		}
+		// Write p_offset (32-bit)
+		endian.PutUint32(e.RawData[offset+4:], uint32(segment.Offset))
+		// Write p_filesz (32-bit)
+		endian.PutUint32(e.RawData[offset+16:], uint32(segment.Size))
+	}
+
+	return nil
+}
+
+// AdvancedStripDetailed performs comprehensive stripping with size reduction
+func (e *ELFFile) AdvancedStripDetailed(compact bool) *common.OperationResult {
+	if err := e.validateELF(); err != nil {
+		return common.NewSkipped(fmt.Sprintf("ELF validation failed: %v", err))
+	}
+
+	originalSize := uint64(len(e.RawData))
+	operations := []string{}
+	totalCount := 0
+
+	// Step 1: Strip debug sections (always safe)
+	debugResult := e.StripDebugSections(false)
+	if debugResult.Applied {
+		operations = append(operations, debugResult.Message)
+		totalCount += debugResult.Count
+	}
+
+	// Step 2: Strip symbol tables (safe for most executables)
+	symbolResult := e.StripSymbolTables(false)
+	if symbolResult.Applied {
+		operations = append(operations, symbolResult.Message)
+		totalCount += symbolResult.Count
+	}
+
+	// Step 3: Strip build info and metadata
+	buildInfoResult := e.StripBuildInfoSections(false)
+	if buildInfoResult.Applied {
+		operations = append(operations, buildInfoResult.Message)
+		totalCount += buildInfoResult.Count
+	}
+
+	// Note: We no longer perform aggressive stripping (string tables, profiling sections)
+	// as these operations can be risky for some executables
+
+	// Step 4: File compaction (if requested)
+	if compact {
+		compactResult, err := e.CompactAndStrip(false) // Use non-aggressive compaction
+		if err != nil {
+			return common.NewSkipped(fmt.Sprintf("compaction failed: %v", err))
+		}
+		if compactResult.Applied {
+			operations = append(operations, compactResult.Message)
+		}
+	}
+
+	if len(operations) == 0 {
+		return common.NewSkipped("no stripping operations applied")
+	}
+
+	// Calculate final size reduction
+	newSize := uint64(len(e.RawData))
+	savedBytes := originalSize - newSize
+	percentage := float64(savedBytes) * 100.0 / float64(originalSize)
+
+	message := fmt.Sprintf("advanced strip completed: %d -> %d bytes (%.1f%% reduction); %s",
+		originalSize, newSize, percentage, strings.Join(operations, "; "))
+
+	return common.NewApplied(message, totalCount)
+}

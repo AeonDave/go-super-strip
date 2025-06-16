@@ -22,6 +22,7 @@ type Configuration struct {
 	Regex     string // -r/--regex: Strip bytes matching regex pattern
 	Analyze   bool   // -a/--analyze: Analyze file structure only
 	Insert    string // -i/--insert: Add section (format: name:filepath)
+	Compact   bool   // -c/--compact: Enable file size reduction via section removal
 }
 
 // Global flags
@@ -40,6 +41,9 @@ var (
 
 	insertFlag     = flag.String("i", "", "Add hex section (format: name:filepath or name:filepath:password)")
 	insertFlagLong = flag.String("insert", "", "Add hex section (format: name:filepath or name:filepath:password)")
+
+	compactFlag     = flag.Bool("c", false, "Enable file size reduction by actually removing sections")
+	compactFlagLong = flag.Bool("compact", false, "Enable file size reduction by actually removing sections")
 
 	verboseFlag = flag.Bool("v", false, "Enable verbose output")
 )
@@ -94,6 +98,7 @@ func parseArgs() (*Configuration, error) {
 		Strip:     *stripFlag || *stripFlagLong,
 		Obfuscate: *obfuscateFlag || *obfuscateFlagLong,
 		Analyze:   *analyzeFlag || *analyzeFlagLong,
+		Compact:   *compactFlag || *compactFlagLong,
 	}
 
 	// Handle regex flag
@@ -124,8 +129,8 @@ func parseArgs() (*Configuration, error) {
 	}
 
 	// At least one operation must be specified (unless analyze)
-	if !config.Strip && !config.Obfuscate && config.Regex == "" && config.Insert == "" {
-		return nil, fmt.Errorf("at least one operation flag required (-s, -o, -r, or -i)")
+	if !config.Strip && !config.Obfuscate && config.Regex == "" && config.Insert == "" && !config.Compact {
+		return nil, fmt.Errorf("at least one operation flag required (-s, -o, -r, -i, or -c)")
 	}
 
 	return config, nil
@@ -191,7 +196,15 @@ func runOperations(config *Configuration) error {
 		operations = append(operations, "regex")
 	}
 
-	// 4. Insert operations (always last)
+	// 4. Compact operations (if not already done during strip)
+	if config.Compact && !config.Strip {
+		if err := runCompact(config, isPE, isELF); err != nil {
+			return fmt.Errorf("compact operation failed: %v", err)
+		}
+		operations = append(operations, "compact")
+	}
+
+	// 5. Insert operations (always last)
 	if config.Insert != "" {
 		if err := runInsert(config, isPE, isELF); err != nil {
 			return fmt.Errorf("insert operation failed: %v", err)
@@ -220,24 +233,15 @@ func runAnalysis(config *Configuration, isPE, isELF bool) error {
 func runStrip(config *Configuration, isPE, isELF bool) error {
 	fmt.Println("=== Strip Operations ===")
 
+	// Always use comprehensive stripping for -s flag
 	if isPE {
-		// PE stripping: debug sections and symbols
-		fmt.Println("Stripping debug sections...")
-		result := perw.StripDebugSectionsDetailed(config.FilePath)
-		fmt.Printf("Strip debug sections: %s\n", result.String())
-
-		fmt.Println("Stripping symbol sections...")
-		result = perw.StripSymbolSectionsDetailed(config.FilePath)
-		fmt.Printf("Strip symbol sections: %s\n", result.String())
+		fmt.Println("Performing comprehensive PE stripping...")
+		result := perw.AdvancedStripPEDetailed(config.FilePath, config.Compact)
+		fmt.Printf("PE strip: %s\n", result.String())
 	} else if isELF {
-		// ELF stripping: debug sections and symbols
-		fmt.Println("Stripping debug sections...")
-		result := elfrw.StripDebugSectionsDetailed(config.FilePath)
-		fmt.Printf("Strip debug sections: %s\n", result.String())
-
-		fmt.Println("Stripping symbol sections...")
-		result = elfrw.StripSymbolSectionsDetailed(config.FilePath)
-		fmt.Printf("Strip symbol sections: %s\n", result.String())
+		fmt.Println("Performing comprehensive ELF stripping...")
+		result := elfrw.AdvancedStripELFDetailed(config.FilePath, config.Compact)
+		fmt.Printf("ELF strip: %s\n", result.String())
 	}
 
 	return nil
@@ -258,7 +262,6 @@ func runObfuscate(config *Configuration, isPE, isELF bool) error {
 			{"Load configuration", perw.ObfuscateLoadConfigurationDetailed},
 			{"Import table", perw.ObfuscateImportTableDetailed},
 			{"Import names", perw.ObfuscateImportNamesDetailed},
-			{"Rich header", perw.ObfuscateRichHeaderDetailed},
 			{"Resource directory", perw.ObfuscateResourceDirectoryDetailed},
 			{"Export table", perw.ObfuscateExportTableDetailed},
 		}
@@ -381,6 +384,24 @@ func runInsert(config *Configuration, isPE, isELF bool) error {
 	return nil
 }
 
+// runCompact performs standalone compacting operations
+func runCompact(config *Configuration, isPE, isELF bool) error {
+	fmt.Println("=== Compact Operations ===")
+
+	if isPE {
+		fmt.Println("Performing PE compaction...")
+		// Use AdvancedStripPEDetailed with compact=true but no stripping
+		result := perw.CompactOnlyPEDetailed(config.FilePath)
+		fmt.Printf("PE compact: %s\n", result.String())
+	} else if isELF {
+		fmt.Println("Performing ELF compaction...")
+		result := elfrw.CompactELFDetailed(config.FilePath, true) // Remove non-essential sections
+		fmt.Printf("ELF compact: %s\n", result.String())
+	}
+
+	return nil
+}
+
 // printUsage prints the help message
 func printUsage() {
 	fmt.Printf(`go-super-strip - Advanced Executable Stripping and Obfuscation Tool
@@ -398,6 +419,7 @@ OPTIONS:
     -r, --regex <pattern> Strip bytes matching regex pattern
     -a, --analyze        Analyze executable file structure and exit (ignores other flags)
     -i, --insert <spec>  Add hex section (format: name:filepath or name:filepath:password, performed last)
+    -c, --compact        Enable file size reduction by actually removing sections
     
     -v                   Enable verbose output
     -h                   Show this help

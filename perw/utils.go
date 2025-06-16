@@ -4,7 +4,6 @@ import (
 	"debug/pe"
 	"encoding/binary"
 	"fmt"
-	"gosstrip/common"
 	"strings"
 )
 
@@ -190,20 +189,6 @@ func (p *PEFile) IsExecutableOrShared() bool {
 }
 
 // --- Section Type Utilities ---
-
-// shouldStripForFileType determines if a section type should be stripped for the current file type
-func (p *PEFile) shouldStripForFileType(sectionType SectionType) bool {
-	matcher := sectionMatchers[sectionType]
-	if p.IsDLL() {
-		return matcher.StripForDLL
-	}
-	return matcher.StripForEXE
-}
-
-// sectionMatches checks if a section name matches the given matcher
-func sectionMatches(sectionName string, matcher SectionMatcher) bool {
-	return common.MatchesPattern(sectionName, matcher.ExactNames, matcher.PrefixNames)
-}
 
 // findSectionByName finds a section by its name (internal helper, returns pointer or nil)
 func (p *PEFile) findSectionByName(name string) *Section {
