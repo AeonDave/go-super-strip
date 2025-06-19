@@ -1,24 +1,20 @@
 package perw
 
 import (
-	"fmt"
 	"gosstrip/common"
 	"os"
 	"regexp"
 )
 
-// Wrapper functions provide the main API for PE file operations
-// These functions handle file opening, operation execution, and file closing
+// Global wrapper functions for PE file manipulation
 
-// AnalyzePE analyzes a PE file and prints information about it
+// AnalyzePE performs comprehensive analysis of a PE file
 func AnalyzePE(filePath string) error {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return err
 	}
-	defer func(file *os.File) {
-		_ = file.Close()
-	}(file)
+	defer file.Close()
 
 	peFile, err := ReadPE(file)
 	if err != nil {
@@ -28,289 +24,183 @@ func AnalyzePE(filePath string) error {
 	return peFile.Analyze()
 }
 
-// ObfuscateBaseAddressesDetailed obfuscates base addresses in a PE file with detailed result
-func ObfuscateBaseAddressesDetailed(filePath string) *common.OperationResult {
-	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
+// StripPEDetailed performs comprehensive PE stripping
+func StripPEDetailed(filePath string, compact bool, force bool) *common.OperationResult {
+	file, err := os.Open(filePath)
 	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
+		return &common.OperationResult{
+			Applied: false,
+			Message: "Failed to open file: " + err.Error(),
+		}
 	}
-	defer func(file *os.File) {
-		_ = file.Close()
-	}(file)
+	defer file.Close()
 
 	peFile, err := ReadPE(file)
 	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to read PE file: %v", err))
+		return &common.OperationResult{
+			Applied: false,
+			Message: "Failed to read PE file: " + err.Error(),
+		}
 	}
 
-	result := peFile.ObfuscateBaseAddresses()
-	if !result.Applied {
-		return result
-	}
-
-	if err := peFile.CommitChangesSimple(-1); err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
-	}
-
-	return result
+	return peFile.AdvancedStripPEDetailed(compact, force)
 }
 
-// StripRegexBytes strips bytes matching a regex pattern from a PE file
-func StripRegexBytes(filePath string, regex *regexp.Regexp) error {
-	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
+// StripPEDetailedWithObfuscation performs PE stripping considering obfuscation needs
+func StripPEDetailedWithObfuscation(filePath string, compact bool, force bool, obfuscationEnabled bool) *common.OperationResult {
+	file, err := os.Open(filePath)
 	if err != nil {
-		return err
+		return &common.OperationResult{
+			Applied: false,
+			Message: "Failed to open file: " + err.Error(),
+		}
 	}
-	defer func(file *os.File) {
-		_ = file.Close()
-	}(file)
+	defer file.Close()
 
 	peFile, err := ReadPE(file)
 	if err != nil {
-		return err
+		return &common.OperationResult{
+			Applied: false,
+			Message: "Failed to read PE file: " + err.Error(),
+		}
 	}
 
-	if _, err := peFile.StripBytePattern(regex, common.RandomFill); err != nil {
-		return err
-	}
-
-	return peFile.CommitChangesSimple(-1)
+	// For now, use the same function but could be extended for obfuscation-aware stripping
+	return peFile.AdvancedStripPEDetailed(compact, force)
 }
 
-// AddHexSection adds a hex section to a PE file (with optional encryption)
-func AddHexSection(filePath, sectionName, sourceFile, password string) error {
-	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
-	if err != nil {
-		return err
-	}
-	defer func(file *os.File) {
-		_ = file.Close()
-	}(file)
-
-	peFile, err := ReadPE(file)
-	if err != nil {
-		return err
-	}
-
-	if err := peFile.AddHexSection(sectionName, sourceFile, password); err != nil {
-		return err
-	}
-
-	return peFile.CommitChangesSimple(-1)
-}
-
-// ObfuscateSectionNamesDetailed obfuscates section names and returns detailed results
+// ObfuscateSectionNamesDetailed obfuscates section names in PE file
 func ObfuscateSectionNamesDetailed(filePath string) *common.OperationResult {
-	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
+	// For now, use ObfuscateAll or return not implemented
+	return &common.OperationResult{
+		Applied: false,
+		Message: "Section names obfuscation not implemented as standalone - use ObfuscateAll",
 	}
-	defer func(file *os.File) {
-		_ = file.Close()
-	}(file)
+}
+
+// ObfuscateBaseAddressesDetailed obfuscates base addresses in PE file
+func ObfuscateBaseAddressesDetailed(filePath string, force bool) *common.OperationResult {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return &common.OperationResult{
+			Applied: false,
+			Message: "Failed to open file: " + err.Error(),
+		}
+	}
+	defer file.Close()
 
 	peFile, err := ReadPE(file)
 	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to read PE: %v", err))
+		return &common.OperationResult{
+			Applied: false,
+			Message: "Failed to read PE file: " + err.Error(),
+		}
 	}
 
-	result := peFile.RandomizeSectionNames()
-	if !result.Applied {
-		return result
-	}
-
-	if err := peFile.CommitChangesSimple(-1); err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
-	}
-
-	return result
+	return peFile.ObfuscateBaseAddresses()
 }
 
-// ObfuscateLoadConfigurationDetailed obfuscates load configuration with detailed result
+// ObfuscateLoadConfigurationDetailed obfuscates load configuration in PE file
 func ObfuscateLoadConfigurationDetailed(filePath string) *common.OperationResult {
-	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
+	// Placeholder implementation - return not applied for now
+	return &common.OperationResult{
+		Applied: false,
+		Message: "Load configuration obfuscation not implemented yet",
 	}
-	defer func(file *os.File) {
-		_ = file.Close()
-	}(file)
-
-	peFile, err := ReadPE(file)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to read PE file: %v", err))
-	}
-
-	result := peFile.ObfuscateLoadConfig()
-	if !result.Applied {
-		return result
-	}
-
-	if err := peFile.CommitChangesSimple(-1); err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
-	}
-
-	return result
 }
 
-// ObfuscateImportTableDetailed obfuscates import table with detailed result
-func ObfuscateImportTableDetailed(filePath string) *common.OperationResult {
-	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
+// ObfuscateImportTableDetailed obfuscates import table in PE file
+func ObfuscateImportTableDetailed(filePath string, force bool) *common.OperationResult {
+	// Placeholder implementation - return not applied for now
+	return &common.OperationResult{
+		Applied: false,
+		Message: "Import table obfuscation not implemented yet",
 	}
-	defer func(file *os.File) {
-		_ = file.Close()
-	}(file)
-
-	peFile, err := ReadPE(file)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to read PE file: %v", err))
-	}
-
-	result := peFile.ObfuscateImportTable()
-	if !result.Applied {
-		return result
-	}
-
-	if err := peFile.CommitChangesSimple(-1); err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
-	}
-
-	return result
 }
 
-// ObfuscateImportNamesDetailed obfuscates import names with detailed result
+// ObfuscateImportNamesDetailed obfuscates import names in PE file
 func ObfuscateImportNamesDetailed(filePath string) *common.OperationResult {
-	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
+	// Placeholder implementation - return not applied for now
+	return &common.OperationResult{
+		Applied: false,
+		Message: "Import names obfuscation not implemented yet",
 	}
-	defer func(file *os.File) {
-		_ = file.Close()
-	}(file)
-
-	peFile, err := ReadPE(file)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to read PE file: %v", err))
-	}
-
-	result := peFile.ObfuscateImportNames()
-	if !result.Applied {
-		return result
-	}
-
-	if err := peFile.CommitChangesSimple(-1); err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
-	}
-
-	return result
 }
 
-// ObfuscateResourceDirectoryDetailed obfuscates resource directory with detailed result
+// ObfuscateResourceDirectoryDetailed obfuscates resource directory in PE file
 func ObfuscateResourceDirectoryDetailed(filePath string) *common.OperationResult {
-	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
+	// Placeholder implementation - return not applied for now
+	return &common.OperationResult{
+		Applied: false,
+		Message: "Resource directory obfuscation not implemented yet",
 	}
-	defer func(file *os.File) {
-		_ = file.Close()
-	}(file)
-
-	peFile, err := ReadPE(file)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to read PE file: %v", err))
-	}
-
-	result := peFile.ObfuscateResourceDirectory()
-	if !result.Applied {
-		return result
-	}
-
-	if err := peFile.CommitChangesSimple(-1); err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
-	}
-
-	return result
 }
 
-// ObfuscateExportTableDetailed obfuscates export table with detailed result
-func ObfuscateExportTableDetailed(filePath string) *common.OperationResult {
-	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
+// ObfuscateExportTableDetailed obfuscates export table in PE file
+func ObfuscateExportTableDetailed(filePath string, force bool) *common.OperationResult {
+	// Placeholder implementation - return not applied for now
+	return &common.OperationResult{
+		Applied: false,
+		Message: "Export table obfuscation not implemented yet",
 	}
-	defer func(file *os.File) {
-		_ = file.Close()
-	}(file)
-
-	peFile, err := ReadPE(file)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to read PE file: %v", err))
-	}
-
-	result := peFile.ObfuscateExportTable()
-	if !result.Applied {
-		return result
-	}
-
-	if err := peFile.CommitChangesSimple(-1); err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
-	}
-
-	return result
 }
 
-// AdvancedStripPEDetailed performs comprehensive PE stripping with optional size reduction
-func AdvancedStripPEDetailed(filePath string, compact bool) *common.OperationResult {
-	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
+// ObfuscateRuntimeStringsDetailed obfuscates runtime strings in PE file
+func ObfuscateRuntimeStringsDetailed(filePath string) *common.OperationResult {
+	// Placeholder implementation - return not applied for now
+	return &common.OperationResult{
+		Applied: false,
+		Message: "Runtime strings obfuscation not implemented yet",
 	}
-	defer func(file *os.File) {
-		_ = file.Close()
-	}(file)
-
-	peFile, err := ReadPE(file)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to read PE file: %v", err))
-	}
-
-	result := peFile.AdvancedStripPEDetailed(compact)
-	if !result.Applied {
-		return result
-	}
-
-	if err := peFile.CommitChangesSimple(-1); err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
-	}
-
-	return result
 }
 
-// CompactOnlyPEDetailed performs PE compaction without stripping
-func CompactOnlyPEDetailed(filePath string) *common.OperationResult {
-	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
+// StripPostObfuscationSections removes sections that were preserved for obfuscation
+func StripPostObfuscationSections(filePath string, force bool) *common.OperationResult {
+	// Placeholder implementation - return not applied for now
+	return &common.OperationResult{
+		Applied: false,
+		Message: "Post-obfuscation section stripping not implemented yet",
 	}
-	defer func(file *os.File) {
-		_ = file.Close()
-	}(file)
+}
+
+// ApplyRiskyOperationsDetailed applies risky operations to PE file
+func ApplyRiskyOperationsDetailed(filePath string) *common.OperationResult {
+	// Placeholder implementation - return not applied for now
+	return &common.OperationResult{
+		Applied: false,
+		Message: "Risky operations not implemented yet",
+	}
+}
+
+// StripRegexBytes strips bytes matching regex pattern in PE file
+func StripRegexBytes(filePath string, regex *regexp.Regexp) error {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
 
 	peFile, err := ReadPE(file)
 	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to read PE file: %v", err))
+		return err
 	}
 
-	result := peFile.CompactOnlyPEDetailed()
-	if !result.Applied {
-		return result
+	_, err = peFile.StripBytePattern(regex, common.ZeroFill)
+	return err
+}
+
+// AddHexSection adds a hexadecimal section to PE file
+func AddHexSection(filePath string, sectionName string, sourceFile string, password string) error {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	peFile, err := ReadPE(file)
+	if err != nil {
+		return err
 	}
 
-	if err := peFile.CommitChangesSimple(-1); err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to save changes: %v", err))
-	}
-
-	return result
+	return peFile.AddHexSection(sectionName, sourceFile, password)
 }

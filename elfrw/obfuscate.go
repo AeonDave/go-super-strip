@@ -246,9 +246,14 @@ func (e *ELFFile) RandomizeSectionNames() *common.OperationResult {
 }
 
 // ObfuscateBaseAddresses randomly modifies virtual base addresses
-func (e *ELFFile) ObfuscateBaseAddresses() *common.OperationResult {
+func (e *ELFFile) ObfuscateBaseAddresses(force bool) *common.OperationResult {
 	if err := e.validateELF(); err != nil {
 		return common.NewSkipped(fmt.Sprintf("ELF validation failed: %v", err))
+	}
+
+	// Base address obfuscation is risky for ELF files
+	if !force {
+		return common.NewSkipped("base address obfuscation skipped (risky operation, use -f to force)")
 	}
 
 	randomOffset, err := generateRandomOffset()
@@ -435,7 +440,7 @@ func (e *ELFFile) obfuscateTimestampsInSection(section *Section) error {
 }
 
 // ObfuscateAll applies all obfuscation techniques
-func (e *ELFFile) ObfuscateAll() *common.OperationResult {
+func (e *ELFFile) ObfuscateAll(force bool) *common.OperationResult {
 	if err := e.validateELF(); err != nil {
 		return common.NewSkipped(fmt.Sprintf("ELF validation failed: %v", err))
 	}
@@ -449,10 +454,10 @@ func (e *ELFFile) ObfuscateAll() *common.OperationResult {
 	}{
 		{"RandomizeSectionNames", e.RandomizeSectionNames},
 		{"ObfuscateBaseAddresses", func() *common.OperationResult {
-			if isGoBinary {
-				return common.NewSkipped("skipping base address randomization for Go binary (would break runtime)")
+			if isGoBinary && !force {
+				return common.NewSkipped("skipping base address randomization for Go binary (would break runtime, use -f to force)")
 			}
-			return e.ObfuscateBaseAddresses()
+			return e.ObfuscateBaseAddresses(force)
 		}},
 		{"ObfuscateReservedHeaderFields", e.ObfuscateReservedHeaderFields},
 		{"ObfuscateSecondaryTimestamps", e.ObfuscateSecondaryTimestamps},

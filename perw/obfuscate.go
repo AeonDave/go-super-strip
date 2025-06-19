@@ -36,6 +36,15 @@ var headerOffsets = struct {
 	loaderFlags: map[bool]int64{true: 108, false: 92},
 }
 
+// ImportDescriptor represents an IMAGE_IMPORT_DESCRIPTOR
+type ImportDescriptor struct {
+	OriginalFirstThunk uint32 // RVA to original unbound IAT
+	TimeDateStamp      uint32 // 0 if not bound, -1 if bound
+	ForwarderChain     uint32 // -1 if no forwarders
+	Name               uint32 // RVA of imported DLL name
+	FirstThunk         uint32 // RVA to IAT (bound import table)
+}
+
 // hasBaseRelocations checks if the PE file has base relocation table
 func (p *PEFile) hasBaseRelocations() bool {
 	offsets, err := p.calculateOffsets()
@@ -61,7 +70,9 @@ func (p *PEFile) hasBaseRelocations() bool {
 func (p *PEFile) ObfuscateBaseAddresses() *common.OperationResult {
 	// CRITICAL: Check for base relocations before modifying ImageBase
 	if !p.hasBaseRelocations() {
-		return common.NewSkipped("no base relocations found (would break executable)")
+		// If no relocations exist, the executable cannot be relocated at runtime
+		// Changing ImageBase would cause immediate crashes - this is too dangerous even with force
+		return common.NewSkipped("no base relocations found (changing ImageBase would break executable)")
 	}
 
 	offsets, err := p.calculateOffsets()
@@ -193,30 +204,29 @@ func (p *PEFile) ObfuscateLoadConfig() *common.OperationResult {
 
 	modifications := 0
 
-	// Obfuscate only non-critical fields that don't affect execution:
-	// 1. TimeDateStamp (offset 4, 4 bytes)
-	// 2. MajorVersion (offset 8, 2 bytes)
-	// 3. MinorVersion (offset 10, 2 bytes)
-	// 4. Reserved fields that are actually unused
+	// Obfuscate non-critical fields that don't affect execution:
+	// 1. TimeDateStamp (offset 4, 4 bytes) - randomize
+	// 2. MajorVersion (offset 8, 2 bytes) - randomize
+	// 3. MinorVersion (offset 10, 2 bytes) - randomize
+	// These fields are safe to modify without breaking functionality
 
-	// Obfuscate TimeDateStamp
+	// Randomize TimeDateStamp
 	if size >= 8 {
 		randBytes, err := common.GenerateRandomBytes(4)
 		if err == nil {
-			copy(p.RawData[loadConfigPhysical+4:loadConfigPhysical+8], randBytes)
+			binary.LittleEndian.PutUint32(p.RawData[loadConfigPhysical+4:], binary.LittleEndian.Uint32(randBytes))
 			modifications++
 		}
 	}
 
-	// Obfuscate Version fields (but keep them reasonable)
+	// Randomize Version fields
 	if size >= 12 {
 		randBytes, err := common.GenerateRandomBytes(4)
 		if err == nil {
-			// Keep versions in reasonable range (1-255)
-			p.RawData[loadConfigPhysical+8] = randBytes[0]%255 + 1  // Major
-			p.RawData[loadConfigPhysical+9] = 0                     // Reserved
-			p.RawData[loadConfigPhysical+10] = randBytes[1]%255 + 1 // Minor
-			p.RawData[loadConfigPhysical+11] = 0                    // Reserved
+			// MajorVersion (2 bytes at offset 8)
+			binary.LittleEndian.PutUint16(p.RawData[loadConfigPhysical+8:], binary.LittleEndian.Uint16(randBytes[0:2]))
+			// MinorVersion (2 bytes at offset 10)
+			binary.LittleEndian.PutUint16(p.RawData[loadConfigPhysical+10:], binary.LittleEndian.Uint16(randBytes[2:4]))
 			modifications++
 		}
 	}
@@ -393,22 +403,22 @@ func (p *PEFile) RandomizeSectionNames() *common.OperationResult {
 }
 
 // ObfuscateAll applies all obfuscation techniques with improved error context
-func (p *PEFile) ObfuscateAll() *common.OperationResult {
+func (p *PEFile) ObfuscateAll(force bool) *common.OperationResult {
 	operations := []struct {
 		name string
 		fn   func() *common.OperationResult
 	}{
 		{"randomize section names", p.RandomizeSectionNames},
-		{"obfuscate base addresses", p.ObfuscateBaseAddresses},
+		{"obfuscate base addresses", func() *common.OperationResult { return p.ObfuscateBaseAddresses() }},
 		{"obfuscate load config", p.ObfuscateLoadConfig},
-		{"obfuscate import table", p.ObfuscateImportTable},
+		{"obfuscate import table", func() *common.OperationResult { return p.ObfuscateImportTable(force) }},
 		{"obfuscate resource directory", p.ObfuscateResourceDirectory},
-		{"obfuscate export table", p.ObfuscateExportTable},
+		{"obfuscate export table", func() *common.OperationResult { return p.ObfuscateExportTable(force) }},
 	}
 
 	totalApplied := 0
-	appliedOperations := []string{}
-	skippedOperations := []string{}
+	var appliedOperations []string
+	var skippedOperations []string
 
 	for _, op := range operations {
 		result := op.fn()
@@ -431,17 +441,13 @@ func (p *PEFile) ObfuscateAll() *common.OperationResult {
 	return common.NewSkipped(fmt.Sprintf("all techniques skipped: %s", strings.Join(skippedOperations, ", ")))
 }
 
-// ImportDescriptor represents an IMAGE_IMPORT_DESCRIPTOR
-type ImportDescriptor struct {
-	OriginalFirstThunk uint32 // RVA to original unbound IAT
-	TimeDateStamp      uint32 // 0 if not bound, -1 if bound
-	ForwarderChain     uint32 // -1 if no forwarders
-	Name               uint32 // RVA of imported DLL name
-	FirstThunk         uint32 // RVA to IAT (bound import table)
-}
-
 // ObfuscateImportTable applies various obfuscation techniques to the import table
-func (p *PEFile) ObfuscateImportTable() *common.OperationResult {
+func (p *PEFile) ObfuscateImportTable(force bool) *common.OperationResult {
+	// Import table modification is risky - can break functionality
+	if !force {
+		return common.NewSkipped("import table obfuscation skipped (risky operation, use -f to force)")
+	}
+
 	// Get import table directory entry
 	offsets, err := p.calculateOffsets()
 	if err != nil {
@@ -536,7 +542,7 @@ func (p *PEFile) shuffleImportDescriptors(importPhysical uint64, importSize uint
 	return nil
 }
 
-// addFakeImportEntries adds dummy import descriptors to confuse analysis tools
+// addFakeImportEntries adds fake import descriptors to confuse analysis tools
 func (p *PEFile) addFakeImportEntries(importPhysical uint64, importSize uint32) error {
 	// For safety, we'll just modify timestamps rather than adding new entries
 	// Adding new entries would require relocating the entire import table
@@ -890,7 +896,12 @@ func (p *PEFile) ObfuscateResourceDirectory() *common.OperationResult {
 }
 
 // ObfuscateExportTable modifies export table metadata (for DLLs mainly)
-func (p *PEFile) ObfuscateExportTable() *common.OperationResult {
+func (p *PEFile) ObfuscateExportTable(force bool) *common.OperationResult {
+	// Export table modification is risky - can break DLL functionality
+	if !force {
+		return common.NewSkipped("export table obfuscation skipped (risky operation, use -f to force)")
+	}
+
 	offsets, err := p.calculateOffsets()
 	if err != nil {
 		return common.NewSkipped(fmt.Sprintf("failed to calculate offsets: %v", err))
@@ -952,4 +963,57 @@ func (p *PEFile) ObfuscateExportTable() *common.OperationResult {
 		return common.NewApplied(fmt.Sprintf("obfuscated %d export table fields", modifications), modifications)
 	}
 	return common.NewSkipped("no export table fields could be obfuscated")
+}
+
+// ObfuscateRuntimeStrings obfuscates common runtime and debug strings
+func (p *PEFile) ObfuscateRuntimeStrings() *common.OperationResult {
+	// Common strings that can be safely obfuscated without breaking functionality
+	stringReplacements := map[string]string{
+		"runtime.":      "system_.",
+		"gopau":         "xypau",
+		"debugCal":      "traceCal",
+		"__getmainargs": "__getargs",
+		"fprintf":       "foutput",
+		"printf":        "output",
+		"gccmain.c":     "mainfile.c",
+		"mingw_helpers": "sys_helpers",
+		"libgcc2.c":     "libsys2.c",
+	}
+
+	modifications := 0
+
+	for _, section := range p.Sections {
+		// Focus on data sections
+		if !strings.Contains(strings.ToLower(section.Name), "data") &&
+			!strings.Contains(strings.ToLower(section.Name), "rdata") {
+			continue
+		}
+
+		data, err := p.ReadBytes(section.Offset, int(section.Size))
+		if err != nil || len(data) < 5 {
+			continue
+		}
+
+		for original, replacement := range stringReplacements {
+			originalBytes := []byte(original)
+			replacementBytes := []byte(replacement)
+
+			// Only replace if lengths match (safer)
+			if len(originalBytes) == len(replacementBytes) {
+				if bytes.Contains(data, originalBytes) {
+					data = bytes.ReplaceAll(data, originalBytes, replacementBytes)
+					modifications++
+				}
+			}
+		}
+
+		if modifications > 0 {
+			copy(p.RawData[section.Offset:section.Offset+int64(len(data))], data)
+		}
+	}
+
+	if modifications > 0 {
+		return common.NewApplied(fmt.Sprintf("obfuscated %d runtime strings", modifications), modifications)
+	}
+	return common.NewSkipped("no runtime strings found")
 }

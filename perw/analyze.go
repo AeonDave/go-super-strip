@@ -7,6 +7,32 @@ import (
 	"math"
 )
 
+// calculateEntropy computes Shannon entropy of data
+func calculateEntropy(data []byte) float64 {
+	if len(data) == 0 {
+		return 0.0
+	}
+
+	// Count byte frequencies
+	freq := make([]int, 256)
+	for _, b := range data {
+		freq[b]++
+	}
+
+	// Calculate entropy
+	entropy := 0.0
+	length := float64(len(data))
+
+	for _, count := range freq {
+		if count > 0 {
+			p := float64(count) / length
+			entropy -= p * math.Log2(p)
+		}
+	}
+
+	return entropy
+}
+
 // Analyze provides comprehensive analysis of the PE file
 func (p *PEFile) Analyze() error {
 	// Calculate entropy and packing detection for all sections
@@ -199,32 +225,6 @@ func (p *PEFile) detectPacking() bool {
 		}
 	}
 	return false
-}
-
-// calculateEntropy computes Shannon entropy of data
-func calculateEntropy(data []byte) float64 {
-	if len(data) == 0 {
-		return 0.0
-	}
-
-	// Count byte frequencies
-	freq := make([]int, 256)
-	for _, b := range data {
-		freq[b]++
-	}
-
-	// Calculate entropy
-	entropy := 0.0
-	length := float64(len(data))
-
-	for _, count := range freq {
-		if count > 0 {
-			p := float64(count) / length
-			entropy -= p * math.Log2(p)
-		}
-	}
-
-	return entropy
 }
 
 // getSubsystemName returns human-readable subsystem name

@@ -22,7 +22,8 @@ type Configuration struct {
 	Regex     string // -r/--regex: Strip bytes matching regex pattern
 	Analyze   bool   // -a/--analyze: Analyze file structure only
 	Insert    string // -i/--insert: Add section (format: name:filepath)
-	Compact   bool   // -c/--compact: Enable file size reduction via section removal
+	Compact   bool   // -c/--compact: Apply full stripping + file size reduction via section removal
+	Force     bool   // -f/--force: Apply risky operations (exception handling, etc.)
 }
 
 // Global flags
@@ -38,12 +39,14 @@ var (
 
 	analyzeFlag     = flag.Bool("a", false, "Analyze executable file structure and exit")
 	analyzeFlagLong = flag.Bool("analyze", false, "Analyze executable file structure and exit")
+	insertFlag      = flag.String("i", "", "Add hex section (format: name:filepath or name:filepath:password)")
+	insertFlagLong  = flag.String("insert", "", "Add hex section (format: name:filepath or name:filepath:password)")
 
-	insertFlag     = flag.String("i", "", "Add hex section (format: name:filepath or name:filepath:password)")
-	insertFlagLong = flag.String("insert", "", "Add hex section (format: name:filepath or name:filepath:password)")
+	compactFlag     = flag.Bool("c", false, "Apply full stripping + file size reduction by removing sections")
+	compactFlagLong = flag.Bool("compact", false, "Apply full stripping + file size reduction by removing sections")
 
-	compactFlag     = flag.Bool("c", false, "Enable file size reduction by actually removing sections")
-	compactFlagLong = flag.Bool("compact", false, "Enable file size reduction by actually removing sections")
+	forceFlag     = flag.Bool("f", false, "Apply risky operations (exception handling, etc.)")
+	forceFlagLong = flag.Bool("force", false, "Apply risky operations (exception handling, etc.)")
 
 	verboseFlag = flag.Bool("v", false, "Enable verbose output")
 )
@@ -91,7 +94,6 @@ func parseArgs() (*Configuration, error) {
 	if len(args) != 1 {
 		return nil, fmt.Errorf("exactly one file path required")
 	}
-
 	config := &Configuration{
 		FilePath:  args[0],
 		Verbose:   *verboseFlag,
@@ -99,6 +101,7 @@ func parseArgs() (*Configuration, error) {
 		Obfuscate: *obfuscateFlag || *obfuscateFlagLong,
 		Analyze:   *analyzeFlag || *analyzeFlagLong,
 		Compact:   *compactFlag || *compactFlagLong,
+		Force:     *forceFlag || *forceFlagLong,
 	}
 
 	// Handle regex flag
@@ -114,7 +117,6 @@ func parseArgs() (*Configuration, error) {
 	} else if *insertFlagLong != "" {
 		config.Insert = *insertFlagLong
 	}
-
 	// Validate file exists
 	if _, err := os.Stat(config.FilePath); os.IsNotExist(err) {
 		return nil, fmt.Errorf("file does not exist: %s", config.FilePath)
@@ -122,15 +124,25 @@ func parseArgs() (*Configuration, error) {
 
 	// If analyze is set, other operations should be ignored
 	if config.Analyze {
-		if config.Strip || config.Obfuscate || config.Regex != "" || config.Insert != "" {
+		if config.Strip || config.Obfuscate || config.Regex != "" || config.Insert != "" || config.Compact || config.Force {
 			fmt.Println("Note: -a/--analyze specified, ignoring other operation flags")
 		}
 		return config, nil
 	}
 
+	// Validate compact constraint: -c can only be used with -s
+	if config.Compact && !config.Strip {
+		return nil, fmt.Errorf("compact (-c) can only be used together with strip (-s)")
+	}
+
+	// Validate force constraint: -f can only be used with -s, -c, or -o
+	if config.Force && !config.Strip && !config.Compact && !config.Obfuscate {
+		return nil, fmt.Errorf("force (-f) can only be used with strip (-s), compact (-c), or obfuscate (-o)")
+	}
+
 	// At least one operation must be specified (unless analyze)
-	if !config.Strip && !config.Obfuscate && config.Regex == "" && config.Insert == "" && !config.Compact {
-		return nil, fmt.Errorf("at least one operation flag required (-s, -o, -r, -i, or -c)")
+	if !config.Strip && !config.Obfuscate && config.Regex == "" && config.Insert == "" {
+		return nil, fmt.Errorf("at least one operation flag required (-s, -o, -r, or -i)")
 	}
 
 	return config, nil
@@ -167,20 +179,27 @@ func runOperations(config *Configuration) error {
 	// If analyze only, run analysis and exit
 	if config.Analyze {
 		return runAnalysis(config, isPE, isELF)
-	}
-
-	// Execute operations in order: Strip → Obfuscate → Regex → Insert
+	} // Execute operations in strict order according to constraints:
+	// 1. Strip (always first if present)
+	// 2. Compact (only after strip, if both are present)
+	// 3. Obfuscate (after strip/compact)
+	// 4. Regex (after obfuscate)
+	// 5. Insert (always last)
 	var operations []string
 
-	// 1. Strip operations
+	// 1. Strip operations (may include compact if both flags are set)
 	if config.Strip {
-		if err := runStrip(config, isPE, isELF); err != nil {
-			return fmt.Errorf("strip operation failed: %v", err)
+		if err := runUnifiedStripping(config, isPE, isELF); err != nil {
+			return fmt.Errorf("stripping operation failed: %v", err)
 		}
-		operations = append(operations, "strip")
+		if config.Compact {
+			operations = append(operations, "strip+compact")
+		} else {
+			operations = append(operations, "strip")
+		}
 	}
 
-	// 2. Obfuscate operations
+	// 2. Obfuscate operations (after strip/compact to work on clean structure)
 	if config.Obfuscate {
 		if err := runObfuscate(config, isPE, isELF); err != nil {
 			return fmt.Errorf("obfuscate operation failed: %v", err)
@@ -188,7 +207,15 @@ func runOperations(config *Configuration) error {
 		operations = append(operations, "obfuscate")
 	}
 
-	// 3. Regex operations
+	// 2.5. Apply deferred risky operations (if obfuscation was done with force)
+	if config.Force && config.Obfuscate && config.Strip {
+		if err := runRiskyOperations(config, isPE, isELF); err != nil {
+			return fmt.Errorf("risky operations failed: %v", err)
+		}
+		operations = append(operations, "risky-post-obfuscation")
+	}
+
+	// 3. Regex operations (pattern-based removal after structure changes)
 	if config.Regex != "" {
 		if err := runRegex(config, isPE, isELF); err != nil {
 			return fmt.Errorf("regex operation failed: %v", err)
@@ -196,15 +223,7 @@ func runOperations(config *Configuration) error {
 		operations = append(operations, "regex")
 	}
 
-	// 4. Compact operations (if not already done during strip)
-	if config.Compact && !config.Strip {
-		if err := runCompact(config, isPE, isELF); err != nil {
-			return fmt.Errorf("compact operation failed: %v", err)
-		}
-		operations = append(operations, "compact")
-	}
-
-	// 5. Insert operations (always last)
+	// 4. Insert operations (always last - add new data)
 	if config.Insert != "" {
 		if err := runInsert(config, isPE, isELF); err != nil {
 			return fmt.Errorf("insert operation failed: %v", err)
@@ -229,19 +248,54 @@ func runAnalysis(config *Configuration, isPE, isELF bool) error {
 	return fmt.Errorf("unsupported file type")
 }
 
-// runStrip performs stripping operations
-func runStrip(config *Configuration, isPE, isELF bool) error {
-	fmt.Println("=== Strip Operations ===")
+// runUnifiedStripping performs unified stripping operations following constraints
+func runUnifiedStripping(config *Configuration, isPE, isELF bool) error {
+	if config.Strip && config.Compact {
+		fmt.Println("=== Strip + Compact Operations ===")
+		fmt.Println("Performing comprehensive stripping with compaction...")
+	} else if config.Strip {
+		fmt.Println("=== Strip Operations ===")
+		fmt.Println("Performing comprehensive stripping...")
+	}
 
-	// Always use comprehensive stripping for -s flag
+	// Note: compact can only happen if strip is also true (validated earlier)
+	compact := config.Compact
+	fileType := "ELF"
 	if isPE {
-		fmt.Println("Performing comprehensive PE stripping...")
-		result := perw.AdvancedStripPEDetailed(config.FilePath, config.Compact)
-		fmt.Printf("PE strip: %s\n", result.String())
+		fileType = "PE"
+	}
+
+	fmt.Printf("\nProcessing %s file...\n", fileType)
+	// When obfuscation is enabled with force, defer risky operations until after obfuscation
+	forceForStripping := config.Force
+	obfuscationEnabled := config.Obfuscate
+
+	if config.Force && config.Obfuscate {
+		fmt.Println("⚠️  Using obfuscation-aware stripping: preserving sections needed for obfuscation...")
+		forceForStripping = false
+	}
+
+	if isPE {
+		var result *common.OperationResult
+		if obfuscationEnabled {
+			result = perw.StripPEDetailedWithObfuscation(config.FilePath, compact, forceForStripping, obfuscationEnabled)
+		} else {
+			result = perw.StripPEDetailed(config.FilePath, compact, forceForStripping)
+		}
+
+		if result.Applied {
+			fmt.Printf("\n✅ %s Stripping Results:\n%s\n", fileType, result.Message)
+		} else {
+			fmt.Printf("\n❌ %s Stripping: %s\n", fileType, result.Message)
+		}
 	} else if isELF {
-		fmt.Println("Performing comprehensive ELF stripping...")
-		result := elfrw.AdvancedStripELFDetailed(config.FilePath, config.Compact)
-		fmt.Printf("ELF strip: %s\n", result.String())
+		// For ELF, we use the existing function (could be enhanced later)
+		result := elfrw.StripELFDetailed(config.FilePath, compact, forceForStripping)
+		if result.Applied {
+			fmt.Printf("\n✅ %s Stripping Results:\n%s\n", fileType, result.Message)
+		} else {
+			fmt.Printf("\n❌ %s Stripping: %s\n", fileType, result.Message)
+		}
 	}
 
 	return nil
@@ -249,61 +303,119 @@ func runStrip(config *Configuration, isPE, isELF bool) error {
 
 // runObfuscate performs obfuscation operations
 func runObfuscate(config *Configuration, isPE, isELF bool) error {
-	fmt.Println("=== Obfuscation Operations ===")
-
+	fmt.Println("\n=== Obfuscation Operations ===")
 	if isPE {
+		fmt.Println("Applying PE obfuscation techniques...")
+
 		// PE obfuscation techniques
 		techniques := []struct {
-			name string
-			fn   func(string) *common.OperationResult
+			name  string
+			fn    func(string) *common.OperationResult
+			risky bool
 		}{
-			{"Section names", perw.ObfuscateSectionNamesDetailed},
-			{"Base addresses", perw.ObfuscateBaseAddressesDetailed},
-			{"Load configuration", perw.ObfuscateLoadConfigurationDetailed},
-			{"Import table", perw.ObfuscateImportTableDetailed},
-			{"Import names", perw.ObfuscateImportNamesDetailed},
-			{"Resource directory", perw.ObfuscateResourceDirectoryDetailed},
-			{"Export table", perw.ObfuscateExportTableDetailed},
+			{"Section names", perw.ObfuscateSectionNamesDetailed, false},
+			{"Base addresses", func(path string) *common.OperationResult {
+				return perw.ObfuscateBaseAddressesDetailed(path, config.Force)
+			}, true},
+			{"Load configuration", perw.ObfuscateLoadConfigurationDetailed, false},
+			{"Import table", func(path string) *common.OperationResult {
+				return perw.ObfuscateImportTableDetailed(path, config.Force)
+			}, true},
+			{"Import names", perw.ObfuscateImportNamesDetailed, false},
+			{"Resource directory", perw.ObfuscateResourceDirectoryDetailed, false},
+			{"Export table", func(path string) *common.OperationResult {
+				return perw.ObfuscateExportTableDetailed(path, config.Force)
+			}, true},
+			{"Runtime strings", perw.ObfuscateRuntimeStringsDetailed, false},
 		}
 
+		appliedCount := 0
 		for _, tech := range techniques {
-			fmt.Printf("Obfuscating %s...\n", tech.name)
+			if tech.risky && !config.Force {
+				fmt.Printf("  ⚠️  %s: SKIPPED (risky operation, use -f to force)\n", tech.name)
+				continue
+			}
+
 			result := tech.fn(config.FilePath)
-			fmt.Printf("Obfuscate %s: %s\n", tech.name, result.String())
+			if result.Applied {
+				fmt.Printf("  ✓ %s: %s\n", tech.name, result.Message)
+				appliedCount++
+			} else {
+				fmt.Printf("  ⚠️  %s: %s\n", tech.name, result.Message)
+			}
 		}
+
+		fmt.Printf("\n✅ Applied %d/%d obfuscation techniques\n", appliedCount, len(techniques))
+
+		// Apply post-obfuscation cleanup if force was deferred during stripping
+		if config.Force && config.Strip {
+			fmt.Println("\n🧹 Post-obfuscation cleanup:")
+			fmt.Println("Removing sections that were preserved for obfuscation...")
+
+			result := perw.StripPostObfuscationSections(config.FilePath, config.Force)
+			if result.Applied {
+				fmt.Printf("✅ %s\n", result.Message)
+			} else {
+				fmt.Printf("⚠️  %s\n", result.Message)
+			}
+		}
+
 	} else if isELF {
+		fmt.Println("Applying ELF obfuscation techniques...")
+
 		// Check if this is a Go binary before any obfuscation
 		isGoBinary, err := elfrw.IsGoBinary(config.FilePath)
 		if err != nil {
 			return fmt.Errorf("failed to check if Go binary: %v", err)
-		} // ELF obfuscation techniques
+		}
+
+		// ELF obfuscation techniques
 		techniques := []struct {
 			name      string
 			fn        func(string) *common.OperationResult
 			skipForGo bool
+			risky     bool
 		}{
-			{"Section names", elfrw.ObfuscateSectionNamesDetailed, false},
-			{"Base addresses", elfrw.ObfuscateBaseAddressesDetailed, true}, // Skip for Go binaries
+			{"Section names", elfrw.ObfuscateSectionNamesDetailed, false, false},
+			{"Base addresses", func(path string) *common.OperationResult {
+				return elfrw.ObfuscateBaseAddressesDetailed(path, config.Force)
+			}, true, true}, // Skip for Go binaries, risky
 		}
 
+		appliedCount := 0
 		for _, tech := range techniques {
-			if tech.skipForGo && isGoBinary {
-				fmt.Printf("Obfuscating %s...\n", tech.name)
-				fmt.Printf("Obfuscate %s: SKIPPED (Go binary - would break runtime)\n", tech.name)
+			if tech.skipForGo && isGoBinary && !config.Force {
+				fmt.Printf("  ⚠️  %s: SKIPPED (Go binary - would break runtime, use -f to force)\n", tech.name)
+				continue
+			}
+			if tech.risky && !config.Force {
+				fmt.Printf("  ⚠️  %s: SKIPPED (risky operation, use -f to force)\n", tech.name)
 				continue
 			}
 
-			fmt.Printf("Obfuscating %s...\n", tech.name)
 			result := tech.fn(config.FilePath)
-			fmt.Printf("Obfuscate %s: %s\n", tech.name, result.String())
+			if result.Applied {
+				fmt.Printf("  ✓ %s: %s\n", tech.name, result.Message)
+				appliedCount++
+			} else {
+				fmt.Printf("  ⚠️  %s: %s\n", tech.name, result.Message)
+			}
 		}
 
 		// Apply additional obfuscation for non-Go binaries only
-		if !isGoBinary {
-			fmt.Printf("Obfuscating All obfuscation...\n")
-			result := elfrw.ObfuscateAllDetailed(config.FilePath)
-			fmt.Printf("Obfuscate All obfuscation: %s\n", result.String())
+		if !isGoBinary || config.Force {
+			result := elfrw.ObfuscateAllDetailed(config.FilePath, config.Force)
+			if result.Applied {
+				fmt.Printf("  ✓ Additional obfuscation: %s\n", result.Message)
+				appliedCount++
+			} else {
+				fmt.Printf("  ⚠️  Additional obfuscation: %s\n", result.Message)
+			}
+		} else {
+			fmt.Printf("  ⚠️  Additional obfuscation: SKIPPED (Go binary - would break runtime, use -f to force)\n")
 		}
+
+		fmt.Printf("\n✅ Applied %d ELF obfuscation techniques\n", appliedCount)
 	}
 
 	return nil
@@ -380,23 +492,35 @@ func runInsert(config *Configuration, isPE, isELF bool) error {
 			fmt.Println("Add hex section: APPLIED")
 		}
 	}
-
 	return nil
 }
 
-// runCompact performs standalone compacting operations
-func runCompact(config *Configuration, isPE, isELF bool) error {
-	fmt.Println("=== Compact Operations ===")
+// runRiskyOperations applies risky stripping operations after obfuscation
+func runRiskyOperations(config *Configuration, isPE, isELF bool) error {
+	fmt.Println("\n=== Risky Operations (Post-Obfuscation) ===")
+	fmt.Println("Applying deferred risky operations...")
+
+	fileType := "ELF"
+	if isPE {
+		fileType = "PE"
+	}
+
+	fmt.Printf("\nProcessing %s file for risky operations...\n", fileType)
 
 	if isPE {
-		fmt.Println("Performing PE compaction...")
-		// Use AdvancedStripPEDetailed with compact=true but no stripping
-		result := perw.CompactOnlyPEDetailed(config.FilePath)
-		fmt.Printf("PE compact: %s\n", result.String())
+		result := perw.ApplyRiskyOperationsDetailed(config.FilePath)
+		if result.Applied {
+			fmt.Printf("\n✅ %s Risky Operations Results:\n%s\n", fileType, result.Message)
+		} else {
+			fmt.Printf("\n❌ %s Risky Operations: %s\n", fileType, result.Message)
+		}
 	} else if isELF {
-		fmt.Println("Performing ELF compaction...")
-		result := elfrw.CompactELFDetailed(config.FilePath, true) // Remove non-essential sections
-		fmt.Printf("ELF compact: %s\n", result.String())
+		result := elfrw.ApplyRiskyOperationsDetailed(config.FilePath)
+		if result.Applied {
+			fmt.Printf("\n✅ %s Risky Operations Results:\n%s\n", fileType, result.Message)
+		} else {
+			fmt.Printf("\n❌ %s Risky Operations: %s\n", fileType, result.Message)
+		}
 	}
 
 	return nil
@@ -411,28 +535,36 @@ USAGE:
 
 DESCRIPTION:
     Process PE/ELF executables with stripping, obfuscation, and analysis capabilities.
-    Operations are performed in order: strip → obfuscate → regex → insert
+    Operations are performed in strict order: strip → compact → obfuscate → regex → insert
 
 OPTIONS:
-    -s, --strip          Strip debug and symbol sections
+    -s, --strip          Strip debug and symbol sections (comprehensive stripping)
+    -c, --compact        Apply size reduction by removing sections (requires -s)
+    -f, --force          Apply risky operations (only with -s, -c, or -o)
     -o, --obfuscate      Apply obfuscation techniques (section names, metadata, etc.)
-    -r, --regex <pattern> Strip bytes matching regex pattern
-    -a, --analyze        Analyze executable file structure and exit (ignores other flags)
-    -i, --insert <spec>  Add hex section (format: name:filepath or name:filepath:password, performed last)
-    -c, --compact        Enable file size reduction by actually removing sections
+    -r, --regex <pattern> Strip bytes matching regex pattern (applied after obfuscation)
+    -a, --analyze        Analyze executable file structure and exit (cannot combine with other flags)
+    -i, --insert <spec>  Add hex section (format: name:filepath[:password], always performed last)
     
     -v                   Enable verbose output
     -h                   Show this help
 
+CONSTRAINT RULES:
+    - -c (compact) can only be used together with -s (strip)
+    - -f (force) can only be used with -s, -c, or -o
+    - -a (analyze) cannot be combined with any other operation flags
+    - Operations execute in fixed order regardless of flag order
+
 EXAMPLES:
     %s -a program                    	# Analyze PE file structure
-    %s -s program                    	# Strip debug/symbol sections
-    %s -o program                   	# Apply obfuscation techniques
-    %s -s -o program                	# Strip and obfuscate
+    %s -s program                    	# Strip debug sections
+    %s -s -c program                 	# Strip + compact (recommended for size reduction)
+    %s -o program                   	# Apply obfuscation techniques  
+    %s -s -c -o program             	# Strip, compact, and obfuscate (full pipeline)
+    %s -s -f program                	# Strip with risky operations (relocations, etc.)
     %s -r "golang.*" program        	# Strip bytes matching regex
-    %s -i "custom:data.bin" program      	# Add hex section (like xxd)
-    %s -i "custom:data.bin:mypass" program  	# Add encrypted hex section
-    %s -s -o -i "data:payload.bin:secret" prog # Strip, obfuscate, and add encrypted hex section
+    %s -i "custom:data.bin" program      	# Add hex section
+    %s -s -c -o -r "debug.*" -i "data:payload.bin:secret" prog # Complete pipeline
 
 SUPPORTED FILES:
     - PE files (.exe, .dll)
