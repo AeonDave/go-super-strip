@@ -178,8 +178,8 @@ func (p *PEFile) addSectionWithContent(sectionName string, content []byte, encry
 	// Create new section
 	newSection := Section{
 		Name:           sectionName,
-		Offset:         newOffset,
-		Size:           int64(alignedSize),
+		Offset:         uint32(newOffset),
+		Size:           uint32(alignedSize),
 		VirtualAddress: newVirtualAddress,
 		VirtualSize:    rawDataSize,
 		Index:          len(p.Sections),
@@ -313,8 +313,8 @@ func (p *PEFile) ensureSpaceForNewSectionHeader() error {
 	// Find the first section's file offset to see how much space we have
 	minSectionOffset := int64(len(p.RawData))
 	for _, section := range p.Sections {
-		if section.Offset > 0 && section.Offset < minSectionOffset {
-			minSectionOffset = section.Offset
+		if section.Offset > 0 && int64(section.Offset) < minSectionOffset {
+			minSectionOffset = int64(section.Offset)
 		}
 	}
 

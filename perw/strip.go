@@ -54,6 +54,9 @@ func (p *PEFile) StripSectionsByTypeWithObfuscation(sectionType common.SectionTy
 		return common.NewSkipped(fmt.Sprintf("unknown section type: %v", sectionType))
 	}
 
+	// Use the FillMode specified in the matcher, override the parameter
+	fillMode = matcher.FillMode
+
 	// Check if this is a risky operation and force is not enabled
 	if matcher.IsRisky && !force {
 		return common.NewSkipped(fmt.Sprintf("%s skipped (risky operation, use -f to force)", matcher.Description))
@@ -77,7 +80,7 @@ func (p *PEFile) StripSectionsByTypeWithObfuscation(sectionType common.SectionTy
 		}
 
 		if section.Offset > 0 && section.Size > 0 {
-			if err := p.fillRegion(section.Offset, int(section.Size), fillMode); err != nil {
+			if err := p.fillRegion(int64(section.Offset), int(section.Size), fillMode); err != nil {
 				return common.NewSkipped(fmt.Sprintf("failed to fill section %s: %v", section.Name, err))
 			}
 			strippedCount++
@@ -120,7 +123,7 @@ func (p *PEFile) StripSectionsByNames(names []string, prefix bool, useRandomFill
 		}
 
 		if shouldStrip && section.Offset > 0 && section.Size > 0 {
-			if err := p.fillRegion(section.Offset, int(section.Size), fillMode); err != nil {
+			if err := p.fillRegion(int64(section.Offset), int(section.Size), fillMode); err != nil {
 				return fmt.Errorf("failed to fill section %s: %w", section.Name, err)
 			}
 		}
@@ -142,10 +145,10 @@ func (p *PEFile) StripBytePattern(pattern *regexp.Regexp, fillMode common.FillMo
 		}
 
 		sectionStart := section.Offset
-		sectionEnd := section.Offset + int64(section.Size)
+		sectionEnd := int64(section.Offset) + int64(section.Size)
 
 		// Check bounds
-		if sectionStart >= int64(len(p.RawData)) || sectionEnd > int64(len(p.RawData)) {
+		if int64(sectionStart) >= int64(len(p.RawData)) || sectionEnd > int64(len(p.RawData)) {
 			continue
 		}
 
@@ -156,7 +159,7 @@ func (p *PEFile) StripBytePattern(pattern *regexp.Regexp, fillMode common.FillMo
 			start := match[0]
 			end := match[1]
 			if start >= 0 && end <= len(sectionData) {
-				if err := p.fillRegion(section.Offset+int64(start), end-start, fillMode); err != nil {
+				if err := p.fillRegion(int64(section.Offset)+int64(start), end-start, fillMode); err != nil {
 					return totalMatches, fmt.Errorf("failed to fill pattern at section %s offset %d: %w", section.Name, start, err)
 				}
 				totalMatches++
@@ -259,141 +262,240 @@ func (p *PEFile) StripAllMetadata(useRandomFill bool) error {
 // CompactAndStripPE performs aggressive PE stripping with actual file size reduction
 func (p *PEFile) CompactAndStripPE(removeNonEssential bool) (*common.OperationResult, error) {
 	originalSize := uint64(len(p.RawData))
-	operations := []string{}
+	var safeActions, riskyActions, skippedActions []string
 	totalCount := 0
-	// Strip debug sections (always safe)
+
+	// Safe: Debug sections
 	debugResult := p.StripSectionsByType(common.DebugSections, common.ZeroFill, false)
-	if debugResult != nil && debugResult.Applied {
-		operations = append(operations, debugResult.Message)
-		totalCount += debugResult.Count
+	if debugResult != nil {
+		if debugResult.Applied {
+			safeActions = append(safeActions, debugResult.Message)
+			totalCount += debugResult.Count
+		} else {
+			skippedActions = append(skippedActions, debugResult.Message)
+		}
 	}
 
-	// Strip build info and non-essential sections if requested
+	// Safe: Build info and non-essential
 	if removeNonEssential {
 		buildInfoResult := p.StripSectionsByType(common.BuildInfoSections, common.ZeroFill, false)
-		if buildInfoResult != nil && buildInfoResult.Applied {
-			operations = append(operations, buildInfoResult.Message)
-			totalCount += buildInfoResult.Count
+		if buildInfoResult != nil {
+			if buildInfoResult.Applied {
+				safeActions = append(safeActions, buildInfoResult.Message)
+				totalCount += buildInfoResult.Count
+			} else {
+				skippedActions = append(skippedActions, buildInfoResult.Message)
+			}
 		}
 
 		nonEssentialResult := p.StripSectionsByType(common.NonEssentialSections, common.ZeroFill, false)
-		if nonEssentialResult != nil && nonEssentialResult.Applied {
-			operations = append(operations, nonEssentialResult.Message)
-			totalCount += nonEssentialResult.Count
+		if nonEssentialResult != nil {
+			if nonEssentialResult.Applied {
+				safeActions = append(safeActions, nonEssentialResult.Message)
+				totalCount += nonEssentialResult.Count
+			} else {
+				skippedActions = append(skippedActions, nonEssentialResult.Message)
+			}
 		}
 	}
 
-	// Perform simple truncation compaction
+	// Compaction (safe)
 	compactResult, err := p.SimpleTruncationPE()
 	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("compaction failed: %v", err)), nil
-	}
-	if compactResult.Applied {
-		operations = append(operations, compactResult.Message)
-	}
-
-	if len(operations) == 0 {
-		return common.NewSkipped("no stripping or compaction operations applied"), nil
+		skippedActions = append(skippedActions, fmt.Sprintf("compaction failed: %v", err))
+	} else if compactResult.Applied {
+		safeActions = append(safeActions, compactResult.Message)
+	} else {
+		skippedActions = append(skippedActions, compactResult.Message)
 	}
 
 	newSize := uint64(len(p.RawData))
-	savedBytes := originalSize - newSize
+	savedBytes := int64(originalSize) - int64(newSize)
 	percentage := float64(savedBytes) * 100.0 / float64(originalSize)
 
-	message := fmt.Sprintf("PE strip+compact: %d -> %d bytes (%.1f%% reduction); %s",
-		originalSize, newSize, percentage, strings.Join(operations, "; "))
+	var summary strings.Builder
+	summary.WriteString("PE strip & compact summary:\n")
+	summary.WriteString(fmt.Sprintf("  Original size: %d bytes\n", originalSize))
+	summary.WriteString(fmt.Sprintf("  New size:      %d bytes\n", newSize))
+	summary.WriteString(fmt.Sprintf("  Reduction:     %d bytes (%.1f%%)\n", savedBytes, percentage))
 
-	return common.NewApplied(message, totalCount), nil
+	if len(safeActions) > 0 {
+		summary.WriteString("\n  Safe actions applied:\n")
+		for _, msg := range safeActions {
+			summary.WriteString("    • " + msg + "\n")
+		}
+	}
+	if len(riskyActions) > 0 {
+		summary.WriteString("\n  Risky actions applied (⚠️):\n")
+		for _, msg := range riskyActions {
+			summary.WriteString("    ⚠️  " + msg + "\n")
+		}
+	}
+	if len(skippedActions) > 0 {
+		summary.WriteString("\n  Skipped actions:\n")
+		for _, msg := range skippedActions {
+			summary.WriteString("    ❌ " + msg + "\n")
+		}
+	}
+
+	if savedBytes == 0 {
+		summary.WriteString("\n  Info: File size unchanged.\n")
+	}
+
+	return common.NewApplied(summary.String(), totalCount), nil
 }
 
 // AdvancedStripPEDetailed performs comprehensive PE stripping
 func (p *PEFile) AdvancedStripPEDetailed(compact bool, force bool) *common.OperationResult {
 	originalSize := uint64(len(p.RawData))
-	operations := []string{}
+	var safeActions, riskyActions, skippedActions []string
 	totalCount := 0
-	// Strip debug sections (always safe)
+
+	// Safe: Debug sections
 	debugResult := p.StripSectionsByType(common.DebugSections, common.ZeroFill, false)
-	if debugResult != nil && debugResult.Applied {
-		operations = append(operations, debugResult.Message)
-		totalCount += debugResult.Count
+	if debugResult != nil {
+		if debugResult.Applied {
+			safeActions = append(safeActions, debugResult.Message)
+			totalCount += debugResult.Count
+		} else {
+			skippedActions = append(skippedActions, debugResult.Message)
+		}
 	}
 
-	// Strip build info and metadata
+	// Safe: Build info
 	buildInfoResult := p.StripSectionsByType(common.BuildInfoSections, common.ZeroFill, false)
-	if buildInfoResult != nil && buildInfoResult.Applied {
-		operations = append(operations, buildInfoResult.Message)
-		totalCount += buildInfoResult.Count
-	} // Strip non-essential sections
+	if buildInfoResult != nil {
+		if buildInfoResult.Applied {
+			safeActions = append(safeActions, buildInfoResult.Message)
+			totalCount += buildInfoResult.Count
+		} else {
+			skippedActions = append(skippedActions, buildInfoResult.Message)
+		}
+	}
+
+	// Safe: Non-essential
 	nonEssentialResult := p.StripSectionsByType(common.NonEssentialSections, common.ZeroFill, false)
-	if nonEssentialResult != nil && nonEssentialResult.Applied {
-		operations = append(operations, nonEssentialResult.Message)
-		totalCount += nonEssentialResult.Count
+	if nonEssentialResult != nil {
+		if nonEssentialResult.Applied {
+			safeActions = append(safeActions, nonEssentialResult.Message)
+			totalCount += nonEssentialResult.Count
+		} else {
+			skippedActions = append(skippedActions, nonEssentialResult.Message)
+		}
 	}
 
-	// Strip symbol tables (safe for most executables)
+	// Safe: Symbol tables
 	symbolResult := p.StripSectionsByType(common.SymbolSections, common.ZeroFill, false)
-	if symbolResult != nil && symbolResult.Applied {
-		operations = append(operations, symbolResult.Message)
-		totalCount += symbolResult.Count
+	if symbolResult != nil {
+		if symbolResult.Applied {
+			safeActions = append(safeActions, symbolResult.Message)
+			totalCount += symbolResult.Count
+		} else {
+			skippedActions = append(skippedActions, symbolResult.Message)
+		}
 	}
 
-	// Strip exception handling data (risky - requires force flag)
+	// Risky: Exception handling
 	exceptionResult := p.StripSectionsByType(common.ExceptionSections, common.ZeroFill, force)
-	if exceptionResult != nil && exceptionResult.Applied {
-		operations = append(operations, fmt.Sprintf("⚠️  %s (risky)", exceptionResult.Message))
-		totalCount += exceptionResult.Count
+	if exceptionResult != nil {
+		if exceptionResult.Applied {
+			riskyActions = append(riskyActions, exceptionResult.Message+" (risky)")
+			totalCount += exceptionResult.Count
+		} else {
+			skippedActions = append(skippedActions, exceptionResult.Message)
+		}
 	}
-	// Strip Rich Header (compilation metadata)
+
+	// Safe: Rich Header
 	richHeaderResult := p.StripRichHeader()
-	if richHeaderResult != nil && richHeaderResult.Applied {
-		operations = append(operations, richHeaderResult.Message)
-		totalCount += richHeaderResult.Count
+	if richHeaderResult != nil {
+		if richHeaderResult.Applied {
+			safeActions = append(safeActions, richHeaderResult.Message)
+			totalCount += richHeaderResult.Count
+		} else {
+			skippedActions = append(skippedActions, richHeaderResult.Message)
+		}
 	}
 
-	// Strip compiler signatures and build metadata (GCC, MinGW, Go, etc.)
+	// Safe: Compiler metadata
 	compilerResult := p.StripAllCompilerMetadata()
-	if compilerResult != nil && compilerResult.Applied {
-		operations = append(operations, compilerResult.Message)
-		totalCount += compilerResult.Count
-	}
-	// Strip version strings and build identifiers (aggressive)
-	versionResult := p.StripVersionStrings()
-	if versionResult != nil && versionResult.Applied {
-		operations = append(operations, versionResult.Message)
-		totalCount += versionResult.Count
-	}
-	// Strip relocation tables (RISKY - may break some executables)
-	// Note: This is done last before compaction as it's the most aggressive
-	relocationResult := p.StripSectionsByType(common.RelocationSections, common.ZeroFill, force)
-	if relocationResult != nil && relocationResult.Applied {
-		operations = append(operations, fmt.Sprintf("⚠️  %s (risky)", relocationResult.Message))
-		totalCount += relocationResult.Count
+	if compilerResult != nil {
+		if compilerResult.Applied {
+			safeActions = append(safeActions, compilerResult.Message)
+			totalCount += compilerResult.Count
+		} else {
+			skippedActions = append(skippedActions, compilerResult.Message)
+		}
 	}
 
-	// File compaction (if requested)
+	// Safe: Version strings
+	versionResult := p.StripVersionStrings()
+	if versionResult != nil {
+		if versionResult.Applied {
+			safeActions = append(safeActions, versionResult.Message)
+			totalCount += versionResult.Count
+		} else {
+			skippedActions = append(skippedActions, versionResult.Message)
+		}
+	}
+
+	// Risky: Relocation tables
+	relocationResult := p.StripSectionsByType(common.RelocationSections, common.ZeroFill, force)
+	if relocationResult != nil {
+		if relocationResult.Applied {
+			riskyActions = append(riskyActions, relocationResult.Message+" (risky)")
+			totalCount += relocationResult.Count
+		} else {
+			skippedActions = append(skippedActions, relocationResult.Message)
+		}
+	}
+
+	// Compaction (safe)
 	if compact {
 		compactResult, err := p.SimpleTruncationPE()
 		if err != nil {
-			return common.NewSkipped(fmt.Sprintf("simple compaction failed: %v", err))
-		}
-		if compactResult.Applied {
-			operations = append(operations, compactResult.Message)
+			skippedActions = append(skippedActions, fmt.Sprintf("simple compaction failed: %v", err))
+		} else if compactResult.Applied {
+			safeActions = append(safeActions, compactResult.Message)
+		} else {
+			skippedActions = append(skippedActions, compactResult.Message)
 		}
 	}
 
-	if len(operations) == 0 {
-		return common.NewSkipped("no stripping operations applied")
-	}
-
-	// Calculate final size reduction
 	newSize := uint64(len(p.RawData))
-	savedBytes := originalSize - newSize
+	savedBytes := int64(originalSize) - int64(newSize)
 	percentage := float64(savedBytes) * 100.0 / float64(originalSize)
 
-	message := fmt.Sprintf("advanced PE strip completed: %d -> %d bytes (%.1f%% reduction); %s",
-		originalSize, newSize, percentage, strings.Join(operations, "; "))
+	var summary strings.Builder
+	summary.WriteString("Advanced PE strip summary:\n")
+	summary.WriteString(fmt.Sprintf("  Original size: %d bytes\n", originalSize))
+	summary.WriteString(fmt.Sprintf("  New size:      %d bytes\n", newSize))
+	summary.WriteString(fmt.Sprintf("  Reduction:     %d bytes (%.1f%%)\n", savedBytes, percentage))
 
-	return common.NewApplied(message, totalCount)
+	if len(safeActions) > 0 {
+		summary.WriteString("\n  Safe actions applied:\n")
+		for _, msg := range safeActions {
+			summary.WriteString("    • " + msg + "\n")
+		}
+	}
+	if len(riskyActions) > 0 {
+		summary.WriteString("\n  Risky actions applied (⚠️):\n")
+		for _, msg := range riskyActions {
+			summary.WriteString("    ⚠️  " + msg + "\n")
+		}
+	}
+	if len(skippedActions) > 0 {
+		summary.WriteString("\n  Skipped actions:\n")
+		for _, msg := range skippedActions {
+			summary.WriteString("    ❌ " + msg + "\n")
+		}
+	}
+
+	if savedBytes == 0 {
+		summary.WriteString("\n  Info: File size unchanged.\n")
+	}
+
+	return common.NewApplied(summary.String(), totalCount)
 }
 
 // CompactOnlyPEDetailed performs PE compaction without any stripping
@@ -786,7 +888,7 @@ func (p *PEFile) StripAllCompilerMetadata() *common.OperationResult {
 			}
 		}
 		if modifications > 0 {
-			copy(p.RawData[section.Offset:section.Offset+int64(len(data))], data)
+			copy(p.RawData[section.Offset:int64(section.Offset)+int64(len(data))], data)
 		}
 	}
 
@@ -833,7 +935,7 @@ func (p *PEFile) StripVersionStrings() *common.OperationResult {
 		}
 
 		if modifications > 0 {
-			copy(p.RawData[section.Offset:section.Offset+int64(len(data))], data)
+			copy(p.RawData[section.Offset:int64(section.Offset)+int64(len(data))], data)
 		}
 	}
 

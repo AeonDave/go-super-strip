@@ -339,7 +339,7 @@ func (p *PEFile) ObfuscateSecondaryTimestamps() error {
 			copy(data[idx[0]:idx[1]], randDigits)
 		}
 
-		copy(p.RawData[section.Offset:section.Offset+int64(len(data))], data)
+		copy(p.RawData[section.Offset:int64(section.Offset)+int64(len(data))], data)
 	}
 	return nil
 }
@@ -858,7 +858,7 @@ func (p *PEFile) ObfuscateResourceDirectory() *common.OperationResult {
 	// Resource directory starts at the beginning of .rsrc section
 	resourceStart := section.Offset
 
-	if err := p.validateOffset(resourceStart, 16); err != nil {
+	if err := p.validateOffset(int64(resourceStart), 16); err != nil {
 		return common.NewSkipped("resource directory not accessible")
 	}
 
@@ -1008,7 +1008,7 @@ func (p *PEFile) ObfuscateRuntimeStrings() *common.OperationResult {
 		}
 
 		if modifications > 0 {
-			copy(p.RawData[section.Offset:section.Offset+int64(len(data))], data)
+			copy(p.RawData[section.Offset:int64(section.Offset)+int64(len(data))], data)
 		}
 	}
 

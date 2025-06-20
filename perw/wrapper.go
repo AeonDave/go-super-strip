@@ -26,7 +26,7 @@ func AnalyzePE(filePath string) error {
 
 // StripPEDetailed performs comprehensive PE stripping
 func StripPEDetailed(filePath string, compact bool, force bool) *common.OperationResult {
-	file, err := os.Open(filePath)
+	file, err := os.OpenFile(filePath, os.O_RDWR, 0644)
 	if err != nil {
 		return &common.OperationResult{
 			Applied: false,
@@ -43,12 +43,24 @@ func StripPEDetailed(filePath string, compact bool, force bool) *common.Operatio
 		}
 	}
 
-	return peFile.AdvancedStripPEDetailed(compact, force)
+	result := peFile.AdvancedStripPEDetailed(compact, force)
+
+	// Save changes to disk if any modifications were made
+	if result.Applied {
+		if err := peFile.CommitChangesSimple(-1); err != nil {
+			return &common.OperationResult{
+				Applied: false,
+				Message: "Failed to save changes: " + err.Error(),
+			}
+		}
+	}
+
+	return result
 }
 
 // StripPEDetailedWithObfuscation performs PE stripping considering obfuscation needs
 func StripPEDetailedWithObfuscation(filePath string, compact bool, force bool, obfuscationEnabled bool) *common.OperationResult {
-	file, err := os.Open(filePath)
+	file, err := os.OpenFile(filePath, os.O_RDWR, 0644)
 	if err != nil {
 		return &common.OperationResult{
 			Applied: false,
@@ -66,7 +78,19 @@ func StripPEDetailedWithObfuscation(filePath string, compact bool, force bool, o
 	}
 
 	// For now, use the same function but could be extended for obfuscation-aware stripping
-	return peFile.AdvancedStripPEDetailed(compact, force)
+	result := peFile.AdvancedStripPEDetailed(compact, force)
+
+	// Save changes to disk if any modifications were made
+	if result.Applied {
+		if err := peFile.CommitChangesSimple(-1); err != nil {
+			return &common.OperationResult{
+				Applied: false,
+				Message: "Failed to save changes: " + err.Error(),
+			}
+		}
+	}
+
+	return result
 }
 
 // ObfuscateSectionNamesDetailed obfuscates section names in PE file

@@ -26,10 +26,11 @@ type SectionMatcher struct {
 	ExactNames        []string
 	PrefixNames       []string
 	Description       string
-	StripForDLL       bool // Whether to strip for DLL files
-	StripForEXE       bool // Whether to strip for EXE files
-	IsRisky           bool // Whether stripping might break functionality
-	ObfuscationNeeded bool // Whether these sections are needed for obfuscation
+	StripForDLL       bool     // Whether to strip for DLL files
+	StripForEXE       bool     // Whether to strip for EXE files
+	IsRisky           bool     // Whether stripping might break functionality
+	ObfuscationNeeded bool     // Whether these sections are needed for obfuscation
+	FillMode          FillMode // How to fill the section after stripping (ZeroFill or RandomFill)
 }
 
 // GetSectionMatchers returns all section types and their matching rules
@@ -45,25 +46,28 @@ func GetSectionMatchers() map[SectionType]SectionMatcher {
 			StripForDLL:       true,
 			StripForEXE:       true,
 			IsRisky:           false,
-			ObfuscationNeeded: false, // Debug info not needed for obfuscation
+			ObfuscationNeeded: false,    // Debug info not needed for obfuscation
+			FillMode:          ZeroFill, // Debug sections can be safely zeroed
 		},
 		SymbolSections: {
-			ExactNames:        []string{}, // PE files typically don't have .symtab
-			PrefixNames:       []string{},
+			ExactNames:        []string{".symtab", ".strtab"}, // Go and other symbol tables - use RandomFill to preserve PE structure
+			PrefixNames:       []string{".sym", ".str"},
 			Description:       "symbol table information",
 			StripForDLL:       true,
 			StripForEXE:       true,
-			IsRisky:           false,
-			ObfuscationNeeded: false, // Symbol tables not needed for obfuscation
+			IsRisky:           false,      // Safe with RandomFill - preserves structure while removing sensitive data
+			ObfuscationNeeded: false,      // Symbol tables not needed for obfuscation
+			FillMode:          RandomFill, // Use random data to preserve PE structure integrity
 		},
 		RelocationSections: {
 			ExactNames:        []string{".reloc"},
 			PrefixNames:       []string{},
 			Description:       "base relocation information",
 			StripForDLL:       true,
-			StripForEXE:       true,  // Made aggressive
-			IsRisky:           false, // Made less conservative
-			ObfuscationNeeded: true,  // Relocation table may be needed for obfuscation
+			StripForEXE:       true,     // Made aggressive
+			IsRisky:           true,     // Relocation stripping is risky - requires -f flag
+			ObfuscationNeeded: true,     // Relocation table may be needed for obfuscation
+			FillMode:          ZeroFill, // Relocation sections can be zeroed when stripped
 		},
 		NonEssentialSections: {
 			ExactNames: []string{
@@ -77,16 +81,18 @@ func GetSectionMatchers() map[SectionType]SectionMatcher {
 			StripForDLL:       true,
 			StripForEXE:       true,
 			IsRisky:           false,
-			ObfuscationNeeded: false, // Non-essential sections not needed for obfuscation
+			ObfuscationNeeded: false,    // Non-essential sections not needed for obfuscation
+			FillMode:          ZeroFill, // Non-essential sections can be safely zeroed
 		},
 		ExceptionSections: {
 			ExactNames:        []string{".pdata", ".xdata"},
 			PrefixNames:       []string{},
 			Description:       "structured exception handling data",
-			StripForDLL:       true, // Try stripping again - test if breaks functionality
-			StripForEXE:       true, // Try stripping again - test if breaks functionality
-			IsRisky:           true, // Keep as risky but allow stripping
-			ObfuscationNeeded: true, // Exception handling data may be needed for obfuscation
+			StripForDLL:       true,     // Try stripping again - test if breaks functionality
+			StripForEXE:       true,     // Try stripping again - test if breaks functionality
+			IsRisky:           true,     // Keep as risky but allow stripping
+			ObfuscationNeeded: true,     // Exception handling data may be needed for obfuscation
+			FillMode:          ZeroFill, // Exception data can be zeroed when stripped
 		},
 		BuildInfoSections: {
 			ExactNames: []string{
@@ -97,7 +103,8 @@ func GetSectionMatchers() map[SectionType]SectionMatcher {
 			StripForDLL:       true,
 			StripForEXE:       true,
 			IsRisky:           false,
-			ObfuscationNeeded: false, // Build info not needed for obfuscation
+			ObfuscationNeeded: false,    // Build info not needed for obfuscation
+			FillMode:          ZeroFill, // Build info can be safely zeroed
 		},
 		AggressiveStripping: {
 			ExactNames: []string{
@@ -108,7 +115,8 @@ func GetSectionMatchers() map[SectionType]SectionMatcher {
 			StripForDLL:       true,
 			StripForEXE:       true,
 			IsRisky:           false,
-			ObfuscationNeeded: false, // BSS sections not needed for obfuscation
+			ObfuscationNeeded: false,    // BSS sections not needed for obfuscation
+			FillMode:          ZeroFill, // BSS sections can be safely zeroed
 		},
 	}
 }
