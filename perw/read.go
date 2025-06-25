@@ -6,6 +6,7 @@ import (
 	"crypto/sha1"
 	"crypto/sha256"
 	"debug/pe"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"strings"
@@ -435,19 +436,373 @@ func (p *PEFile) Close() error {
 	return nil
 }
 
-// parseImportsFromVelox parses import information from go-pe
+// parseImportsFromVelox parses import information from go-pe and debug/pe
 func (p *PEFile) parseImportsFromVelox() {
-	if p.VeloxPE.Imports != nil {
-		for _, importDLL := range p.VeloxPE.Imports {
-			importInfo := ImportInfo{
-				DLL:         importDLL,
-				LibraryName: importDLL,  // Alias for compatibility
-				Functions:   []string{}, // go-pe doesn't provide function details
-				Address:     0,          // Not available in basic go-pe struct
-			}
-			p.Imports = append(p.Imports, importInfo)
+	// Try to parse imports using debug/pe first for better function resolution
+	if p.StdPE != nil {
+		p.parseImportsFromStdPE()
+		if len(p.Imports) > 0 {
+			return
 		}
 	}
+
+	// Fallback: Extract imports from suspicious strings as a last resort
+	p.parseImportsFromStrings()
+}
+
+// parseImportsFromStrings extracts DLL names and function names from strings in the file
+func (p *PEFile) parseImportsFromStrings() {
+	dllMap := make(map[string][]string)
+
+	// Extract strings from the file
+	fileStrings := p.extractStrings()
+
+	for _, str := range fileStrings {
+		// Look for DLL names
+		if strings.HasSuffix(strings.ToLower(str), ".dll") && len(str) < 50 {
+			dllName := strings.ToUpper(str)
+			if dllMap[dllName] == nil {
+				dllMap[dllName] = make([]string, 0)
+			}
+		}
+
+		// Look for function patterns (common Windows API functions)
+		if p.isLikelyFunctionName(str) {
+			// Try to match with known DLLs
+			dll := p.guessDllForFunction(str)
+			if dll != "" {
+				if dllMap[dll] == nil {
+					dllMap[dll] = make([]string, 0)
+				}
+				dllMap[dll] = append(dllMap[dll], str)
+			}
+		}
+	}
+
+	// Convert map to ImportInfo structs
+	for dllName, functions := range dllMap {
+		importInfo := ImportInfo{
+			DLL:         dllName,
+			LibraryName: dllName,
+			Functions:   functions,
+			Address:     0,
+		}
+		p.Imports = append(p.Imports, importInfo)
+	}
+}
+
+// extractStrings extracts ASCII strings from the PE file
+func (p *PEFile) extractStrings() []string {
+	var result []string
+	var current []byte
+	minLen := 4
+
+	for _, b := range p.RawData {
+		if b >= 32 && b < 127 { // Printable ASCII
+			current = append(current, b)
+		} else {
+			if len(current) >= minLen {
+				result = append(result, string(current))
+			}
+			current = nil
+		}
+	}
+
+	// Check last string
+	if len(current) >= minLen {
+		result = append(result, string(current))
+	}
+
+	return result
+}
+
+// isLikelyFunctionName checks if a string looks like a Windows API function
+func (p *PEFile) isLikelyFunctionName(str string) bool {
+	if len(str) < 4 || len(str) > 50 {
+		return false
+	}
+
+	// Common Windows API function patterns
+	commonPrefixes := []string{
+		"Create", "Get", "Set", "Open", "Close", "Read", "Write", "Load", "Free",
+		"Find", "Query", "Register", "Unregister", "Initialize", "Cleanup",
+		"Process", "Thread", "File", "Memory", "Handle", "Event", "Mutex",
+		"Virtual", "Heap", "Local", "Global", "Wait", "Signal", "Sleep",
+		"Format", "Convert", "Copy", "Move", "Delete", "Exit", "Terminate",
+	}
+
+	for _, prefix := range commonPrefixes {
+		if strings.HasPrefix(str, prefix) {
+			return true
+		}
+	}
+
+	// Common suffixes
+	commonSuffixes := []string{"A", "W", "Ex", "32", "64"}
+	for _, suffix := range commonSuffixes {
+		if strings.HasSuffix(str, suffix) && len(str) > len(suffix)+3 {
+			return true
+		}
+	}
+
+	return false
+}
+
+// guessDllForFunction tries to guess which DLL a function belongs to
+func (p *PEFile) guessDllForFunction(funcName string) string {
+	// Common function to DLL mappings
+	kernelFunctions := []string{
+		"CreateFile", "ReadFile", "WriteFile", "GetLastError", "CloseHandle",
+		"VirtualAlloc", "VirtualFree", "VirtualProtect", "VirtualQuery",
+		"LoadLibrary", "GetProcAddress", "FreeLibrary", "GetModuleHandle",
+		"CreateThread", "ExitThread", "SuspendThread", "ResumeThread",
+		"WaitForSingleObject", "WaitForMultipleObjects", "CreateEvent",
+		"SetEvent", "ResetEvent", "CreateMutex", "ReleaseMutex", "Sleep",
+		"GetSystemInfo", "GetTickCount", "QueryPerformanceCounter",
+		"MultiByteToWideChar", "WideCharToMultiByte", "GetCommandLine",
+		"GetEnvironmentVariable", "SetEnvironmentVariable", "ExitProcess",
+	}
+
+	userFunctions := []string{
+		"MessageBox", "GetWindowText", "SetWindowText", "ShowWindow",
+		"UpdateWindow", "GetDC", "ReleaseDC", "InvalidateRect",
+		"CreateWindow", "DestroyWindow", "DefWindowProc", "RegisterClass",
+		"GetMessage", "PeekMessage", "TranslateMessage", "DispatchMessage",
+	}
+
+	gdi32Functions := []string{
+		"CreateDC", "DeleteDC", "SelectObject", "DeleteObject",
+		"CreatePen", "CreateBrush", "CreateFont", "TextOut",
+		"DrawText", "Rectangle", "Ellipse", "MoveTo", "LineTo",
+	}
+
+	for _, kFunc := range kernelFunctions {
+		if strings.Contains(strings.ToUpper(funcName), strings.ToUpper(kFunc)) {
+			return "KERNEL32.DLL"
+		}
+	}
+
+	for _, uFunc := range userFunctions {
+		if strings.Contains(strings.ToUpper(funcName), strings.ToUpper(uFunc)) {
+			return "USER32.DLL"
+		}
+	}
+
+	for _, gFunc := range gdi32Functions {
+		if strings.Contains(strings.ToUpper(funcName), strings.ToUpper(gFunc)) {
+			return "GDI32.DLL"
+		}
+	}
+
+	// Common C runtime functions -> MSVCRT.DLL
+	crtFunctions := []string{
+		"printf", "scanf", "malloc", "free", "strlen", "strcpy", "strcmp",
+		"memcpy", "memset", "fopen", "fclose", "fread", "fwrite", "exit",
+	}
+
+	for _, cFunc := range crtFunctions {
+		if strings.Contains(strings.ToLower(funcName), cFunc) {
+			return "MSVCRT.DLL"
+		}
+	}
+
+	return ""
+}
+
+// parseImportsFromStdPE parses imports using debug/pe for detailed function information
+func (p *PEFile) parseImportsFromStdPE() {
+	// Try using ImportedSymbols first
+	imports, err := p.StdPE.ImportedSymbols()
+	if err == nil && len(imports) > 0 {
+		p.parseImportsFromSymbols(imports)
+		return
+	}
+
+	// Fallback: Parse imports manually from Import Directory
+	p.parseImportsManually()
+}
+
+// parseImportsFromSymbols processes imported symbols from debug/pe
+func (p *PEFile) parseImportsFromSymbols(imports []string) {
+	// Group imports by DLL
+	dllMap := make(map[string][]string)
+	for _, imp := range imports {
+		if strings.Contains(imp, "!") {
+			parts := strings.SplitN(imp, "!", 2)
+			if len(parts) == 2 {
+				dllName := strings.ToUpper(parts[0])
+				funcName := parts[1]
+
+				if dllMap[dllName] == nil {
+					dllMap[dllName] = make([]string, 0)
+				}
+				dllMap[dllName] = append(dllMap[dllName], funcName)
+			}
+		}
+	}
+
+	// Convert map to ImportInfo structs
+	for dllName, functions := range dllMap {
+		importInfo := ImportInfo{
+			DLL:         dllName,
+			LibraryName: dllName,
+			Functions:   functions,
+			Address:     0,
+		}
+		p.Imports = append(p.Imports, importInfo)
+	}
+}
+
+// parseImportsManually manually parses the import table
+func (p *PEFile) parseImportsManually() {
+	// Get Import Directory from Data Directories
+	var importDirRVA, importDirSize uint32
+
+	switch oh := p.StdPE.OptionalHeader.(type) {
+	case *pe.OptionalHeader32:
+		if len(oh.DataDirectory) > 1 {
+			importDirRVA = oh.DataDirectory[1].VirtualAddress // IMAGE_DIRECTORY_ENTRY_IMPORT = 1
+			importDirSize = oh.DataDirectory[1].Size
+		}
+	case *pe.OptionalHeader64:
+		if len(oh.DataDirectory) > 1 {
+			importDirRVA = oh.DataDirectory[1].VirtualAddress
+			importDirSize = oh.DataDirectory[1].Size
+		}
+	}
+
+	if importDirRVA == 0 || importDirSize == 0 {
+		return
+	}
+
+	// Convert RVA to file offset
+	importDirOffset := p.rvaToFileOffset(importDirRVA)
+	if importDirOffset == 0 {
+		return
+	}
+
+	// Parse import descriptors
+	for offset := importDirOffset; offset < importDirOffset+importDirSize; offset += 20 {
+		if offset+20 > uint32(len(p.RawData)) {
+			break
+		}
+
+		// Read Import Descriptor (20 bytes)
+		importLookupTableRVA := binary.LittleEndian.Uint32(p.RawData[offset : offset+4])
+		nameRVA := binary.LittleEndian.Uint32(p.RawData[offset+12 : offset+16])
+
+		// Check for end of table
+		if nameRVA == 0 {
+			break
+		}
+
+		// Get DLL name
+		nameOffset := p.rvaToFileOffset(nameRVA)
+		if nameOffset == 0 {
+			continue
+		}
+
+		dllName := p.readNullTerminatedString(nameOffset)
+		if dllName == "" {
+			continue
+		}
+
+		// Parse function names from Import Lookup Table
+		var functions []string
+		if importLookupTableRVA != 0 {
+			lookupOffset := p.rvaToFileOffset(importLookupTableRVA)
+			if lookupOffset != 0 {
+				functions = p.parseImportLookupTable(lookupOffset)
+			}
+		}
+
+		importInfo := ImportInfo{
+			DLL:         strings.ToUpper(dllName),
+			LibraryName: strings.ToUpper(dllName),
+			Functions:   functions,
+			Address:     0,
+		}
+		p.Imports = append(p.Imports, importInfo)
+	}
+}
+
+// rvaToFileOffset converts RVA to file offset
+func (p *PEFile) rvaToFileOffset(rva uint32) uint32 {
+	for _, section := range p.Sections {
+		if rva >= section.VirtualAddress && rva < section.VirtualAddress+section.VirtualSize {
+			return section.FileOffset + (rva - section.VirtualAddress)
+		}
+	}
+	return 0
+}
+
+// readNullTerminatedString reads a null-terminated string from the given offset
+func (p *PEFile) readNullTerminatedString(offset uint32) string {
+	if offset >= uint32(len(p.RawData)) {
+		return ""
+	}
+
+	var result []byte
+	for i := offset; i < uint32(len(p.RawData)); i++ {
+		if p.RawData[i] == 0 {
+			break
+		}
+		result = append(result, p.RawData[i])
+	}
+	return string(result)
+}
+
+// parseImportLookupTable parses function names from Import Lookup Table
+func (p *PEFile) parseImportLookupTable(offset uint32) []string {
+	var functions []string
+	entrySize := uint32(4) // 32-bit
+	if p.Is64Bit {
+		entrySize = 8 // 64-bit
+	}
+
+	for i := uint32(0); i < 1000; i++ { // Limit to prevent infinite loop
+		entryOffset := offset + i*entrySize
+		if entryOffset+entrySize > uint32(len(p.RawData)) {
+			break
+		}
+
+		var entry uint64
+		if p.Is64Bit {
+			entry = binary.LittleEndian.Uint64(p.RawData[entryOffset : entryOffset+8])
+		} else {
+			entry = uint64(binary.LittleEndian.Uint32(p.RawData[entryOffset : entryOffset+4]))
+		}
+
+		// Check for end of table
+		if entry == 0 {
+			break
+		}
+
+		// Check if import by ordinal
+		var ordinalFlag uint64 = 0x80000000
+		if p.Is64Bit {
+			ordinalFlag = 0x8000000000000000
+		}
+
+		if (entry & ordinalFlag) != 0 {
+			// Import by ordinal
+			ordinal := entry & 0xFFFF
+			functions = append(functions, fmt.Sprintf("Ordinal_%d", ordinal))
+		} else {
+			// Import by name
+			nameRVA := uint32(entry & 0x7FFFFFFF)
+			nameOffset := p.rvaToFileOffset(nameRVA)
+			if nameOffset != 0 && nameOffset+2 < uint32(len(p.RawData)) {
+				// Skip hint (2 bytes) and read name
+				funcName := p.readNullTerminatedString(nameOffset + 2)
+				if funcName != "" {
+					functions = append(functions, funcName)
+				}
+			}
+		}
+	}
+
+	return functions
 }
 
 // parseExportsFromVelox parses export information from go-pe

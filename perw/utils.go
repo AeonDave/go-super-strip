@@ -19,23 +19,156 @@ func PrintSignatureAnalysis(p *PEFile) {
 	fmt.Println()
 }
 
-// PrintSuspiciousStrings prints suspicious strings analysis for a PE file
+// PrintSuspiciousStrings prints categorized suspicious strings analysis for a PE file
 func PrintSuspiciousStrings(p *PEFile) {
-	fmt.Println("🔎 SUSPICIOUS STRINGS ANALYSIS")
-	fmt.Println("══════════════════════════════")
-	var suspicious []string
+	fmt.Println("🔎 SUSPICIOUS CONTENT ANALYSIS")
+	fmt.Println("═══════════════════════════════")
+
+	// Categorize findings
+	categories := map[string][]string{
+		"URLs & Network":     []string{},
+		"File Paths":         []string{},
+		"System Libraries":   []string{},
+		"Debug/Build Info":   []string{},
+		"Encoded/Obfuscated": []string{},
+		"Shell Commands":     []string{},
+	}
+
+	// Extract and categorize strings
 	ascii := extractSuspiciousStrings(p.RawData, false)
 	unicode := extractSuspiciousStrings(p.RawData, true)
-	suspicious = append(suspicious, ascii...)
-	suspicious = append(suspicious, unicode...)
-	if len(suspicious) == 0 {
-		fmt.Printf("%s No suspicious strings found\n", common.SymbolCheck)
-	} else {
-		for _, s := range suspicious {
-			fmt.Printf("%s %s\n", common.SymbolWarn, s)
+	allStrings := append(ascii, unicode...)
+
+	if len(allStrings) == 0 {
+		fmt.Printf("%s No suspicious content detected\n", common.SymbolCheck)
+		fmt.Println()
+		return
+	}
+
+	// Categorize findings
+	for _, s := range allStrings {
+		categorized := false
+
+		// URLs and network indicators
+		if strings.Contains(s, "http://") || strings.Contains(s, "https://") ||
+			strings.Contains(s, "ftp://") || strings.Contains(s, "://") {
+			categories["URLs & Network"] = append(categories["URLs & Network"], s)
+			categorized = true
+		}
+
+		// File paths and executables
+		if strings.Contains(s, ".exe") || strings.Contains(s, ".dll") ||
+			strings.Contains(s, ".bat") || strings.Contains(s, ".scr") ||
+			strings.Contains(s, "C:\\") || strings.Contains(s, "\\\\") {
+			categories["File Paths"] = append(categories["File Paths"], s)
+			categorized = true
+		}
+
+		// System libraries
+		if strings.HasSuffix(strings.ToLower(s), ".dll") && !strings.Contains(s, "\\") {
+			categories["System Libraries"] = append(categories["System Libraries"], s)
+			categorized = true
+		}
+
+		// Debug/build information
+		if strings.Contains(s, "gcc") || strings.Contains(s, "buildroot") ||
+			strings.Contains(s, "libgcc") || strings.Contains(s, ".S") ||
+			strings.Contains(s, "debug") {
+			categories["Debug/Build Info"] = append(categories["Debug/Build Info"], s)
+			categorized = true
+		}
+
+		// Shell commands
+		if strings.Contains(s, "cmd ") || strings.Contains(s, "powershell") ||
+			strings.Contains(s, "bash") || strings.Contains(s, "sh -") {
+			categories["Shell Commands"] = append(categories["Shell Commands"], s)
+			categorized = true
+		}
+
+		// Encoded/obfuscated content (high entropy, special patterns)
+		if !categorized && (len(s) > 20 && isHighEntropyString(s) ||
+			strings.Contains(s, "\\x") || containsSuspiciousPattern(s)) {
+			categories["Encoded/Obfuscated"] = append(categories["Encoded/Obfuscated"], s)
 		}
 	}
+
+	// Display categorized results
+	totalFindings := 0
+	for category, items := range categories {
+		if len(items) > 0 {
+			totalFindings += len(items)
+			fmt.Printf("\n📋 %s (%d items):\n", category, len(items))
+
+			// Show all items
+			for _, item := range items {
+				// Truncate very long strings
+				if len(item) > 80 {
+					item = item[:77] + "..."
+				}
+				fmt.Printf("   • %s\n", item)
+			}
+		}
+	}
+
+	if totalFindings == 0 {
+		fmt.Printf("%s No categorizable suspicious content found\n", common.SymbolInfo)
+	} else {
+		fmt.Printf("\n📊 Total suspicious content found: %d items across %d categories\n",
+			totalFindings, countNonEmptyCategories(categories))
+	}
 	fmt.Println()
+}
+
+// Helper function to count non-empty categories
+func countNonEmptyCategories(categories map[string][]string) int {
+	count := 0
+	for _, items := range categories {
+		if len(items) > 0 {
+			count++
+		}
+	}
+	return count
+}
+
+// Helper function to detect high entropy strings
+func isHighEntropyString(s string) bool {
+	if len(s) < 10 {
+		return false
+	}
+
+	charCount := make(map[rune]int)
+	for _, r := range s {
+		charCount[r]++
+	}
+
+	// Calculate entropy
+	entropy := 0.0
+	length := float64(len(s))
+	for _, count := range charCount {
+		if count > 0 {
+			p := float64(count) / length
+			entropy -= p * math.Log2(p)
+		}
+	}
+
+	return entropy > 4.5 // High entropy threshold
+}
+
+// Helper function to detect suspicious patterns
+func containsSuspiciousPattern(s string) bool {
+	// Common shellcode patterns, hex patterns, etc.
+	suspiciousPatterns := []string{
+		"\\x", "0x", "%x", "\\u", "\\U",
+		"[\\", "\\]", "^_", "A\\A", "\\$",
+	}
+
+	for _, pattern := range suspiciousPatterns {
+		if strings.Contains(s, pattern) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // extractSuspiciousStrings extracts ASCII/Unicode suspicious strings (URL, shellcode, path, etc)
