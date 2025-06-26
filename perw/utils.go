@@ -8,7 +8,79 @@ import (
 	"strings"
 )
 
-// CalculateEntropy computes Shannon entropy of data
+func IsHighEntropyString(s string) bool {
+	if len(s) < 10 {
+		return false
+	}
+	charCount := make(map[rune]int)
+	for _, r := range s {
+		charCount[r]++
+	}
+	entropy := 0.0
+	length := float64(len(s))
+	for _, count := range charCount {
+		p := float64(count) / length
+		entropy -= p * math.Log2(p)
+	}
+	return entropy > 4.5 // High entropy threshold
+}
+
+func ContainsSuspiciousPattern(s string) bool {
+	suspiciousPatterns := []string{
+		"\\x", "0x", "%x", "\\u", "\\U",
+		"[\\", "\\]", "^_", "A\\A", "\\$",
+	}
+	for _, pattern := range suspiciousPatterns {
+		if strings.Contains(s, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+func ExtractSuspiciousStrings(data []byte, unicode bool) []string {
+	var results []string
+	var minLen = 8
+	var current []byte
+	for i := 0; i < len(data); i++ {
+		b := data[i]
+		if unicode {
+			if i+1 < len(data) && data[i+1] == 0 {
+				current = append(current, b)
+				i++
+			} else {
+				if len(current) >= minLen {
+					results = append(results, string(current))
+				}
+				current = nil
+			}
+		} else {
+			if b >= 32 && b <= 126 {
+				current = append(current, b)
+			} else {
+				if len(current) >= minLen {
+					results = append(results, string(current))
+				}
+				current = nil
+			}
+		}
+	}
+	if len(current) >= minLen {
+		results = append(results, string(current))
+	}
+	return results
+}
+
+func CountNonEmptyCategories(categories map[string][]string) int {
+	count := 0
+	for _, items := range categories {
+		if len(items) > 0 {
+			count++
+		}
+	}
+	return count
+}
+
 func CalculateEntropy(data []byte) float64 {
 	if len(data) == 0 {
 		return 0.0
@@ -65,7 +137,6 @@ func (p *PEFile) decodeSectionFlags(flags uint32) string {
 	return result
 }
 
-// decodeDLLCharacteristics decodes DLL characteristics flags
 func decodeDLLCharacteristics(flags uint16) string {
 	var out []string
 	if flags&0x0001 != 0 {
@@ -116,7 +187,6 @@ func decodeDLLCharacteristics(flags uint16) string {
 	return strings.Join(out, ", ")
 }
 
-// getSubsystemName returns a string for the subsystem type
 func getSubsystemName(subsystem uint16) string {
 	switch subsystem {
 	case 1:
@@ -150,7 +220,6 @@ func getSubsystemName(subsystem uint16) string {
 	}
 }
 
-// PEOffsets holds commonly used PE file offsets
 type PEOffsets struct {
 	ELfanew          int64
 	OptionalHeader   int64
@@ -159,7 +228,6 @@ type PEOffsets struct {
 	OptionalHdrSize  int
 }
 
-// calculateOffsets computes all necessary PE file offsets in one pass
 func (p *PEFile) calculateOffsets() (*PEOffsets, error) {
 	const (
 		dosHeaderSize   = 0x40
@@ -322,7 +390,6 @@ func (p *PEFile) GetExecutableSections() []Section {
 	return execSections
 }
 
-// IsExecutableOrShared checks if file is executable or DLL
 func (p *PEFile) IsExecutableOrShared() bool {
 	if p.PE == nil {
 		return false
@@ -333,7 +400,6 @@ func (p *PEFile) IsExecutableOrShared() bool {
 
 // --- Section Type Utilities ---
 
-// validateOffset checks if an offset and size are within file bounds
 func (p *PEFile) validateOffset(offset int64, size int) error {
 	if int(offset+int64(size)) > len(p.RawData) {
 		return fmt.Errorf("offset %d + size %d exceeds file size %d", offset, size, len(p.RawData))
@@ -341,7 +407,6 @@ func (p *PEFile) validateOffset(offset int64, size int) error {
 	return nil
 }
 
-// CalculatePhysicalFileSize computes the actual used file size
 func (p *PEFile) CalculatePhysicalFileSize() (uint64, error) {
 	if p.PE == nil {
 		return 0, fmt.Errorf("PE file not initialized")

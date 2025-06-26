@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"gosstrip/common"
-	"math"
 	"sort"
 	"strings"
 	"time"
@@ -611,8 +610,8 @@ func PrintSuspiciousStrings(p *PEFile) {
 	}
 
 	// Extract and categorize strings
-	ascii := extractSuspiciousStrings(p.RawData, false)
-	unicode := extractSuspiciousStrings(p.RawData, true)
+	ascii := ExtractSuspiciousStrings(p.RawData, false)
+	unicode := ExtractSuspiciousStrings(p.RawData, true)
 	allStrings := append(ascii, unicode...)
 
 	if len(allStrings) == 0 {
@@ -662,8 +661,8 @@ func PrintSuspiciousStrings(p *PEFile) {
 		}
 
 		// Encoded/obfuscated content (high entropy, special patterns)
-		if !categorized && (len(s) > 20 && isHighEntropyString(s) ||
-			strings.Contains(s, "\\x") || containsSuspiciousPattern(s)) {
+		if !categorized && (len(s) > 20 && IsHighEntropyString(s) ||
+			strings.Contains(s, "\\x") || ContainsSuspiciousPattern(s)) {
 			categories["Encoded/Obfuscated"] = append(categories["Encoded/Obfuscated"], s)
 		}
 	}
@@ -690,120 +689,9 @@ func PrintSuspiciousStrings(p *PEFile) {
 		fmt.Printf("%s No categorizable suspicious content found\n", common.SymbolInfo)
 	} else {
 		fmt.Printf("\n📊 Total suspicious content found: %d items across %d categories\n",
-			totalFindings, countNonEmptyCategories(categories))
+			totalFindings, CountNonEmptyCategories(categories))
 	}
 	fmt.Println()
-}
-
-func countNonEmptyCategories(categories map[string][]string) int {
-	count := 0
-	for _, items := range categories {
-		if len(items) > 0 {
-			count++
-		}
-	}
-	return count
-}
-
-func isHighEntropyString(s string) bool {
-	if len(s) < 10 {
-		return false
-	}
-
-	charCount := make(map[rune]int)
-	for _, r := range s {
-		charCount[r]++
-	}
-
-	// Calculate entropy
-	entropy := 0.0
-	length := float64(len(s))
-	for _, count := range charCount {
-		if count > 0 {
-			p := float64(count) / length
-			entropy -= p * math.Log2(p)
-		}
-	}
-
-	return entropy > 4.5 // High entropy threshold
-}
-
-func containsSuspiciousPattern(s string) bool {
-	// Common shellcode patterns, hex patterns, etc.
-	suspiciousPatterns := []string{
-		"\\x", "0x", "%x", "\\u", "\\U",
-		"[\\", "\\]", "^_", "A\\A", "\\$",
-	}
-
-	for _, pattern := range suspiciousPatterns {
-		if strings.Contains(s, pattern) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func extractSuspiciousStrings(data []byte, unicode bool) []string {
-	var results []string
-	var minLen = 8
-	var current []byte
-	for i := 0; i < len(data); i++ {
-		b := data[i]
-		if unicode {
-			if i+1 < len(data) && data[i+1] == 0 && b >= 32 && b < 127 {
-				current = append(current, b)
-				i++ // skip null
-			} else if len(current) >= minLen {
-				s := string(current)
-				if isSuspiciousString(s) {
-					results = append(results, "[UNICODE] "+s)
-				}
-				current = nil
-			} else {
-				current = nil
-			}
-		} else {
-			if b >= 32 && b < 127 {
-				current = append(current, b)
-			} else if len(current) >= minLen {
-				s := string(current)
-				if isSuspiciousString(s) {
-					results = append(results, s)
-				}
-				current = nil
-			} else {
-				current = nil
-			}
-		}
-	}
-	// Check last
-	if len(current) >= minLen {
-		s := string(current)
-		if isSuspiciousString(s) {
-			if unicode {
-				results = append(results, "[UNICODE] "+s)
-			} else {
-				results = append(results, s)
-			}
-		}
-	}
-	return results
-}
-
-func isSuspiciousString(s string) bool {
-	if len(s) < 8 {
-		return false
-	}
-	// URL, path, powershell, exe, shellcode pattern
-	if strings.Contains(s, "http://") || strings.Contains(s, "https://") || strings.Contains(s, ".exe") || strings.Contains(s, "cmd ") || strings.Contains(s, "powershell") || strings.Contains(s, ".dll") || strings.Contains(s, ".bat") || strings.Contains(s, ".scr") || strings.Contains(s, "\\") {
-		return true
-	}
-	// Hex shellcode
-	if strings.HasPrefix(s, "\\x") && len(s) > 12 {
-		return true
-	}
-	return false
 }
 
 func (p *PEFile) detectLanguageAndCompiler() (language, compiler string) {

@@ -1,6 +1,6 @@
 package common
 
-// SectionType rappresenta il tipo di sezione per lo stripping
+// SectionType represents the type of section for stripping
 type SectionType int
 
 const (
@@ -10,10 +10,11 @@ const (
 	NonEssentialSections
 	ExceptionSections
 	BuildInfoSections
-	AggressiveStripping // New aggressive stripping mode
+	RuntimeSections     // runtime-specific sections
+	AggressiveStripping // aggressive stripping mode
 )
 
-// FillMode rappresenta la modalità di riempimento dei dati strippati
+// FillMode represents the fill mode for stripped data
 type FillMode int
 
 const (
@@ -21,24 +22,24 @@ const (
 	RandomFill
 )
 
-// SectionMatcher contiene le regole di matching e le policy di stripping
 type SectionMatcher struct {
 	ExactNames        []string
 	PrefixNames       []string
 	Description       string
-	StripForDLL       bool     // True se può essere strippata da DLL
-	StripForEXE       bool     // True se può essere strippata da EXE
-	IsRisky           bool     // True se serve -f (force)
-	ObfuscationNeeded bool     // True se serve per obfuscation (inibisce strip/compact se -o)
-	Fill              FillMode // ZeroFill o RandomFill
+	StripForDLL       bool     // True if can be stripped from DLL
+	StripForEXE       bool     // True if can be stripped from EXE
+	IsRisky           bool     // True if requires -f (force)
+	ObfuscationNeeded bool     // True if needed for obfuscation (disables strip/compact if -o)
+	Fill              FillMode // ZeroFill or RandomFill
 }
 
-// GetSectionMatchers restituisce tutte le regole di matching per tipo sezione
+// ...existing code...
+
 func GetSectionMatchers() map[SectionType]SectionMatcher {
 	return map[SectionType]SectionMatcher{
 		DebugSections: {
-			ExactNames:        []string{},
-			PrefixNames:       []string{".debug", ".zdebug"},
+			ExactNames:        []string{".stab", ".stabstr"},
+			PrefixNames:       []string{".debug", ".zdebug", ".gnu.debuglto_"},
 			Description:       "debugging information",
 			StripForDLL:       true,
 			StripForEXE:       true,
@@ -47,8 +48,8 @@ func GetSectionMatchers() map[SectionType]SectionMatcher {
 			Fill:              ZeroFill,
 		},
 		SymbolSections: {
-			ExactNames:        []string{".symtab"},
-			PrefixNames:       []string{},
+			ExactNames:        []string{".symtab", ".strtab", ".shstrtab", ".dynsym", ".dynstr", ".hash", ".gnu.hash", ".gnu.version", ".gnu.version_d", ".gnu.version_r", ".interp"},
+			PrefixNames:       []string{".gnu.linkonce."},
 			Description:       "symbol table information",
 			StripForDLL:       true,
 			StripForEXE:       true,
@@ -62,13 +63,13 @@ func GetSectionMatchers() map[SectionType]SectionMatcher {
 			Description:       "base relocation information",
 			StripForDLL:       true,
 			StripForEXE:       true,
-			IsRisky:           true, // Fixed: Relocation stripping is risky!
+			IsRisky:           true,
 			ObfuscationNeeded: true,
 			Fill:              ZeroFill,
 		},
 		NonEssentialSections: {
-			ExactNames:        []string{".comment", ".note", ".drectve", ".shared", ".cormeta", ".sxdata", ".edata"},
-			PrefixNames:       []string{},
+			ExactNames:        []string{".comment", ".note", ".drectve", ".shared", ".cormeta", ".sxdata", ".edata", ".idata", ".rsrc", ".tls", ".CRT", ".rdata", ".eh_frame_hdr", ".eh_frame", ".gcc_except_table", ".note.gnu.build-id", ".note.ABI-tag", ".note.gnu.gold-version", ".gnu_debuglink", ".gnu_debugaltlink"},
+			PrefixNames:       []string{".note.", ".gnu.warning.", ".mdebug."},
 			Description:       "non-essential metadata",
 			StripForDLL:       true,
 			StripForEXE:       true,
@@ -85,15 +86,24 @@ func GetSectionMatchers() map[SectionType]SectionMatcher {
 			IsRisky:           true,
 			ObfuscationNeeded: true,
 			Fill:              ZeroFill,
-		},
-		BuildInfoSections: {
-			ExactNames:        []string{".buildid", ".gfids", ".giats", ".gljmp", ".textbss"},
-			PrefixNames:       []string{},
+		}, BuildInfoSections: {
+			ExactNames:        []string{".buildid", ".gfids", ".giats", ".gljmp", ".textbss", ".go.buildinfo", ".noptrdata", ".typelink", ".itablink", ".gosymtab", ".gopclntab"},
+			PrefixNames:       []string{".go.", ".gopkg."},
 			Description:       "build information and toolchain metadata",
 			StripForDLL:       true,
 			StripForEXE:       true,
 			IsRisky:           false,
 			ObfuscationNeeded: false,
+			Fill:              ZeroFill,
+		},
+		RuntimeSections: {
+			ExactNames:        []string{".rustc", ".rust_eh_personality", ".llvm_addrsig", ".llvm.embedded.object", ".init_array", ".fini_array", ".preinit_array", ".ctors", ".dtors", ".jcr", ".tm_clone_table", ".got", ".got.plt", ".plt", ".plt.got", ".plt.sec", ".data.rel.ro"},
+			PrefixNames:       []string{".rust.", ".llvm.", ".msvcrt.", ".mingw32."},
+			Description:       "runtime and language-specific sections",
+			StripForDLL:       true,
+			StripForEXE:       true,
+			IsRisky:           true,
+			ObfuscationNeeded: true,
 			Fill:              ZeroFill,
 		},
 		AggressiveStripping: {
@@ -109,133 +119,152 @@ func GetSectionMatchers() map[SectionType]SectionMatcher {
 	}
 }
 
-// RegexStripRule definisce una regola per stripping tramite regex
 type RegexStripRule struct {
-	Patterns    []string // Espressioni regolari da applicare (gruppate logicamente)
-	Description string   // Descrizione della regola
-	Fill        FillMode // ZeroFill o RandomFill
-	IsRisky     bool     // True se serve -f
+	Patterns    []string
+	Description string
+	Fill        FillMode
+	IsRisky     bool
 }
 
-// GetRegexStripRules restituisce tutte le regole di stripping tramite regex
+// GetRegexStripRules returns all regex-based stripping rules
 func GetRegexStripRules() []RegexStripRule {
 	return []RegexStripRule{
-		// Go build/runtime markers (conservative)
+		// Go build/runtime markers
 		{
 			Patterns: []string{
-				`Go build ID: "[^"]*"`,                 // Safe: exact build ID pattern
-				`\bgo\.buildid\b`,                      // Safe: specific build ID marker
-				`\bgo1\.[0-9]+(\.[0-9]+)?\b`,           // Safe: Go version with word boundaries
-				`golang\.org/[a-zA-Z0-9/_\-\.]+`,       // Safe: Go module paths only
-				`/usr/local/go/src/[a-zA-Z0-9/_\-\.]+`, // Safe: specific Go installation paths
+				`Go build ID: "[a-zA-Z0-9/_\-=+]{20,}"`,   // More specific build ID pattern
+				`\bgo\.buildid\b`,                         // Specific build ID marker
+				`\bgo1\.[0-9]+(\.[0-9]+)?\b`,              // Go version with word boundaries
+				`golang\.org/[a-zA-Z0-9/_\-\.]{5,}`,       // Go module paths only (min 5 chars)
+				`/usr/local/go/src/[a-zA-Z0-9/_\-\.]{5,}`, // Go installation paths
+				`\btype\.\*[a-zA-Z0-9_\.]+\b`,             // Go type information
+				`\bgo\.info\.[a-zA-Z0-9_\.]+\b`,           // Go runtime info
+				`runtime\.[a-zA-Z0-9_]+\([^)]*\)`,         // Go runtime function calls
 			},
-			Description: "Go build/runtime markers (conservative)",
+			Description: "Go build/runtime markers",
 			Fill:        ZeroFill,
 			IsRisky:     false,
 		},
-		// GCC / MinGW specific
+		// GCC / MinGW specific (improved patterns)
 		{
 			Patterns: []string{
-				`(?i)\bmingw_[a-zA-Z0-9_]*\b`,
-				`(?i)mingw_[a-zA-Z0-9_]*[.]?`,
-				`(?i)libgcc[a-zA-Z0-9_]*\.[a-zA-Z0-9]+`,
-				`(?i)gccmain\.[a-zA-Z0-9]+`,
+				`\bmingw_[a-zA-Z0-9_]{3,}\b`,                // MinGW symbols (min 3 chars)
+				`\blibgcc[a-zA-Z0-9_]*\.[a-zA-Z0-9]{1,5}\b`, // libgcc libraries
+				`\bgccmain\.[a-zA-Z0-9]{1,5}\b`,             // GCC main
+				`\b__GNUC__\b|\b__GNUG__\b`,                 // GCC compiler macros
+				`\bGCC: \([^)]+\) [0-9]+\.[0-9]+\.[0-9]+\b`, // GCC version strings
 			},
-			Description: "GCC/MinGW compiler markers",
+			Description: "GCC/MinGW compiler markers (improved)",
 			Fill:        ZeroFill,
 			IsRisky:     false,
 		},
-		// Microsoft C/C++ runtime markers (marked as risky for Go files)
+		// C++ specific markers
 		{
 			Patterns: []string{
-				`\bmsvc\b|\bmsvcr\b|\bmsvcp\b|\bucrtbase\b|\bvcruntime\b`,
+				`\b__cplusplus\b`,                    // C++ standard macro
+				`\bstd::[a-zA-Z0-9_:]{3,}\b`,         // C++ standard library (min 3 chars)
+				`\b__cxa_[a-zA-Z0-9_]+\b`,            // C++ ABI functions
+				`\btypeinfo for [a-zA-Z0-9_:]{3,}\b`, // C++ typeinfo
+				`\bvtable for [a-zA-Z0-9_:]{3,}\b`,   // C++ vtables
+				`\b_Z[a-zA-Z0-9_]{5,}\b`,             // C++ mangled names (min 5 chars)
 			},
-			Description: "Microsoft C/C++ runtime markers",
+			Description: "C++ specific markers",
 			Fill:        ZeroFill,
-			IsRisky:     true, // Risky for Go files
+			IsRisky:     false,
 		},
-		// Python runtime markers (not for Go files)
+		// Rust specific markers (improved and safer)
 		{
 			Patterns: []string{
-				`\bpython\b|\bpyinit\b|\bpyobject\b`,
+				`\brust_[a-zA-Z0-9_]{3,}\b`,        // Rust symbols (min 3 chars)
+				`\brustc [0-9]+\.[0-9]+\.[0-9]+\b`, // Rust compiler version
+				`\b_ZN[0-9]+[a-zA-Z0-9_]{10,}\b`,   // Rust mangled names (min 10 chars)
+				`\bcore::panic::[a-zA-Z0-9_]+\b`,   // Rust core panic
+				`\balloc::[a-zA-Z0-9_:]{5,}\b`,     // Rust allocator
+				`\bstd::rt::[a-zA-Z0-9_]+\b`,       // Rust standard runtime
 			},
-			Description: "Python runtime markers",
+			Description: "Rust specific markers (safe)",
+			Fill:        ZeroFill,
+			IsRisky:     false,
+		},
+		// .NET/C# specific markers
+		{
+			Patterns: []string{
+				`\b\.NET Framework [0-9]+\.[0-9]+\b`,        // .NET Framework version
+				`\b\.NET [0-9]+\.[0-9]+\b`,                  // .NET version
+				`\bSystem\.[A-Za-z][a-zA-Z0-9_\.]{5,}\b`,    // .NET System namespaces
+				`\bMicrosoft\.[A-Za-z][a-zA-Z0-9_\.]{5,}\b`, // Microsoft namespaces
+				`\bmscorlib\b|\bSystem\.Private\.CoreLib\b`, // .NET core libraries
+				`\b_CorExeMain\b|\b_CorDllMain\b`,           // .NET entry points
+			},
+			Description: ".NET/C# runtime markers",
 			Fill:        ZeroFill,
 			IsRisky:     true, // Should not be in Go files
 		},
-		// Java/JVM runtime markers (not for Go files)
+		// Build metadata and version strings (improved safety)
 		{
 			Patterns: []string{
-				`\bjava\b|\bjvm\b|\bjni\b`,
+				`\$Id: [a-zA-Z0-9._\-\s/]{10,}\$`,        // CVS/SVN ID tags (min 10 chars)
+				`@\(#\)[a-zA-Z0-9._\-\s]{10,}`,           // SCCS what strings (min 10 chars)
+				`\b__DATE__\b|\b__TIME__\b|\b__FILE__\b`, // Compiler macros (exact match)
+				`\bbuild-[a-zA-Z0-9\-]{8,40}\b`,          // Build identifiers (8-40 chars)
+				`\bcommit-[a-f0-9]{7,40}\b`,              // Git commit IDs (7-40 chars)
+				`\bversion [0-9]+\.[0-9]+\.[0-9]+\b`,     // Version strings
 			},
-			Description: "Java/JVM runtime markers",
-			Fill:        ZeroFill,
-			IsRisky:     true, // Should not be in Go files
-		},
-		// Delphi/Pascal runtime markers (not for Go files)
-		{
-			Patterns: []string{
-				`\bdelphi\b|\bborland\b|\bcodegear\b|\bembarcadero\b`,
-			},
-			Description: "Delphi/Pascal runtime markers",
-			Fill:        ZeroFill,
-			IsRisky:     true, // Should not be in Go files
-		},
-		// Rust runtime markers (not for Go files)
-		{
-			Patterns: []string{
-				`\brust_\b|\brustc\b|\bstd::panic\b|\bcore::panic\b`,
-			},
-			Description: "Rust runtime markers",
-			Fill:        ZeroFill,
-			IsRisky:     true, // Should not be in Go files
-		},
-		// Build metadata and version strings (safe patterns only)
-		{
-			Patterns: []string{
-				`\$Id: [^$]+\$`,            // CVS/SVN ID tags
-				`@\(#\)[a-zA-Z0-9._\-\s]+`, // SCCS what strings
-				`__DATE__`,                 // Compiler macros
-				`__TIME__`,
-				`__FILE__`,
-				`\bbuild-[a-zA-Z0-9\-]{8,}\b`, // Build identifiers with minimum length
-				`\bcommit-[a-f0-9]{7,40}\b`,   // Git commit IDs
-			},
-			Description: "Build metadata and version strings (safe patterns)",
+			Description: "Build metadata and version strings (safe)",
 			Fill:        ZeroFill,
 			IsRisky:     false,
 		},
-		// Packer/Compressor signatures (specific patterns only)
+		// Packer/Compressor signatures (more comprehensive)
 		{
 			Patterns: []string{
-				`UPX![0-9\.\x00-\x20]{1,10}`, // Specific UPX signature
-				`\$UPX: [^$]+\$`,             // UPX marker string
-				`[0-9]\.[0-9]{2}\s+UPX!`,     // UPX version signature like "4.21 UPX!"
+				`UPX![0-9\.\x00-\x20]{1,10}`,       // UPX signature
+				`\$UPX: [a-zA-Z0-9._\-\s]{5,}\$`,   // UPX marker string
+				`[0-9]\.[0-9]{2}\s+UPX!`,           // UPX version signature
+				`\bPECompact\b|\bASPack\b|\bUPX\b`, // Known packers
+				`\bthemida\b|\bvmprotect\b`,        // Protection software
 			},
-			Description: "Known packer signatures (conservative)",
+			Description: "Known packer signatures (comprehensive)",
 			Fill:        ZeroFill,
 			IsRisky:     false,
 		},
-		// Source file paths (conservative matching)
+		// Source file paths (safer and more comprehensive)
 		{
 			Patterns: []string{
-				`[A-Za-z]:\\[Uu]sers\\[^\\]+\\[Gg]o\\src\\[^\s\x00]+\.go`,    // Windows Go source paths
-				`[A-Za-z]:\\[Pp]rogram [Ff]iles\\[Gg]o\\src\\[^\s\x00]+\.go`, // Windows Go installation paths
-				`/usr/local/go/src/[a-zA-Z0-9/_\-\.]+\.go`,                   // Unix Go installation paths
-				`/home/[a-zA-Z0-9_\-]+/go/src/[^\s\x00]+\.go`,                // Unix Go workspace paths
+				`[A-Za-z]:\\[Uu]sers\\[^\\]{3,}\\[Gg]o\\src\\[^\s\x00]{10,}\.go`, // Windows Go source (min lengths)
+				`[A-Za-z]:\\[Pp]rogram [Ff]iles\\[Gg]o\\src\\[^\s\x00]{10,}\.go`, // Windows Go install
+				`/usr/local/go/src/[a-zA-Z0-9/_\-\.]{10,}\.go`,                   // Unix Go install
+				`/home/[a-zA-Z0-9_\-]{3,}/go/src/[^\s\x00]{10,}\.go`,             // Unix Go workspace
+				`[A-Za-z]:\\[^\\]{5,}\\[^\\]{3,}\.rs`,                            // Rust source files
+				`[A-Za-z]:\\[^\\]{5,}\\[^\\]{3,}\.(cpp|cxx|cc|c)\b`,              // C/C++ source files
 			},
-			Description: "Go source file paths (conservative)",
+			Description: "Source file paths (safe with minimum lengths)",
 			Fill:        ZeroFill,
 			IsRisky:     false,
 		},
-		// Build environment hints
+		// Build environment and toolchain info (safer)
 		{
 			Patterns: []string{
-				`(?i)compiled\s+by[^\n\x00]*`,
-				`(?i)compiler version[^\n\x00]*`,
-				`(?i)build id[^\n\x00]*`,
+				`(?i)compiled\s+by\s+[a-zA-Z0-9._\-\s]{5,40}`,          // Compiled by (limited length)
+				`(?i)compiler version\s+[0-9]+\.[0-9]+[^\n\x00]{0,20}`, // Compiler version
+				`(?i)build id\s+[a-zA-Z0-9\-]{8,40}`,                   // Build ID
+				`(?i)linker version\s+[0-9]+\.[0-9]+`,                  // Linker version
+				`(?i)assembler version\s+[0-9]+\.[0-9]+`,               // Assembler version
 			},
-			Description: "Build environment hints",
+			Description: "Build environment hints (length-limited)",
+			Fill:        ZeroFill,
+			IsRisky:     false,
+		},
+		// Debug and profiling info
+		{
+			Patterns: []string{
+				`\b[a-zA-Z0-9_]+\.pdb\b`,        // PDB debug files
+				`\b[a-zA-Z0-9_]+\.dwarf\b`,      // DWARF debug info
+				`\bDWARF version [0-9]+\b`,      // DWARF version
+				`\bstabs\b|\bstabstr\b`,         // STABS debug format
+				`\b__func__\b|\b__FUNCTION__\b`, // Function name macros
+				`\b__LINE__\b`,                  // Line number macro
+			},
+			Description: "Debug and profiling information",
 			Fill:        ZeroFill,
 			IsRisky:     false,
 		},
