@@ -4,8 +4,151 @@ import (
 	"debug/pe"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"strings"
 )
+
+// CalculateEntropy computes Shannon entropy of data
+func CalculateEntropy(data []byte) float64 {
+	if len(data) == 0 {
+		return 0.0
+	}
+	freq := make([]int, 256)
+	for _, b := range data {
+		freq[b]++
+	}
+	entropy := 0.0
+	length := float64(len(data))
+	for _, count := range freq {
+		if count > 0 {
+			p := float64(count) / length
+			entropy -= p * math.Log2(p)
+		}
+	}
+	return entropy
+}
+
+// decodeSectionFlags returns human-readable section flags
+func (p *PEFile) decodeSectionFlags(flags uint32) string {
+	var flagStrs []string
+	if flags&pe.IMAGE_SCN_CNT_CODE != 0 {
+		flagStrs = append(flagStrs, "CODE")
+	}
+	if flags&pe.IMAGE_SCN_CNT_INITIALIZED_DATA != 0 {
+		flagStrs = append(flagStrs, "INITIALIZED_DATA")
+	}
+	if flags&pe.IMAGE_SCN_CNT_UNINITIALIZED_DATA != 0 {
+		flagStrs = append(flagStrs, "UNINITIALIZED_DATA")
+	}
+	if flags&pe.IMAGE_SCN_MEM_EXECUTE != 0 {
+		flagStrs = append(flagStrs, "EXECUTABLE")
+	}
+	if flags&pe.IMAGE_SCN_MEM_READ != 0 {
+		flagStrs = append(flagStrs, "READABLE")
+	}
+	if flags&pe.IMAGE_SCN_MEM_WRITE != 0 {
+		flagStrs = append(flagStrs, "WRITABLE")
+	}
+	if flags&0x10000000 != 0 {
+		flagStrs = append(flagStrs, "SHARED")
+	}
+	if flags&0x02000000 != 0 {
+		flagStrs = append(flagStrs, "DISCARDABLE")
+	}
+	if len(flagStrs) == 0 {
+		return "None"
+	}
+	result := flagStrs[0]
+	for i := 1; i < len(flagStrs); i++ {
+		result += ", " + flagStrs[i]
+	}
+	return result
+}
+
+// decodeDLLCharacteristics decodes DLL characteristics flags
+func decodeDLLCharacteristics(flags uint16) string {
+	var out []string
+	if flags&0x0001 != 0 {
+		out = append(out, "PROCESS_INIT")
+	}
+	if flags&0x0002 != 0 {
+		out = append(out, "PROCESS_TERM")
+	}
+	if flags&0x0004 != 0 {
+		out = append(out, "THREAD_INIT")
+	}
+	if flags&0x0008 != 0 {
+		out = append(out, "THREAD_TERM")
+	}
+	if flags&0x0040 != 0 {
+		out = append(out, "DYNAMIC_BASE")
+	}
+	if flags&0x0080 != 0 {
+		out = append(out, "FORCE_INTEGRITY")
+	}
+	if flags&0x0100 != 0 {
+		out = append(out, "NX_COMPAT")
+	}
+	if flags&0x0200 != 0 {
+		out = append(out, "NO_ISOLATION")
+	}
+	if flags&0x0400 != 0 {
+		out = append(out, "NO_SEH")
+	}
+	if flags&0x0800 != 0 {
+		out = append(out, "NO_BIND")
+	}
+	if flags&0x1000 != 0 {
+		out = append(out, "APPCONTAINER")
+	}
+	if flags&0x2000 != 0 {
+		out = append(out, "WDM_DRIVER")
+	}
+	if flags&0x4000 != 0 {
+		out = append(out, "GUARD_CF")
+	}
+	if flags&0x8000 != 0 {
+		out = append(out, "TERMINAL_SERVER_AWARE")
+	}
+	if len(out) == 0 {
+		return "None"
+	}
+	return strings.Join(out, ", ")
+}
+
+// getSubsystemName returns a string for the subsystem type
+func getSubsystemName(subsystem uint16) string {
+	switch subsystem {
+	case 1:
+		return "Native"
+	case 2:
+		return "Windows GUI"
+	case 3:
+		return "Windows Console"
+	case 5:
+		return "OS/2 Console"
+	case 7:
+		return "POSIX Console"
+	case 8:
+		return "Native Win9x Driver"
+	case 9:
+		return "Windows CE GUI"
+	case 10:
+		return "EFI Application"
+	case 11:
+		return "EFI Boot Service Driver"
+	case 12:
+		return "EFI Runtime Driver"
+	case 13:
+		return "EFI ROM"
+	case 14:
+		return "Xbox"
+	case 16:
+		return "Windows Boot Application"
+	default:
+		return "Unknown"
+	}
+}
 
 // PEOffsets holds commonly used PE file offsets
 type PEOffsets struct {
@@ -190,16 +333,6 @@ func (p *PEFile) IsExecutableOrShared() bool {
 
 // --- Section Type Utilities ---
 
-// findSectionByName finds a section by its name (internal helper, returns pointer or nil)
-func (p *PEFile) findSectionByName(name string) *Section {
-	for i := range p.Sections {
-		if strings.EqualFold(p.Sections[i].Name, name) {
-			return &p.Sections[i]
-		}
-	}
-	return nil
-}
-
 // validateOffset checks if an offset and size are within file bounds
 func (p *PEFile) validateOffset(offset int64, size int) error {
 	if int(offset+int64(size)) > len(p.RawData) {
@@ -214,7 +347,7 @@ func (p *PEFile) CalculatePhysicalFileSize() (uint64, error) {
 		return 0, fmt.Errorf("PE file not initialized")
 	}
 
-	maxSize := uint64(p.SizeOfHeaders)
+	maxSize := uint64(p.SizeOfHeaders())
 	for _, s := range p.Sections {
 		if s.Size > 0 {
 			end := uint64(s.Offset) + uint64(s.Size)

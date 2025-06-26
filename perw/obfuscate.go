@@ -45,7 +45,7 @@ type ImportDescriptor struct {
 	FirstThunk         uint32 // RVA to IAT (bound import table)
 }
 
-// hasBaseRelocations checks if the PE file has base relocation table
+// True se il file ha la relocation table
 func (p *PEFile) hasBaseRelocations() bool {
 	offsets, err := p.calculateOffsets()
 	if err != nil {
@@ -66,7 +66,7 @@ func (p *PEFile) hasBaseRelocations() bool {
 	return rva != 0 && size != 0
 }
 
-// ObfuscateBaseAddresses modifies base virtual addresses with a conservative approach
+// Offusca l'ImageBase in modo sicuro
 func (p *PEFile) ObfuscateBaseAddresses() *common.OperationResult {
 	// CRITICAL: Check for base relocations before modifying ImageBase
 	if !p.hasBaseRelocations() {
@@ -140,7 +140,7 @@ func (p *PEFile) ObfuscateBaseAddresses() *common.OperationResult {
 	return common.NewSkipped("conditions not met for safe modification")
 }
 
-// obfuscateDirectory clears a specific directory entry (generic helper)
+// Pulisce una directory entry specifica
 func (p *PEFile) obfuscateDirectory(relativeOffset int64) error {
 	offsets, err := p.calculateOffsets()
 	if err != nil {
@@ -159,12 +159,12 @@ func (p *PEFile) obfuscateDirectory(relativeOffset int64) error {
 	return WriteAtOffset(p.RawData, dirOffset+4, uint32(0))
 }
 
-// ObfuscateDebugDirectory clears the debug directory
+// Pulisce la debug directory
 func (p *PEFile) ObfuscateDebugDirectory() error {
 	return p.obfuscateDirectory(directoryOffsets.debug[p.Is64Bit])
 }
 
-// ObfuscateLoadConfig selectively obfuscates non-critical load configuration fields
+// Offusca campi non critici della load config
 func (p *PEFile) ObfuscateLoadConfig() *common.OperationResult {
 	offsets, err := p.calculateOffsets()
 	if err != nil {
@@ -237,7 +237,7 @@ func (p *PEFile) ObfuscateLoadConfig() *common.OperationResult {
 	return common.NewSkipped("no load configuration fields could be obfuscated")
 }
 
-// Helper function to convert RVA to physical offset
+// Converte RVA in offset fisico
 func (p *PEFile) rvaToPhysical(rva uint64) (uint64, error) {
 	for _, section := range p.Sections {
 		if rva >= uint64(section.VirtualAddress) &&
@@ -249,12 +249,12 @@ func (p *PEFile) rvaToPhysical(rva uint64) (uint64, error) {
 	return 0, fmt.Errorf("RVA %x not found in any section", rva)
 }
 
-// ObfuscateTLSDirectory clears the TLS directory
+// Pulisce la TLS directory
 func (p *PEFile) ObfuscateTLSDirectory() error {
 	return p.obfuscateDirectory(directoryOffsets.tls[p.Is64Bit])
 }
 
-// ObfuscateSectionPadding randomizes unused bytes between PE sections
+// Randomizza i padding tra le sezioni
 func (p *PEFile) ObfuscateSectionPadding() error {
 	for i := 0; i < len(p.Sections)-1; i++ {
 		current := &p.Sections[i]
@@ -279,7 +279,7 @@ func (p *PEFile) ObfuscateSectionPadding() error {
 	return nil
 }
 
-// ObfuscateReservedHeaderFields randomizes reserved/zero fields in PE headers
+// Randomizza campi riservati negli header PE
 func (p *PEFile) ObfuscateReservedHeaderFields() error {
 	offsets, err := p.calculateOffsets()
 	if err != nil {
@@ -309,7 +309,7 @@ func (p *PEFile) ObfuscateReservedHeaderFields() error {
 	return nil
 }
 
-// ObfuscateSecondaryTimestamps randomizes timestamp patterns in resource sections
+// Randomizza pattern di timestamp nelle sezioni risorse
 func (p *PEFile) ObfuscateSecondaryTimestamps() error {
 	timestampPattern := regexp.MustCompile(`19\d{2}|20\d{2}`)
 	targetSections := map[string]bool{".rsrc": true, ".data": true, ".rdata": true}
@@ -344,7 +344,7 @@ func (p *PEFile) ObfuscateSecondaryTimestamps() error {
 	return nil
 }
 
-// RandomizeSectionNames changes section names to random strings
+// Randomizza i nomi delle sezioni
 func (p *PEFile) RandomizeSectionNames() *common.OperationResult {
 	offsets, err := p.calculateOffsets()
 	if err != nil {
@@ -402,7 +402,7 @@ func (p *PEFile) RandomizeSectionNames() *common.OperationResult {
 	return common.NewApplied(message, len(renamedSections))
 }
 
-// ObfuscateAll applies all obfuscation techniques with improved error context
+// Applica tutte le tecniche di offuscamento
 func (p *PEFile) ObfuscateAll(force bool) *common.OperationResult {
 	operations := []struct {
 		name string
@@ -441,7 +441,7 @@ func (p *PEFile) ObfuscateAll(force bool) *common.OperationResult {
 	return common.NewSkipped(fmt.Sprintf("all techniques skipped: %s", strings.Join(skippedOperations, ", ")))
 }
 
-// ObfuscateImportTable applies various obfuscation techniques to the import table
+// Offusca la import table (rischioso)
 func (p *PEFile) ObfuscateImportTable(force bool) *common.OperationResult {
 	// Import table modification is risky - can break functionality
 	if !force {
@@ -494,7 +494,7 @@ func (p *PEFile) ObfuscateImportTable(force bool) *common.OperationResult {
 	return common.NewSkipped("no import table obfuscation could be applied")
 }
 
-// shuffleImportDescriptors randomizes the order of import descriptors
+// Mischia l'ordine dei descrittori di import
 func (p *PEFile) shuffleImportDescriptors(importPhysical uint64, importSize uint32) error {
 	// Calculate number of descriptors (excluding null terminator)
 	numDescriptors := (importSize / importDescriptorSize) - 1
@@ -542,7 +542,7 @@ func (p *PEFile) shuffleImportDescriptors(importPhysical uint64, importSize uint
 	return nil
 }
 
-// addFakeImportEntries adds fake import descriptors to confuse analysis tools
+// Modifica timestamp nei descrittori di import
 func (p *PEFile) addFakeImportEntries(importPhysical uint64, importSize uint32) error {
 	// For safety, we'll just modify timestamps rather than adding new entries
 	// Adding new entries would require relocating the entire import table
@@ -576,7 +576,7 @@ func (p *PEFile) addFakeImportEntries(importPhysical uint64, importSize uint32) 
 	return nil
 }
 
-// obfuscateImportNames applies obfuscation to import table strings (conservative approach)
+// Offusca metadati non critici nella import table
 func (p *PEFile) obfuscateImportNames(importPhysical uint64, importSize uint32) error {
 	// This is a conservative implementation that only modifies non-critical metadata
 	// We avoid changing actual DLL names or function names to prevent breaking functionality
@@ -616,7 +616,7 @@ func (p *PEFile) obfuscateImportNames(importPhysical uint64, importSize uint32) 
 	return nil
 }
 
-// ObfuscateImportNames provides more aggressive import name obfuscation by randomizing function names
+// Offusca in modo aggressivo i nomi delle funzioni importate
 // This is more aggressive than the conservative obfuscateImportNames used in ObfuscateImportTable
 func (p *PEFile) ObfuscateImportNames() *common.OperationResult {
 	// Get import table directory entry
@@ -650,7 +650,7 @@ func (p *PEFile) ObfuscateImportNames() *common.OperationResult {
 	return common.NewApplied("obfuscated import function names", 1)
 }
 
-// obfuscateImportNamesAggressive applies more aggressive import name obfuscation
+// Offusca in modo aggressivo la import name table
 func (p *PEFile) obfuscateImportNamesAggressive(importPhysical uint64, importSize uint32) error {
 	numDescriptors := (importSize / importDescriptorSize) - 1
 	if numDescriptors == 0 {
@@ -686,7 +686,7 @@ func (p *PEFile) obfuscateImportNamesAggressive(importPhysical uint64, importSiz
 	return nil
 }
 
-// obfuscateImportNameTable obfuscates function names in an Import Name Table
+// Offusca i nomi funzione nella import name table
 func (p *PEFile) obfuscateImportNameTable(intPhysical uint64) error {
 	ptrSize := map[bool]int{true: 8, false: 4}[p.Is64Bit]
 
@@ -730,7 +730,7 @@ func (p *PEFile) obfuscateImportNameTable(intPhysical uint64) error {
 	return nil
 }
 
-// obfuscateFunctionName randomizes a null-terminated function name
+// Randomizza un nome funzione null-terminated
 func (p *PEFile) obfuscateFunctionName(namePhysical uint64) error {
 	if err := p.validateOffset(int64(namePhysical), 1); err != nil {
 		return err
@@ -761,7 +761,7 @@ func (p *PEFile) obfuscateFunctionName(namePhysical uint64) error {
 	return nil
 }
 
-// generateRandomFunctionName creates a random function name of specified length
+// Genera un nome funzione random di lunghezza specificata
 func (p *PEFile) generateRandomFunctionName(length int) ([]byte, error) {
 	if length <= 0 {
 		return nil, fmt.Errorf("invalid length: %d", length)
@@ -788,7 +788,7 @@ func (p *PEFile) generateRandomFunctionName(length int) ([]byte, error) {
 	return result, nil
 }
 
-// ObfuscateRichHeader removes or modifies the Rich Header (hidden Microsoft compilation metadata)
+// Rimuove o modifica la Rich Header
 func (p *PEFile) ObfuscateRichHeader() *common.OperationResult {
 	// Rich Header is located between DOS header and PE header
 	offsets, err := p.calculateOffsets()
@@ -843,7 +843,7 @@ func (p *PEFile) ObfuscateRichHeader() *common.OperationResult {
 	return common.NewSkipped("no Rich Header found")
 }
 
-// ObfuscateResourceDirectory modifies resource section metadata
+// Offusca metadati della resource section
 func (p *PEFile) ObfuscateResourceDirectory() *common.OperationResult {
 	// Find resource section (.rsrc)
 	section := p.findSectionByName(".rsrc")
@@ -895,7 +895,7 @@ func (p *PEFile) ObfuscateResourceDirectory() *common.OperationResult {
 	return common.NewSkipped("no resource directory fields could be obfuscated")
 }
 
-// ObfuscateExportTable modifies export table metadata (for DLLs mainly)
+// Offusca metadati della export table
 func (p *PEFile) ObfuscateExportTable(force bool) *common.OperationResult {
 	// Export table modification is risky - can break DLL functionality
 	if !force {
@@ -965,7 +965,7 @@ func (p *PEFile) ObfuscateExportTable(force bool) *common.OperationResult {
 	return common.NewSkipped("no export table fields could be obfuscated")
 }
 
-// ObfuscateRuntimeStrings obfuscates common runtime and debug strings
+// Offusca stringhe comuni di runtime/debug
 func (p *PEFile) ObfuscateRuntimeStrings() *common.OperationResult {
 	// Common strings that can be safely obfuscated without breaking functionality
 	stringReplacements := map[string]string{
@@ -1016,4 +1016,14 @@ func (p *PEFile) ObfuscateRuntimeStrings() *common.OperationResult {
 		return common.NewApplied(fmt.Sprintf("obfuscated %d runtime strings", modifications), modifications)
 	}
 	return common.NewSkipped("no runtime strings found")
+}
+
+// Helper function to find a section by name
+func (p *PEFile) findSectionByName(name string) *Section {
+	for i := range p.Sections {
+		if strings.EqualFold(p.Sections[i].Name, name) {
+			return &p.Sections[i]
+		}
+	}
+	return nil
 }

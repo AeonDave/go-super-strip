@@ -188,12 +188,12 @@ func (p *PEFile) StripSymbolTables(useRandomFill bool) *common.OperationResult {
 }
 
 // StripRelocationTable strips relocation table sections
-func (p *PEFile) StripRelocationTable(useRandomFill bool) *common.OperationResult {
+func (p *PEFile) StripRelocationTable(useRandomFill bool, force bool) *common.OperationResult {
 	fillMode := common.ZeroFill
 	if useRandomFill {
 		fillMode = common.RandomFill
 	}
-	return p.StripSectionsByType(common.RelocationSections, fillMode, true) // Relocation is always risky
+	return p.StripSectionsByType(common.RelocationSections, fillMode, force) // Pass force parameter through
 }
 
 // StripNonEssentialSections strips non-essential metadata sections
@@ -206,12 +206,12 @@ func (p *PEFile) StripNonEssentialSections(useRandomFill bool) *common.Operation
 }
 
 // StripExceptionHandlingData strips exception handling data
-func (p *PEFile) StripExceptionHandlingData(useRandomFill bool) *common.OperationResult {
+func (p *PEFile) StripExceptionHandlingData(useRandomFill bool, force bool) *common.OperationResult {
 	fillMode := common.ZeroFill
 	if useRandomFill {
 		fillMode = common.RandomFill
 	}
-	return p.StripSectionsByType(common.ExceptionSections, fillMode, true) // Exception handling is risky
+	return p.StripSectionsByType(common.ExceptionSections, fillMode, force) // Pass force parameter through
 }
 
 // StripBuildInfoSections strips build information sections
@@ -224,13 +224,13 @@ func (p *PEFile) StripBuildInfoSections(useRandomFill bool) *common.OperationRes
 }
 
 // StripAllMetadata strips all types of metadata from PE file
-func (p *PEFile) StripAllMetadata(useRandomFill bool) error {
+func (p *PEFile) StripAllMetadata(useRandomFill bool, force bool) error {
 	fillMode := common.ZeroFill
 	if useRandomFill {
 		fillMode = common.RandomFill
 	}
 
-	// List of section types to strip
+	// List of section types to strip (safe operations only)
 	sectionTypes := []common.SectionType{
 		common.DebugSections,
 		common.SymbolSections,
@@ -246,9 +246,11 @@ func (p *PEFile) StripAllMetadata(useRandomFill bool) error {
 	}
 
 	// Handle relocation sections separately (risky operation)
-	result := p.StripSectionsByType(common.RelocationSections, fillMode, true)
-	if result != nil && result.Applied {
-		log.Printf("WARNING: Stripped relocation sections (risky): %s", result.Message)
+	if force {
+		result := p.StripSectionsByType(common.RelocationSections, fillMode, force)
+		if result != nil && result.Applied {
+			log.Printf("WARNING: Stripped relocation sections (risky): %s", result.Message)
+		}
 	}
 
 	return nil
@@ -257,60 +259,13 @@ func (p *PEFile) StripAllMetadata(useRandomFill bool) error {
 // --- Main Strip and Compact Functions ---
 
 // CompactAndStripPE performs aggressive PE stripping with actual file size reduction
-func (p *PEFile) CompactAndStripPE(removeNonEssential bool) (*common.OperationResult, error) {
+
+// AdvancedStripPEDetailed performs comprehensive PE stripping (no compaction)
+func (p *PEFile) AdvancedStripPEDetailed(force bool) *common.OperationResult {
 	originalSize := uint64(len(p.RawData))
 	operations := []string{}
 	totalCount := 0
-	// Strip debug sections (always safe)
-	debugResult := p.StripSectionsByType(common.DebugSections, common.ZeroFill, false)
-	if debugResult != nil && debugResult.Applied {
-		operations = append(operations, debugResult.Message)
-		totalCount += debugResult.Count
-	}
 
-	// Strip build info and non-essential sections if requested
-	if removeNonEssential {
-		buildInfoResult := p.StripSectionsByType(common.BuildInfoSections, common.ZeroFill, false)
-		if buildInfoResult != nil && buildInfoResult.Applied {
-			operations = append(operations, buildInfoResult.Message)
-			totalCount += buildInfoResult.Count
-		}
-
-		nonEssentialResult := p.StripSectionsByType(common.NonEssentialSections, common.ZeroFill, false)
-		if nonEssentialResult != nil && nonEssentialResult.Applied {
-			operations = append(operations, nonEssentialResult.Message)
-			totalCount += nonEssentialResult.Count
-		}
-	}
-
-	// Perform simple truncation compaction
-	compactResult, err := p.SimpleTruncationPE()
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("compaction failed: %v", err)), nil
-	}
-	if compactResult.Applied {
-		operations = append(operations, compactResult.Message)
-	}
-
-	if len(operations) == 0 {
-		return common.NewSkipped("no stripping or compaction operations applied"), nil
-	}
-
-	newSize := uint64(len(p.RawData))
-	savedBytes := originalSize - newSize
-	percentage := float64(savedBytes) * 100.0 / float64(originalSize)
-
-	message := fmt.Sprintf("PE strip+compact: %d -> %d bytes (%.1f%% reduction); %s",
-		originalSize, newSize, percentage, strings.Join(operations, "; "))
-
-	return common.NewApplied(message, totalCount), nil
-}
-
-// AdvancedStripPEDetailed performs comprehensive PE stripping
-func (p *PEFile) AdvancedStripPEDetailed(compact bool, force bool) *common.OperationResult {
-	originalSize := uint64(len(p.RawData))
-	operations := []string{}
-	totalCount := 0
 	// Strip debug sections (always safe)
 	debugResult := p.StripSectionsByType(common.DebugSections, common.ZeroFill, false)
 	if debugResult != nil && debugResult.Applied {
@@ -323,7 +278,9 @@ func (p *PEFile) AdvancedStripPEDetailed(compact bool, force bool) *common.Opera
 	if buildInfoResult != nil && buildInfoResult.Applied {
 		operations = append(operations, buildInfoResult.Message)
 		totalCount += buildInfoResult.Count
-	} // Strip non-essential sections
+	}
+
+	// Strip non-essential sections
 	nonEssentialResult := p.StripSectionsByType(common.NonEssentialSections, common.ZeroFill, false)
 	if nonEssentialResult != nil && nonEssentialResult.Applied {
 		operations = append(operations, nonEssentialResult.Message)
@@ -343,6 +300,7 @@ func (p *PEFile) AdvancedStripPEDetailed(compact bool, force bool) *common.Opera
 		operations = append(operations, fmt.Sprintf("⚠️  %s (risky)", exceptionResult.Message))
 		totalCount += exceptionResult.Count
 	}
+
 	// Strip Rich Header (compilation metadata)
 	richHeaderResult := p.StripRichHeader()
 	if richHeaderResult != nil && richHeaderResult.Applied {
@@ -351,284 +309,29 @@ func (p *PEFile) AdvancedStripPEDetailed(compact bool, force bool) *common.Opera
 	}
 
 	// Strip compiler signatures and build metadata (GCC, MinGW, Go, etc.)
-	compilerResult := p.StripAllCompilerMetadata()
-	if compilerResult != nil && compilerResult.Applied {
-		operations = append(operations, compilerResult.Message)
-		totalCount += compilerResult.Count
+	// Strip all regex-based metadata (compiler, version, build info, etc.)
+	regexResult := p.StripAllRegexRules(force)
+	if regexResult != nil && regexResult.Applied {
+		operations = append(operations, regexResult.Message)
+		totalCount += regexResult.Count
 	}
-	// Strip version strings and build identifiers (aggressive)
-	versionResult := p.StripVersionStrings()
-	if versionResult != nil && versionResult.Applied {
-		operations = append(operations, versionResult.Message)
-		totalCount += versionResult.Count
-	}
+
 	// Strip relocation tables (RISKY - may break some executables)
-	// Note: This is done last before compaction as it's the most aggressive
 	relocationResult := p.StripSectionsByType(common.RelocationSections, common.ZeroFill, force)
 	if relocationResult != nil && relocationResult.Applied {
 		operations = append(operations, fmt.Sprintf("⚠️  %s (risky)", relocationResult.Message))
 		totalCount += relocationResult.Count
 	}
 
-	// File compaction (if requested)
-	if compact {
-		compactResult, err := p.SimpleTruncationPE()
-		if err != nil {
-			return common.NewSkipped(fmt.Sprintf("simple compaction failed: %v", err))
-		}
-		if compactResult.Applied {
-			operations = append(operations, compactResult.Message)
-		}
-	}
-
 	if len(operations) == 0 {
 		return common.NewSkipped("no stripping operations applied")
 	}
 
-	// Calculate final size reduction
-	newSize := uint64(len(p.RawData))
-	savedBytes := originalSize - newSize
-	percentage := float64(savedBytes) * 100.0 / float64(originalSize)
-
-	message := fmt.Sprintf("advanced PE strip completed: %d -> %d bytes (%.1f%% reduction); %s",
-		originalSize, newSize, percentage, strings.Join(operations, "; "))
+	// Build professional output message
+	message := fmt.Sprintf("PE strip completed: %d bytes processed\n%s",
+		originalSize, p.formatStripOperations(operations))
 
 	return common.NewApplied(message, totalCount)
-}
-
-// CompactOnlyPEDetailed performs PE compaction without any stripping
-func (p *PEFile) CompactOnlyPEDetailed() *common.OperationResult {
-	originalSize := uint64(len(p.RawData))
-
-	// Use simple truncation compaction directly
-	compactResult, err := p.SimpleTruncationPE()
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("simple compaction failed: %v", err))
-	}
-
-	if !compactResult.Applied {
-		return common.NewSkipped("no compaction was possible")
-	}
-
-	// Calculate final size reduction
-	newSize := uint64(len(p.RawData))
-	savedBytes := originalSize - newSize
-	percentage := float64(savedBytes) * 100.0 / float64(originalSize)
-
-	message := fmt.Sprintf("compact-only PE completed: %d -> %d bytes (%.1f%% reduction); %s",
-		originalSize, newSize, percentage, compactResult.Message)
-
-	return common.NewApplied(message, compactResult.Count)
-}
-
-// SimpleTruncationPE performs safe PE compaction by truncating removable sections
-func (p *PEFile) SimpleTruncationPE() (*common.OperationResult, error) {
-	if len(p.Sections) == 0 {
-		return common.NewSkipped("no sections to process"), nil
-	}
-	originalSize := uint64(len(p.RawData))
-
-	// Identify removable sections based on DISCARDABLE flag
-	removableSections := []int{}
-	keptSections := []int{}
-
-	for i, section := range p.Sections {
-		// Check if section has DISCARDABLE flag (0x02000000) - but exclude critical sections
-		isDiscardable := section.Flags&0x02000000 != 0
-		isCriticalDiscardable := section.Name == ".reloc" // Keep relocation table
-		if isDiscardable && !isCriticalDiscardable {
-			removableSections = append(removableSections, i)
-		} else {
-			keptSections = append(keptSections, i)
-		}
-	}
-
-	if len(removableSections) == 0 {
-		return common.NewSkipped("no removable sections found"), nil
-	}
-
-	// Save names of sections to be removed
-	removedSectionNames := make([]string, 0, len(removableSections))
-	for _, idx := range removableSections {
-		removedSectionNames = append(removedSectionNames, p.Sections[idx].Name)
-	}
-
-	// Find the last essential section's end offset
-	lastEssentialOffset := uint64(0)
-	for _, keptIdx := range keptSections {
-		section := p.Sections[keptIdx]
-		if section.Size > 0 && section.Offset > 0 {
-			sectionEnd := uint64(section.Offset) + uint64(section.Size)
-			if sectionEnd > lastEssentialOffset {
-				lastEssentialOffset = sectionEnd
-			}
-		}
-	}
-
-	// Align to sector boundary (512 bytes)
-	lastEssentialOffset = (lastEssentialOffset + 511) &^ 511
-
-	if lastEssentialOffset >= uint64(len(p.RawData)) {
-		return common.NewSkipped("no space to save by truncation"), nil
-	}
-
-	// Get PE structure information for header updates
-	if len(p.RawData) < 64 {
-		return nil, fmt.Errorf("file too small for PE structure")
-	}
-
-	peHeaderOffset := uint32(p.RawData[0x3C]) | uint32(p.RawData[0x3D])<<8 |
-		uint32(p.RawData[0x3E])<<16 | uint32(p.RawData[0x3F])<<24
-
-	if peHeaderOffset+24 > uint32(len(p.RawData)) {
-		return nil, fmt.Errorf("PE header offset out of bounds")
-	}
-
-	coffHeaderOffset := peHeaderOffset + 4
-	optionalHeaderOffset := coffHeaderOffset + 20
-	optionalHeaderSize := uint16(p.RawData[coffHeaderOffset+16]) | uint16(p.RawData[coffHeaderOffset+17])<<8
-	sectionTableOffset := optionalHeaderOffset + uint32(optionalHeaderSize)
-	sectionTableEnd := sectionTableOffset + uint32(len(p.Sections)*40)
-
-	// Make sure we don't truncate the section headers themselves
-	minFileSize := uint64(sectionTableEnd)
-	if lastEssentialOffset < minFileSize {
-		lastEssentialOffset = minFileSize
-		// Align to sector boundary (512 bytes)
-		lastEssentialOffset = (lastEssentialOffset + 511) &^ 511
-	}
-
-	if lastEssentialOffset >= uint64(len(p.RawData)) {
-		return common.NewSkipped("no space to save by truncation"), nil
-	}
-	// For Go executables and other complex PE files, avoid section reorganization
-	// that could corrupt string tables or symbol references
-	// Instead, just mark removed sections as having zero size and clear their data
-
-	// Check if this looks like a Go executable (has .zdebug_* sections)
-	isGoExecutable := false
-	for _, name := range removedSectionNames {
-		if strings.HasPrefix(name, ".zdebug_") {
-			isGoExecutable = true
-			break
-		}
-	}
-
-	// For Go executables, use a very conservative approach
-	if isGoExecutable {
-		// Calculate space saved by the data that WOULD be removed
-		savedBytes := uint64(0)
-		for _, idx := range removableSections {
-			savedBytes += uint64(p.Sections[idx].Size)
-		}
-		percentage := float64(savedBytes) * 100.0 / float64(originalSize)
-
-		// Don't actually modify the file structure for Go executables
-		// Just report what would be saved
-		message := fmt.Sprintf("conservative compaction: would zero %d sections data (%.1f%% logical reduction), sections: %s (file unchanged for compatibility)",
-			len(removableSections), percentage, strings.Join(removedSectionNames, ", "))
-
-		return common.NewApplied(message, len(removableSections)), nil
-	}
-
-	// First, zero out the data of removable sections (for non-Go executables)
-	for _, idx := range removableSections {
-		section := p.Sections[idx]
-		if section.Offset > 0 && section.Size > 0 {
-			start := int(section.Offset)
-			end := start + int(section.Size)
-			if start < len(p.RawData) && end <= len(p.RawData) {
-				// Zero out the section data
-				for i := start; i < end; i++ {
-					p.RawData[i] = 0
-				}
-			}
-		}
-	}
-
-	// Update section count in COFF header to reflect kept sections only
-	newSectionCount := uint16(len(keptSections))
-	p.RawData[coffHeaderOffset+2] = byte(newSectionCount)
-	p.RawData[coffHeaderOffset+3] = byte(newSectionCount >> 8)
-	// IMPORTANT: Do NOT zero out COFF symbol table pointers for Go executables
-	// as they may have complex string table structures that we could corrupt
-	// Only clear if we can verify it's safe to do so
-
-	// Only clear symbol table pointers for non-Go executables
-	if !isGoExecutable && coffHeaderOffset+16 <= uint32(len(p.RawData)) {
-		// Zero out PointerToSymbolTable (4 bytes at offset +8)
-		for i := uint32(8); i < 12; i++ {
-			p.RawData[coffHeaderOffset+i] = 0
-		}
-		// Zero out NumberOfSymbols (4 bytes at offset +12)
-		for i := uint32(12); i < 16; i++ {
-			p.RawData[coffHeaderOffset+i] = 0
-		}
-	}
-
-	// Clear section headers for removed sections (but don't reorganize)
-	for _, idx := range removableSections {
-		offset := sectionTableOffset + uint32(idx*40)
-		if offset+40 <= uint32(len(p.RawData)) {
-			for j := uint32(0); j < 40; j++ {
-				p.RawData[offset+j] = 0
-			}
-		}
-	}
-	// For safety with Go executables, skip aggressive truncation
-	// Just zero out section data but keep the file structure intact
-	if isGoExecutable {
-		// Calculate space saved by zeroing BEFORE updating sections
-		savedBytes := uint64(0)
-		for _, idx := range removableSections {
-			savedBytes += uint64(p.Sections[idx].Size)
-		}
-		percentage := float64(savedBytes) * 100.0 / float64(originalSize)
-
-		// Update internal structure to reflect removed sections
-		newSections := make([]Section, 0, len(keptSections))
-		for _, keptIdx := range keptSections {
-			newSections = append(newSections, p.Sections[keptIdx])
-		}
-		p.Sections = newSections
-
-		message := fmt.Sprintf("safe compaction: zeroed %d sections data (%.1f%% logical reduction), sections: %s",
-			len(removableSections), percentage, strings.Join(removedSectionNames, ", "))
-
-		return common.NewApplied(message, len(removableSections)), nil
-	}
-
-	// For non-Go executables, proceed with truncation as before
-	// If we have non-contiguous kept sections, we need to skip truncation
-	// to avoid corrupting the PE structure
-	maxKeptIndex := -1
-	for _, keptIdx := range keptSections {
-		if keptIdx > maxKeptIndex {
-			maxKeptIndex = keptIdx
-		}
-	}
-
-	if len(keptSections) != maxKeptIndex+1 {
-		return common.NewSkipped("non-contiguous sections detected - truncation skipped for safety"), nil
-	}
-
-	// NOW truncate the file for non-Go executables
-	p.RawData = p.RawData[:lastEssentialOffset]
-
-	// Update internal structure
-	newSections := make([]Section, 0, len(keptSections))
-	for _, keptIdx := range keptSections {
-		newSections = append(newSections, p.Sections[keptIdx])
-	}
-	p.Sections = newSections
-	newSize := uint64(len(p.RawData))
-	savedBytes := originalSize - newSize
-	percentage := float64(savedBytes) * 100.0 / float64(originalSize)
-
-	message := fmt.Sprintf("simple truncation: %d -> %d bytes (%.1f%% reduction), removed %d sections: %s",
-		originalSize, newSize, percentage, len(removableSections), strings.Join(removedSectionNames, ", "))
-
-	return common.NewApplied(message, len(removableSections)), nil
 }
 
 // --- Helper Functions ---
@@ -728,117 +431,113 @@ func (p *PEFile) StripRichHeader() *common.OperationResult {
 	return common.NewSkipped("no Rich Header found")
 }
 
-// StripAllCompilerMetadata removes compiler version strings, build IDs and signatures
-func (p *PEFile) StripAllCompilerMetadata() *common.OperationResult {
-	patterns := []*regexp.Regexp{
-		// Go Build ID specific (from old StripGoBuildID function)
-		regexp.MustCompile(`Go build ID: "[^"]*"`),
+// StripAllRegexRules applica tutte le regole regex centralizzate su tutte le sezioni
+func (p *PEFile) StripAllRegexRules(force bool) *common.OperationResult {
+	rules := common.GetRegexStripRules()
+	totalModifications := 0
+	messages := []string{}
 
-		// GCC / MinGW specific
-		regexp.MustCompile(`(?i)\bmingw_[a-zA-Z0-9_]*\b`),           // mingw_ symbols
-		regexp.MustCompile(`(?i)mingw_[a-zA-Z0-9_]*[.]?`),           // mingw_foo[.] (cattura anche nomi troncati)
-		regexp.MustCompile(`(?i)libgcc[a-zA-Z0-9_]*\.[a-zA-Z0-9]+`), // libgcc2.c, libgcc_s_seh-1.dll
-		regexp.MustCompile(`(?i)gccmain\.[a-zA-Z0-9]+`),             // gccmain.c, gccmain.o
-
-		// Go versioning and paths
-		regexp.MustCompile(`go1\.[0-9]+(\.[0-9]+)?`),
-		regexp.MustCompile(`golang\.org/[^\s\x00]+`),
-		regexp.MustCompile(`(?i)runtime/[a-zA-Z0-9_/]+\.go`),
-		regexp.MustCompile(`(?i)cmd/[^\s\x00]*go[^\s\x00]*`),
-		regexp.MustCompile(`(?i)Files/Go/src/[^\s\x00]+`),
-		regexp.MustCompile(`(?i)/usr/local/go/[^\s\x00]+`),
-
-		// Build metadata
-		regexp.MustCompile(`(?i)\$Id: [^$]*\$`),
-		regexp.MustCompile(`(?i)@\(#[^\n\x00]*`),
-		regexp.MustCompile(`__DATE__`),
-		regexp.MustCompile(`__TIME__`),
-		regexp.MustCompile(`__FILE__`),
-
-		// Path stripping (Windows + Unix)
-		regexp.MustCompile(`[A-Za-z]:\\[^\s\x00]+`),
-		regexp.MustCompile(`/[a-zA-Z0-9/_\-.]+\.(go|c|cpp|h|hpp|rs|py|java|cs|o|obj|dll|exe|so)`),
-
-		// Build environment hints
-		regexp.MustCompile(`(?i)compiled\s+by[^\n\x00]*`),
-		regexp.MustCompile(`(?i)compiler version[^\n\x00]*`),
-		regexp.MustCompile(`(?i)build id[^\n\x00]*`),
-	}
-
-	modifications := 0
-
-	for _, section := range p.Sections {
-		// Search in all sections, not just specific ones
-
-		data, err := p.ReadBytes(section.Offset, int(section.Size))
-		if err != nil || len(data) < 10 {
+	for _, rule := range rules {
+		if rule.IsRisky && !force {
 			continue
 		}
-
-		for _, pattern := range patterns {
-			matches := pattern.FindAllIndex(data, -1)
-			for _, match := range matches {
-				// Zero out the compiler signature
-				for i := match[0]; i < match[1]; i++ {
-					data[i] = 0x00
+		for _, patternStr := range rule.Patterns {
+			pattern, err := regexp.Compile(patternStr)
+			if err != nil {
+				messages = append(messages, fmt.Sprintf("invalid regex '%s': %v", patternStr, err))
+				continue
+			}
+			modifications := 0
+			for _, section := range p.Sections {
+				data, err := p.ReadBytes(section.Offset, int(section.Size))
+				if err != nil || len(data) < 1 {
+					continue
 				}
-				modifications++
+				matches := pattern.FindAllIndex(data, -1)
+				for _, match := range matches {
+					for i := match[0]; i < match[1]; i++ {
+						data[i] = 0x00
+					}
+					modifications++
+				}
+				if modifications > 0 {
+					copy(p.RawData[section.Offset:section.Offset+int64(len(data))], data)
+				}
+			}
+			if modifications > 0 {
+				msg := fmt.Sprintf("stripped %d matches for '%s' (%s)", modifications, patternStr, rule.Description)
+				messages = append(messages, msg)
+				totalModifications += modifications
 			}
 		}
-		if modifications > 0 {
-			copy(p.RawData[section.Offset:section.Offset+int64(len(data))], data)
-		}
 	}
 
-	if modifications > 0 {
-		return common.NewApplied(fmt.Sprintf("stripped %d compiler metadata entries", modifications), modifications)
+	if totalModifications > 0 {
+		return common.NewApplied(strings.Join(messages, "; "), totalModifications)
 	}
-	return common.NewSkipped("no compiler metadata found")
+	return common.NewSkipped("no regex-based metadata found")
 }
 
-// StripVersionStrings removes version strings and build identifiers more aggressively
-func (p *PEFile) StripVersionStrings() *common.OperationResult {
-	patterns := []*regexp.Regexp{
-		// Version patterns
-		regexp.MustCompile(`v[0-9]+\.[0-9]+\.[0-9]+`),        // Semantic versions
-		regexp.MustCompile(`[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+`), // 4-part versions
-		regexp.MustCompile(`[0-9]{4}-[0-9]{2}-[0-9]{2}`),     // Date formats
-		regexp.MustCompile(`[0-9]{2}:[0-9]{2}:[0-9]{2}`),     // Time formats
-
-		// Build identifiers
-		regexp.MustCompile(`build-[a-zA-Z0-9-]+`),   // Build IDs
-		regexp.MustCompile(`commit-[a-f0-9]{7,40}`), // Git commits
-		regexp.MustCompile(`\b[a-f0-9]{32}\b`),      // MD5 hashes
-		regexp.MustCompile(`\b[a-f0-9]{40}\b`),      // SHA1 hashes
-		regexp.MustCompile(`\b[a-f0-9]{64}\b`),      // SHA256 hashes
+// formatStripOperations formats the stripping operations into a professional output
+func (p *PEFile) formatStripOperations(operations []string) string {
+	if len(operations) == 0 {
+		return "No operations performed"
 	}
 
-	modifications := 0
+	var result strings.Builder
 
-	for _, section := range p.Sections {
-		data, err := p.ReadBytes(section.Offset, int(section.Size))
-		if err != nil || len(data) < 10 {
-			continue
+	// Group operations by type for better readability
+	sectionOps := []string{}
+	regexOps := []string{}
+	otherOps := []string{}
+
+	for _, op := range operations {
+		if strings.Contains(op, "sections (") {
+			sectionOps = append(sectionOps, op)
+		} else if strings.Contains(op, "matches for") {
+			regexOps = append(regexOps, op)
+		} else {
+			otherOps = append(otherOps, op)
 		}
+	}
 
-		for _, pattern := range patterns {
-			matches := pattern.FindAllIndex(data, -1)
-			for _, match := range matches {
-				// Zero out the version string
-				for i := match[0]; i < match[1]; i++ {
-					data[i] = 0x00
-				}
-				modifications++
+	// Format section operations
+	if len(sectionOps) > 0 {
+		result.WriteString("📦 SECTIONS STRIPPED:\n")
+		for _, op := range sectionOps {
+			if strings.HasPrefix(op, "⚠️") {
+				result.WriteString(fmt.Sprintf("   %s\n", op))
+			} else {
+				result.WriteString(fmt.Sprintf("   ✓ %s\n", op))
 			}
 		}
+	}
 
-		if modifications > 0 {
-			copy(p.RawData[section.Offset:section.Offset+int64(len(data))], data)
+	// Format regex operations (if any)
+	if len(regexOps) > 0 {
+		result.WriteString("🔍 REGEX PATTERNS STRIPPED:\n")
+		for _, op := range regexOps {
+			// Split the concatenated regex messages and format each one
+			regexMessages := strings.Split(op, "; ")
+			for _, regexMsg := range regexMessages {
+				if strings.TrimSpace(regexMsg) != "" {
+					result.WriteString(fmt.Sprintf("   ✓ %s\n", strings.TrimSpace(regexMsg)))
+				}
+			}
 		}
 	}
 
-	if modifications > 0 {
-		return common.NewApplied(fmt.Sprintf("stripped %d version strings", modifications), modifications)
+	// Format other operations
+	if len(otherOps) > 0 {
+		result.WriteString("🛠️  OTHER OPERATIONS:\n")
+		for _, op := range otherOps {
+			if strings.HasPrefix(op, "⚠️") {
+				result.WriteString(fmt.Sprintf("   %s\n", op))
+			} else {
+				result.WriteString(fmt.Sprintf("   ✓ %s\n", op))
+			}
+		}
 	}
-	return common.NewSkipped("no version strings found")
+
+	return strings.TrimSuffix(result.String(), "\n")
 }

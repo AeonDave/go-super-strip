@@ -1,530 +1,1411 @@
 package perw
 
 import (
-	"debug/pe"
-	"encoding/binary"
+	"crypto/md5"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"gosstrip/common"
 	"math"
+	"sort"
+	"strings"
+	"time"
 )
 
-// calculateEntropy computes Shannon entropy of data
-func calculateEntropy(data []byte) float64 {
-	if len(data) == 0 {
-		return 0.0
+func isDebugSection(name string) bool {
+	name = strings.ToLower(name)
+	return strings.HasPrefix(name, ".debug") ||
+		strings.HasPrefix(name, ".zdebug") ||
+		name == ".symtab" ||
+		strings.Contains(name, "gdb")
+}
+
+func (p *PEFile) printExportAnalysis() {
+	fmt.Println("🔍 EXPORT ANALYSIS")
+	fmt.Println("══════════════════")
+	if len(p.Exports) == 0 {
+		fmt.Println("❌ No exported symbols found")
+		fmt.Println()
+		return
 	}
 
-	// Count byte frequencies
-	freq := make([]int, 256)
-	for _, b := range data {
-		freq[b]++
+	fmt.Printf("Total Exported Functions: %d\n\n", len(p.Exports))
+	fmt.Println("EXPORTED FUNCTIONS:")
+
+	for _, exp := range p.Exports {
+		if exp.Ordinal != 0 {
+			fmt.Printf("   • %s (Ordinal: %d, RVA: 0x%08X)\n", exp.Name, exp.Ordinal, exp.RVA)
+		} else {
+			fmt.Printf("   • %s (RVA: 0x%08X)\n", exp.Name, exp.RVA)
+		}
+	}
+
+	fmt.Println()
+}
+
+type SectionInfo struct {
+	Name         string
+	FileOffset   int64
+	Size         int64
+	IsExecutable bool
+	IsWritable   bool
+}
+
+func (p *PEFile) printSectionAnomalies() {
+	fmt.Println("🚨 SECTION ANOMALY ANALYSIS")
+	fmt.Println("════════════════════════════")
+	infos := make([]SectionInfo, len(p.Sections))
+	for i, s := range p.Sections {
+		infos[i] = SectionInfo{
+			Name:         s.Name,
+			FileOffset:   int64(s.FileOffset),
+			Size:         s.Size,
+			IsExecutable: s.IsExecutable,
+			IsWritable:   s.IsWritable,
+		}
+	}
+	issues := AnalyzeSectionAnomalies(infos)
+	if len(issues) == 0 {
+		fmt.Printf("%s No section anomalies detected\n", common.SymbolCheck)
+	} else {
+		for _, issue := range issues {
+			fmt.Println(issue)
+		}
+	}
+	fmt.Println()
+}
+
+func (p *PEFile) Analyze() error {
+	// Calculate entropy and packing detection for all sections
+	p.calculateSectionEntropy()
+	p.IsPacked = p.detectPacking()
+
+	// Print comprehensive analysis
+	p.printHeader()
+	p.printBasicInfo()
+	p.printPEHeaders()
+	p.printComprehensiveSecurityAnalysis()
+	p.printSectionAnalysis()
+	p.printSectionAnomalies()
+	p.printImportsAnalysis()
+	p.printImportHashAnalysis()
+	p.printExportAnalysis()
+	p.printNetworkIndicators()
+	p.printResourceAnalysis()
+	PrintSuspiciousStrings(p)
+	return nil
+}
+
+func (p *PEFile) printHeader() {
+	fmt.Println("╔══════════════════════════════════════════════════════════════════════════════╗")
+	fmt.Println("║                           PE FILE ANALYSIS REPORT                            ║")
+	fmt.Println("╚══════════════════════════════════════════════════════════════════════════════╝")
+	fmt.Println()
+}
+
+func (p *PEFile) calculateSectionEntropy() {
+	for i, section := range p.Sections {
+		if section.Size > 0 && section.Offset+section.Size <= int64(len(p.RawData)) {
+			p.Sections[i].Entropy = CalculateEntropy(p.RawData[section.Offset : section.Offset+section.Size])
+		}
+	}
+}
+
+func (p *PEFile) detectPacking() bool {
+	// Use the same logic as packing score for consistency
+	score := p.calculatePackingScore()
+	return score >= 70 // Same threshold as advanced analysis
+}
+
+func (p *PEFile) calculatePackingScore() int {
+	// Count only high entropy sections (excluding debug sections)
+	highEntropyCount := 0
+	totalNonDebugSections := 0
+
+	for _, section := range p.Sections {
+		if isDebugSection(section.Name) {
+			continue
+		}
+		totalNonDebugSections++
+		if section.Entropy > 7.5 {
+			highEntropyCount++
+		}
+	}
+
+	// Simple entropy-based scoring
+	if totalNonDebugSections == 0 {
+		return 0
+	}
+
+	// Calculate percentage of high entropy sections
+	entropyPercentage := float64(highEntropyCount) / float64(totalNonDebugSections)
+	score := int(entropyPercentage * 100)
+
+	// Bonus for multiple high entropy sections
+	if highEntropyCount > 1 {
+		score += 20
+	}
+
+	if score > 100 {
+		score = 100
+	}
+
+	return score
+}
+
+func (p *PEFile) printBasicInfo() {
+	fmt.Println("📁 BINARY INFORMATION")
+	fmt.Println("═════════════════════")
+
+	// Basic file information
+	fmt.Printf("File Name:       %s\n", p.FileName)
+	fmt.Printf("File Size:       %s (%d bytes)\n", common.FormatFileSize(p.FileSize), p.FileSize)
+
+	// Calculate file hashes
+	if p.RawData != nil {
+		md5Hash := md5.Sum(p.RawData)
+		sha256Hash := sha256.Sum256(p.RawData)
+		fmt.Printf("MD5 Hash:        %s\n", hex.EncodeToString(md5Hash[:]))
+		fmt.Printf("SHA256 Hash:     %s\n", hex.EncodeToString(sha256Hash[:]))
+	}
+
+	fmt.Printf("Architecture:    %s\n", map[bool]string{true: "x64 (64-bit)", false: "x86 (32-bit)"}[p.Is64Bit])
+	if p.Machine != "" {
+		fmt.Printf("Machine Type:    %s\n", p.Machine)
+	}
+	if p.TimeDateStamp != "" {
+		fmt.Printf("Compile Time:    %s\n", p.TimeDateStamp)
+	}
+
+	// Language and compiler detection
+	language, compiler := p.detectLanguageAndCompiler()
+	if language != "" {
+		fmt.Printf("Language:        %s\n", language)
+	}
+	if compiler != "" {
+		fmt.Printf("Compiler:        %s\n", compiler)
+	}
+
+	// Enhanced header information
+	fmt.Printf("Sections:        %d total\n", len(p.Sections))
+	fmt.Printf("\n💾 SPACE UTILIZATION:\n")
+	var totalSectionSize int64
+	for _, section := range p.Sections {
+		totalSectionSize += section.Size
+	}
+	overhead := p.FileSize - totalSectionSize
+	efficiency := float64(totalSectionSize) / float64(p.FileSize) * 100
+	fmt.Printf("Total Section Size: %s\n", common.FormatFileSize(totalSectionSize))
+	fmt.Printf("File Overhead:      %s\n", common.FormatFileSize(overhead))
+	fmt.Printf("File Efficiency:    %.1f%%\n", efficiency)
+
+	// Overlay analysis
+	fmt.Printf("\n🗂️  OVERLAY ANALYSIS:\n")
+	if len(p.Sections) > 0 && p.RawData != nil {
+		last := p.Sections[len(p.Sections)-1]
+		present, offset, size, entropy := OverlayInfo(p.FileSize, last.Offset, last.Size, p.RawData)
+		if present {
+			fmt.Printf("Overlay Status:     %s Present at 0x%X\n", common.SymbolWarn, offset)
+			fmt.Printf("Overlay Size:       %s\n", common.FormatFileSize(size))
+			fmt.Printf("Overlay Entropy:    %.2f\n", entropy)
+		} else {
+			fmt.Printf("Overlay Status:     %s No overlay detected\n", common.SymbolCheck)
+		}
+	} else {
+		fmt.Printf("Overlay Status:     ❓ Unable to analyze (no sections or file data)\n")
+	}
+
+	fmt.Println()
+}
+
+func (p *PEFile) printPEHeaders() {
+	fmt.Println("🏗️  PE HEADER INFORMATION")
+	fmt.Println("═══════════════════════════")
+
+	// === CORE PE STRUCTURE ===
+	fmt.Printf("Sections:        %d total\n", len(p.Sections))
+	fmt.Printf("Packed Status:   %s\n", map[bool]string{true: "❌ Likely PACKED", false: "✅ Not packed"}[p.IsPacked])
+	fmt.Printf("Image Base:      0x%X\n", p.ImageBase())
+	fmt.Printf("Entry Point:     0x%X (RVA)\n", p.EntryPoint())
+	fmt.Printf("Size of Image:   %d bytes (%s)\n", p.SizeOfImage(), common.FormatFileSize(int64(p.SizeOfImage())))
+	fmt.Printf("Size of Headers: %d bytes\n", p.SizeOfHeaders())
+
+	// Checksum information
+	checksum := p.Checksum()
+	if checksum != 0 {
+		fmt.Printf("Checksum:        0x%X\n", checksum)
+	} else {
+		fmt.Printf("Checksum:        Not set\n")
+	}
+
+	fmt.Printf("File Type:       %s\n", p.GetFileType())
+	subsystemName := getSubsystemName(p.Subsystem())
+	fmt.Printf("Subsystem:       %d (%s)\n", p.Subsystem(), subsystemName)
+
+	// Enhanced DLL characteristics
+	dllChars := decodeDLLCharacteristics(p.DllCharacteristics())
+	fmt.Printf("DLL Characteristics: 0x%X (%s)\n", p.DllCharacteristics(), dllChars)
+
+	// Directory entries count
+	directories := p.Directories()
+	nonEmptyDirs := 0
+	for _, dir := range directories {
+		if dir.RVA != 0 || dir.Size != 0 {
+			nonEmptyDirs++
+		}
+	}
+	if nonEmptyDirs > 0 {
+		fmt.Printf("Data Directories: %d active entries\n", nonEmptyDirs)
+	}
+
+	// === TIMESTAMP ANALYSIS ===
+	if p.TimeDateStamp != "" {
+		fmt.Printf("\n⏰ TIMESTAMP INFO:\n")
+		fmt.Printf("Compile Time:    %s\n", p.TimeDateStamp)
+
+		// Only try to parse if not 'Not set' or similar
+		if p.TimeDateStamp != "Not set" && p.TimeDateStamp != "-" {
+			if timestamp, err := time.Parse("2006-01-02 15:04:05 MST", p.TimeDateStamp); err == nil {
+				now := time.Now().UTC()
+				age := now.Sub(timestamp)
+				fmt.Printf("Timestamp:       ✅ Normal\n")
+				fmt.Printf("File Age:        %.1f days\n", age.Hours()/24)
+			} else {
+				fmt.Printf("Timestamp:       ⚠️ Unparsable: '%s'\n", p.TimeDateStamp)
+			}
+		}
+	}
+
+	// === VERSION INFORMATION ===
+	versionInfo := p.VersionInfo()
+	if len(versionInfo) > 0 {
+		fmt.Printf("\n📄 VERSION DETAILS:\n")
+		// Order version information professionally
+		keyOrder := []string{"FileDescription", "FileVersion", "ProductVersion", "CompanyName", "LegalCopyright", "OriginalFilename", "ProductName", "InternalName"}
+
+		// Print in preferred order
+		for _, key := range keyOrder {
+			if value, exists := versionInfo[key]; exists {
+				fmt.Printf("%-20s %s\n", key+":", value)
+			}
+		}
+
+		// Print any remaining keys not in the ordered list
+		for key, value := range versionInfo {
+			found := false
+			for _, orderedKey := range keyOrder {
+				if key == orderedKey {
+					found = true
+					break
+				}
+			}
+			if !found {
+				fmt.Printf("%-20s %s\n", key+":", value)
+			}
+		}
+	}
+
+	// === RICH HEADER ANALYSIS ===
+	fmt.Printf("\n🔧 RICH HEADER INFO:\n")
+	// Check for Rich Header presence (simplified check)
+	if len(p.RawData) > 200 {
+		richFound := false
+		// Look for Rich signature in the first 1KB
+		searchLimit := 1024
+		if len(p.RawData) < searchLimit {
+			searchLimit = len(p.RawData)
+		}
+		for i := 0; i < searchLimit-4; i++ {
+			if string(p.RawData[i:i+4]) == "Rich" {
+				richFound = true
+				break
+			}
+		}
+
+		if richFound {
+			fmt.Printf("Rich Header:     ✅ Present (compiler metadata)\n")
+		} else {
+			fmt.Printf("Rich Header:     ⚠️ Not found or stripped\n")
+		}
+	} else {
+		fmt.Printf("Rich Header:     ❓ Cannot analyze (insufficient data)\n")
+	}
+
+	// === DEBUG INFORMATION ===
+	if p.PDB() != "" && p.PDB() != "@" && !strings.HasPrefix(p.PDB(), "@") {
+		fmt.Printf("\n🐛 DEBUG INFO:\n")
+		fmt.Printf("Debug Info:      %s\n", p.PDB())
+		if p.GUIDAge() != "" {
+			fmt.Printf("GUID/Age:        %s\n", p.GUIDAge())
+		}
+	}
+
+	// === FILE INTEGRITY & COMPLIANCE ===
+	fmt.Printf("\n🔧 FILE INTEGRITY & COMPLIANCE:\n")
+	var issues []string
+	var warnings []string
+	complianceChecks := 0
+	complianceViolations := 0
+
+	// Structural integrity validation
+	p.validateSectionLayout(&issues, &warnings)
+	p.validateRVAMappings(&issues, &warnings)
+	p.validateDataDirectories(&issues, &warnings)
+
+	// Basic PE compliance checks
+	if p.PE != nil {
+		complianceChecks++
+	}
+	if len(p.Sections) > 0 {
+		complianceChecks++
+	}
+	if p.SizeOfImage() > 0 {
+		complianceChecks++
+	}
+	if p.EntryPoint() > 0 {
+		complianceChecks++
+	}
+
+	// Report integrity results
+	if len(issues) == 0 && len(warnings) == 0 {
+		fmt.Printf("Structure:       ✅ No integrity issues found\n")
+	} else {
+		if len(issues) > 0 {
+			fmt.Printf("Issues:          ❌ %d critical problems found\n", len(issues))
+			complianceViolations += len(issues)
+		}
+		if len(warnings) > 0 {
+			fmt.Printf("Warnings:        ⚠️ %d potential issues found\n", len(warnings))
+			complianceViolations += len(warnings)
+		}
+	}
+
+	// Report compliance results
+	fmt.Printf("PE Compliance:   %d/%d checks passed\n", complianceChecks-complianceViolations, complianceChecks)
+
+	if complianceViolations == 0 {
+		fmt.Printf("Overall Status:  ✅ Fully compliant PE file\n")
+	} else if complianceViolations <= 2 {
+		fmt.Printf("Overall Status:  ⚠️ Minor issues detected\n")
+	} else {
+		fmt.Printf("Overall Status:  ❌ Significant issues detected\n")
+	}
+
+	// === MEMORY LAYOUT ===
+	fmt.Printf("\n🧠 MEMORY LAYOUT:\n")
+	imageSize := p.SizeOfImage()
+	fmt.Printf("Image Size:      %s (0x%X)\n", common.FormatFileSize(int64(imageSize)), imageSize)
+
+	var usedSpace int64
+	for _, section := range p.Sections {
+		usedSpace += section.Size
+	}
+
+	usedPercent := float64(usedSpace) / float64(imageSize) * 100
+	wastePercent := 100 - usedPercent
+
+	fmt.Printf("Used Space:      %s (%.1f%%)\n", common.FormatFileSize(usedSpace), usedPercent)
+	fmt.Printf("Alignment Waste: %s (%.1f%%)\n", common.FormatFileSize(int64(imageSize)-usedSpace), wastePercent)
+
+	if wastePercent > 50 {
+		fmt.Printf("Efficiency:      ❌ Poor (>50%% waste)\n")
+	} else if wastePercent > 25 {
+		fmt.Printf("Efficiency:      ⚠️ Fair (>25%% waste)\n")
+	} else {
+		fmt.Printf("Efficiency:      ✅ Good\n")
+	}
+
+	fmt.Println()
+}
+
+func (p *PEFile) printSectionAnalysis() {
+	fmt.Println("📊 SECTION ANALYSIS")
+	fmt.Println("═══════════════════")
+	if len(p.Sections) == 0 {
+		fmt.Println("❌ No sections found")
+		return
+	}
+	var (
+		totalSize          int64
+		executableSections int
+		writableSections   int
+	)
+	for _, section := range p.Sections {
+		totalSize += section.Size
+		if section.IsExecutable {
+			executableSections++
+		}
+		if section.IsWritable {
+			writableSections++
+		}
+	}
+	fmt.Printf("Total Sections:     %d\nExecutable Secs:    %d\nWritable Secs:      %d\nTotal Size:         %s\n\n",
+		len(p.Sections), executableSections, writableSections, common.FormatFileSize(totalSize))
+	fmt.Println("SECTION TABLE:")
+	fmt.Println("┌──────────────────┬─────────────┬─────────────┬─────────────┬─────────────┬──────────┐")
+	fmt.Println("│ Name             │ Virtual Addr│ File Offset │ Size        │ Permissions │ Entropy  │")
+	fmt.Println("├──────────────────┼─────────────┼─────────────┼─────────────┼─────────────┼──────────┤")
+	for _, section := range p.Sections {
+		permissions := common.FormatPermissions(section.IsExecutable, section.IsReadable, section.IsWritable)
+		entropyColor := common.GetEntropyColor(section.Entropy)
+		fmt.Printf("│ %-16s │ 0x%08X  │ 0x%08X  │ %-11s │ %-11s │ %s%.2f%s     │\n",
+			common.TruncateString(section.Name, 16),
+			section.VirtualAddress,
+			section.FileOffset,
+			common.FormatFileSize(section.Size),
+			permissions,
+			entropyColor,
+			section.Entropy,
+			"\033[0m")
+	}
+	fmt.Println("└──────────────────┴─────────────┴─────────────┴─────────────┴─────────────┴──────────┘")
+	fmt.Println()
+}
+
+func (p *PEFile) printImportsAnalysis() {
+	fmt.Println("📦 IMPORTS ANALYSIS")
+	fmt.Println("═══════════════════")
+	if len(p.Imports) == 0 {
+		fmt.Println("❌ No imports found")
+		fmt.Println() // Add empty line for proper spacing
+		return
+	}
+
+	// Separate DLLs with functions from those without
+	var dllsWithFunctions []ImportInfo
+	var dllsWithoutFunctions []ImportInfo
+	totalFunctions := 0
+
+	for _, imp := range p.Imports {
+		if len(imp.Functions) > 0 {
+			dllsWithFunctions = append(dllsWithFunctions, imp)
+			totalFunctions += len(imp.Functions)
+		} else {
+			dllsWithoutFunctions = append(dllsWithoutFunctions, imp)
+		}
+	}
+
+	fmt.Printf("Total Imported Functions: %d\n", totalFunctions)
+	fmt.Printf("Total DLLs: %d (%d with functions, %d without)\n\n",
+		len(p.Imports), len(dllsWithFunctions), len(dllsWithoutFunctions))
+
+	// Display DLLs with functions
+	if len(dllsWithFunctions) > 0 {
+		// Sort DLLs alphabetically
+		sort.Slice(dllsWithFunctions, func(i, j int) bool {
+			return strings.ToUpper(dllsWithFunctions[i].LibraryName) < strings.ToUpper(dllsWithFunctions[j].LibraryName)
+		})
+
+		fmt.Println("IMPORTED LIBRARIES WITH FUNCTIONS:")
+		for i, imp := range dllsWithFunctions {
+			dllName := strings.ToUpper(imp.LibraryName)
+
+			// Count function occurrences
+			functionCount := make(map[string]int)
+			for _, fn := range imp.Functions {
+				functionCount[fn]++
+			}
+
+			uniqueFunctions := len(functionCount)
+			fmt.Printf("\n📚 %s (%d functions, %d unique)\n", dllName, len(imp.Functions), uniqueFunctions)
+
+			// Get function names sorted alphabetically
+			functionNames := make([]string, 0, len(functionCount))
+			for fn := range functionCount {
+				functionNames = append(functionNames, fn)
+			}
+			sort.Strings(functionNames)
+
+			// Show functions with their counts (sorted alphabetically)
+			for _, fn := range functionNames {
+				count := functionCount[fn]
+				if count > 1 {
+					fmt.Printf("   • %s (×%d)\n", fn, count)
+				} else {
+					fmt.Printf("   • %s\n", fn)
+				}
+			}
+
+			// Add separator between DLLs (except for last one)
+			if i < len(dllsWithFunctions)-1 {
+				fmt.Println("   ────────────────────────────────────")
+			}
+		}
+	}
+
+	// Display DLLs without functions separately
+	if len(dllsWithoutFunctions) > 0 {
+		// Sort DLLs without functions alphabetically
+		sort.Slice(dllsWithoutFunctions, func(i, j int) bool {
+			return strings.ToUpper(dllsWithoutFunctions[i].LibraryName) < strings.ToUpper(dllsWithoutFunctions[j].LibraryName)
+		})
+
+		fmt.Printf("\n\n📋 LIBRARIES WITHOUT FUNCTIONS (%d):\n", len(dllsWithoutFunctions))
+		for _, imp := range dllsWithoutFunctions {
+			fmt.Printf("   • %s\n", strings.ToUpper(imp.LibraryName))
+		}
+	}
+
+	fmt.Println()
+}
+
+func (p *PEFile) getEntropyStats() (mi, ma, avg float64) {
+	if len(p.Sections) == 0 {
+		return 0, 0, 0
+	}
+	mi, ma, sum := p.Sections[0].Entropy, p.Sections[0].Entropy, 0.0
+	for _, section := range p.Sections {
+		if section.Entropy < mi {
+			mi = section.Entropy
+		}
+		if section.Entropy > ma {
+			ma = section.Entropy
+		}
+		sum += section.Entropy
+	}
+	avg = sum / float64(len(p.Sections))
+	return
+}
+
+func AnalyzeSectionAnomalies(sections []SectionInfo) []string {
+	var issues []string
+	for i, s := range sections {
+		if s.Size == 0 {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' has zero size")
+		}
+		if s.IsExecutable && s.IsWritable {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' is both executable and writable")
+		}
+		if len(s.Name) == 0 || s.Name == "\x00" {
+			issues = append(issues, common.SymbolWarn+" Section with empty or invalid name")
+		}
+		// Overlap check
+		if i > 0 && s.FileOffset < sections[i-1].FileOffset+sections[i-1].Size {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' overlaps previous section")
+		}
+	}
+	return issues
+}
+
+func OverlayInfo(fileSize int64, lastSectionOffset int64, lastSectionSize int64, data []byte) (present bool, offset int64, size int64, entropy float64) {
+	overlayStart := lastSectionOffset + lastSectionSize
+	if overlayStart < fileSize {
+		overlayData := data[overlayStart:]
+		return true, overlayStart, int64(len(overlayData)), CalculateEntropy(overlayData)
+	}
+	return false, 0, 0, 0
+}
+
+func PrintSuspiciousStrings(p *PEFile) {
+	fmt.Println("🔎 SUSPICIOUS CONTENT ANALYSIS")
+	fmt.Println("═══════════════════════════════")
+
+	// Categorize findings
+	categories := map[string][]string{
+		"URLs & Network":     {},
+		"File Paths":         {},
+		"System Libraries":   {},
+		"Debug/Build Info":   {},
+		"Encoded/Obfuscated": {},
+		"Shell Commands":     {},
+	}
+
+	// Extract and categorize strings
+	ascii := extractSuspiciousStrings(p.RawData, false)
+	unicode := extractSuspiciousStrings(p.RawData, true)
+	allStrings := append(ascii, unicode...)
+
+	if len(allStrings) == 0 {
+		fmt.Printf("%s No suspicious content detected\n", common.SymbolCheck)
+		fmt.Println()
+		return
+	}
+
+	// Categorize findings
+	for _, s := range allStrings {
+		categorized := false
+
+		// URLs and network indicators
+		if strings.Contains(s, "http://") || strings.Contains(s, "https://") ||
+			strings.Contains(s, "ftp://") || strings.Contains(s, "://") {
+			categories["URLs & Network"] = append(categories["URLs & Network"], s)
+			categorized = true
+		}
+
+		// File paths and executables
+		if strings.Contains(s, ".exe") || strings.Contains(s, ".dll") ||
+			strings.Contains(s, ".bat") || strings.Contains(s, ".scr") ||
+			strings.Contains(s, "C:\\") || strings.Contains(s, "\\\\") {
+			categories["File Paths"] = append(categories["File Paths"], s)
+			categorized = true
+		}
+
+		// System libraries
+		if strings.HasSuffix(strings.ToLower(s), ".dll") && !strings.Contains(s, "\\") {
+			categories["System Libraries"] = append(categories["System Libraries"], s)
+			categorized = true
+		}
+
+		// Debug/build information
+		if strings.Contains(s, "gcc") || strings.Contains(s, "buildroot") ||
+			strings.Contains(s, "libgcc") || strings.Contains(s, ".S") ||
+			strings.Contains(s, "debug") {
+			categories["Debug/Build Info"] = append(categories["Debug/Build Info"], s)
+			categorized = true
+		}
+
+		// Shell commands
+		if strings.Contains(s, "cmd ") || strings.Contains(s, "powershell") ||
+			strings.Contains(s, "bash") || strings.Contains(s, "sh -") {
+			categories["Shell Commands"] = append(categories["Shell Commands"], s)
+			categorized = true
+		}
+
+		// Encoded/obfuscated content (high entropy, special patterns)
+		if !categorized && (len(s) > 20 && isHighEntropyString(s) ||
+			strings.Contains(s, "\\x") || containsSuspiciousPattern(s)) {
+			categories["Encoded/Obfuscated"] = append(categories["Encoded/Obfuscated"], s)
+		}
+	}
+
+	// Display categorized results
+	totalFindings := 0
+	for category, items := range categories {
+		if len(items) > 0 {
+			totalFindings += len(items)
+			fmt.Printf("\n📋 %s (%d items):\n", category, len(items))
+
+			// Show all items
+			for _, item := range items {
+				// Truncate very long strings
+				if len(item) > 80 {
+					item = item[:77] + "..."
+				}
+				fmt.Printf("   • %s\n", item)
+			}
+		}
+	}
+
+	if totalFindings == 0 {
+		fmt.Printf("%s No categorizable suspicious content found\n", common.SymbolInfo)
+	} else {
+		fmt.Printf("\n📊 Total suspicious content found: %d items across %d categories\n",
+			totalFindings, countNonEmptyCategories(categories))
+	}
+	fmt.Println()
+}
+
+func countNonEmptyCategories(categories map[string][]string) int {
+	count := 0
+	for _, items := range categories {
+		if len(items) > 0 {
+			count++
+		}
+	}
+	return count
+}
+
+func isHighEntropyString(s string) bool {
+	if len(s) < 10 {
+		return false
+	}
+
+	charCount := make(map[rune]int)
+	for _, r := range s {
+		charCount[r]++
 	}
 
 	// Calculate entropy
 	entropy := 0.0
-	length := float64(len(data))
-
-	for _, count := range freq {
+	length := float64(len(s))
+	for _, count := range charCount {
 		if count > 0 {
 			p := float64(count) / length
 			entropy -= p * math.Log2(p)
 		}
 	}
 
-	return entropy
+	return entropy > 4.5 // High entropy threshold
 }
 
-// Analyze provides comprehensive analysis of the PE file
-func (p *PEFile) Analyze() error {
-	// Calculate entropy and packing detection for all sections
-	p.calculateSectionEntropy()
-	p.IsPacked = p.detectPacking()
-
-	fmt.Printf("=== PE File Analysis: %s ===\n", p.FileName)
-
-	// Basic file information
-	fmt.Printf("File Format: PE (%s-bit)\n", func() string {
-		if p.Is64Bit {
-			return "64"
-		}
-		return "32"
-	}())
-	fmt.Printf("File Size: %d bytes (%.2f MB)\n", p.FileSize, float64(p.FileSize)/(1024*1024))
-	fmt.Printf("Image Base: 0x%X\n", p.ImageBase)
-	fmt.Printf("Entry Point: 0x%X\n", p.EntryPoint)
-	fmt.Printf("Size of Image: %d bytes\n", p.SizeOfImage)
-	fmt.Printf("Size of Headers: %d bytes\n", p.SizeOfHeaders)
-
-	// File type and characteristics
-	fileType := p.GetFileType()
-	fmt.Printf("File Type: %s\n", fileType)
-
-	// Decode subsystem
-	subsystemName := p.getSubsystemName()
-	fmt.Printf("Subsystem: %d (%s)\n", p.Subsystem, subsystemName)
-
-	// Decode DLL characteristics
-	dllChars := p.decodeDLLCharacteristics()
-	fmt.Printf("DLL Characteristics: 0x%X (%s)\n", p.DllCharacteristics, dllChars)
-
-	// Security features
-	fmt.Printf("Checksum: 0x%X", p.Checksum)
-	if p.Checksum == 0 {
-		fmt.Printf(" (not set)")
-	}
-	fmt.Println()
-
-	if p.HasOverlay {
-		fmt.Printf("Overlay: Present (offset: 0x%X, size: %d bytes)\n", p.OverlayOffset, p.OverlaySize)
-	} else {
-		fmt.Printf("Overlay: Not present\n")
+func containsSuspiciousPattern(s string) bool {
+	// Common shellcode patterns, hex patterns, etc.
+	suspiciousPatterns := []string{
+		"\\x", "0x", "%x", "\\u", "\\U",
+		"[\\", "\\]", "^_", "A\\A", "\\$",
 	}
 
-	if p.SignatureOffset > 0 {
-		fmt.Printf("Digital Signature: Present (offset: 0x%X, size: %d bytes)\n", p.SignatureOffset, p.SignatureSize)
-	} else {
-		fmt.Printf("Digital Signature: Not present\n")
-	}
-
-	// Packing analysis
-	fmt.Printf("Likely Packed: %t", p.IsPacked)
-	if p.IsPacked {
-		fmt.Printf(" (high entropy in executable sections)")
-	}
-	fmt.Println()
-
-	// Sections analysis
-	fmt.Printf("\n=== Section Analysis ===\n")
-	fmt.Printf("Number of sections: %d\n", len(p.Sections))
-
-	totalSectionSize := int64(0)
-	maxEntropy := 0.0
-	minEntropy := 8.0
-	avgEntropy := 0.0
-
-	for i, section := range p.Sections {
-		fmt.Printf("Section %d: %s\n", i+1, section.Name)
-		fmt.Printf("  Virtual Address: 0x%08X\n", section.VirtualAddress)
-		fmt.Printf("  Virtual Size: %d bytes\n", section.VirtualSize)
-		fmt.Printf("  File Offset: 0x%08X\n", section.Offset)
-		fmt.Printf("  File Size: %d bytes\n", section.Size)
-		fmt.Printf("  Flags: 0x%08X", section.Flags)
-
-		// Decode section flags
-		flags := p.decodeSectionFlags(section.Flags)
-		if len(flags) > 0 {
-			fmt.Printf(" (%s)", flags)
-		}
-		fmt.Println()
-
-		fmt.Printf("  Entropy: %.2f", section.Entropy)
-		if section.Entropy > 7.5 {
-			fmt.Printf(" (HIGH - possibly packed/encrypted)")
-		} else if section.Entropy < 1.0 {
-			fmt.Printf(" (LOW - mostly zeros/repeated data)")
-		}
-		fmt.Println()
-
-		// Update entropy statistics
-		if section.Entropy > maxEntropy {
-			maxEntropy = section.Entropy
-		}
-		if section.Entropy < minEntropy {
-			minEntropy = section.Entropy
-		}
-		avgEntropy += section.Entropy
-
-		fmt.Printf("  MD5: %s\n", section.MD5Hash)
-		fmt.Printf("  SHA1: %s\n", section.SHA1Hash)
-		fmt.Printf("  SHA256: %s\n", section.SHA256Hash)
-		fmt.Println()
-
-		totalSectionSize += section.Size
-	}
-
-	if len(p.Sections) > 0 {
-		avgEntropy /= float64(len(p.Sections))
-		fmt.Printf("Entropy Statistics: Min=%.2f, Max=%.2f, Avg=%.2f\n", minEntropy, maxEntropy, avgEntropy)
-	}
-
-	// Space analysis
-	fmt.Printf("\n=== Space Analysis ===\n")
-	fmt.Printf("Total section size: %d bytes\n", totalSectionSize)
-	fmt.Printf("File overhead: %d bytes\n", p.FileSize-totalSectionSize)
-
-	// Calculate file structure efficiency
-	efficiency := float64(totalSectionSize) / float64(p.FileSize) * 100
-	fmt.Printf("File efficiency: %.1f%% (section data vs total file size)\n", efficiency)
-
-	// Check for space between sections and headers for new sections
-	if err := p.analyzeSpaceForNewSections(); err != nil {
-		fmt.Printf("Warning: Could not analyze space for new sections: %v\n", err)
-	}
-
-	// Directory entries analysis
-	p.analyzeDirectoryEntries() // Import analysis
-	if len(p.Imports) > 0 {
-		fmt.Printf("\n=== Import Analysis ===\n")
-		fmt.Printf("Imported libraries: %d\n", len(p.Imports))
-		totalFunctions := 0
-		for _, imp := range p.Imports {
-			fmt.Printf("  %s (%d functions)\n", imp.LibraryName, len(imp.Functions))
-			totalFunctions += len(imp.Functions)
-		}
-		fmt.Printf("Total imported functions: %d\n", totalFunctions)
-
-		// Show most commonly imported functions
-		fmt.Println("Most imported functions:")
-		funcCount := make(map[string]int)
-		for _, imp := range p.Imports {
-			for _, fn := range imp.Functions {
-				funcCount[fn]++
-			}
-		}
-		// Print top 5 most common functions
-		count := 0
-		for fn, cnt := range funcCount {
-			if cnt > 1 && count < 5 {
-				fmt.Printf("  %s (imported %d times)\n", fn, cnt)
-				count++
-			}
-		}
-	}
-
-	// Export analysis
-	if len(p.Exports) > 0 {
-		fmt.Printf("\n=== Export Analysis ===\n")
-		fmt.Printf("Exported functions: %d\n", len(p.Exports))
-		for i, exp := range p.Exports {
-			if i < 10 { // Show only first 10 to avoid clutter
-				fmt.Printf("  %s (ordinal: %d, RVA: 0x%08X)\n", exp.Name, exp.Ordinal, exp.RVA)
-			}
-		}
-		if len(p.Exports) > 10 {
-			fmt.Printf("  ... and %d more exports\n", len(p.Exports)-10)
-		}
-	}
-
-	return nil
-}
-
-// calculateSectionEntropy calculates entropy for all sections
-func (p *PEFile) calculateSectionEntropy() {
-	for i, section := range p.Sections {
-		if section.Size > 0 && section.Offset+section.Size <= int64(len(p.RawData)) {
-			sectionData := p.RawData[section.Offset : section.Offset+section.Size]
-			p.Sections[i].Entropy = calculateEntropy(sectionData)
-		}
-	}
-}
-
-// detectPacking analyzes entropy to detect packed executables
-func (p *PEFile) detectPacking() bool {
-	for _, section := range p.Sections {
-		if (section.Flags&pe.IMAGE_SCN_CNT_CODE) != 0 && section.Entropy > 7.0 {
+	for _, pattern := range suspiciousPatterns {
+		if strings.Contains(s, pattern) {
 			return true
 		}
+	}
+
+	return false
+}
+
+func extractSuspiciousStrings(data []byte, unicode bool) []string {
+	var results []string
+	var minLen = 8
+	var current []byte
+	for i := 0; i < len(data); i++ {
+		b := data[i]
+		if unicode {
+			if i+1 < len(data) && data[i+1] == 0 && b >= 32 && b < 127 {
+				current = append(current, b)
+				i++ // skip null
+			} else if len(current) >= minLen {
+				s := string(current)
+				if isSuspiciousString(s) {
+					results = append(results, "[UNICODE] "+s)
+				}
+				current = nil
+			} else {
+				current = nil
+			}
+		} else {
+			if b >= 32 && b < 127 {
+				current = append(current, b)
+			} else if len(current) >= minLen {
+				s := string(current)
+				if isSuspiciousString(s) {
+					results = append(results, s)
+				}
+				current = nil
+			} else {
+				current = nil
+			}
+		}
+	}
+	// Check last
+	if len(current) >= minLen {
+		s := string(current)
+		if isSuspiciousString(s) {
+			if unicode {
+				results = append(results, "[UNICODE] "+s)
+			} else {
+				results = append(results, s)
+			}
+		}
+	}
+	return results
+}
+
+func isSuspiciousString(s string) bool {
+	if len(s) < 8 {
+		return false
+	}
+	// URL, path, powershell, exe, shellcode pattern
+	if strings.Contains(s, "http://") || strings.Contains(s, "https://") || strings.Contains(s, ".exe") || strings.Contains(s, "cmd ") || strings.Contains(s, "powershell") || strings.Contains(s, ".dll") || strings.Contains(s, ".bat") || strings.Contains(s, ".scr") || strings.Contains(s, "\\") {
+		return true
+	}
+	// Hex shellcode
+	if strings.HasPrefix(s, "\\x") && len(s) > 12 {
+		return true
 	}
 	return false
 }
 
-// getSubsystemName returns human-readable subsystem name
-func (p *PEFile) getSubsystemName() string {
-	switch p.Subsystem {
-	case 1:
-		return "Native"
-	case 2:
-		return "Windows GUI"
-	case 3:
-		return "Windows Console"
-	case 5:
-		return "OS/2 Console"
-	case 7:
-		return "POSIX Console"
-	case 8:
-		return "Native Win9x Driver"
-	case 9:
-		return "Windows CE GUI"
-	case 10:
-		return "EFI Application"
-	case 11:
-		return "EFI Boot Service Driver"
-	case 12:
-		return "EFI Runtime Driver"
-	case 13:
-		return "EFI ROM"
-	case 14:
-		return "Xbox"
-	case 16:
-		return "Windows Boot Application"
-	default:
-		return "Unknown"
+func (p *PEFile) detectLanguageAndCompiler() (language, compiler string) {
+	// Check for Go runtime signatures
+	if p.detectGoLanguage() {
+		language = "Go"
+		compiler = p.detectGoCompiler()
+		return
 	}
+
+	// Check for .NET runtime
+	if p.detectDotNetLanguage() {
+		language = ".NET"
+		compiler = p.detectDotNetCompiler()
+		return
+	}
+
+	// Check for C/C++ runtime libraries
+	if p.detectCppLanguage() {
+		language = "C/C++"
+		compiler = p.detectCppCompiler()
+		return
+	}
+
+	// Check for Rust signatures
+	if p.detectRustLanguage() {
+		language = "Rust"
+		compiler = "rustc"
+		return
+	}
+
+	// Check for Delphi/Pascal
+	if p.detectDelphiLanguage() {
+		language = "Delphi/Pascal"
+		compiler = p.detectDelphiCompiler()
+		return
+	}
+
+	// Check for Visual Basic
+	if p.detectVBLanguage() {
+		language = "Visual Basic"
+		compiler = "VB Compiler"
+		return
+	}
+
+	// Check by imports and sections for other languages
+	language, compiler = p.detectByImportsAndSections()
+	return
 }
 
-// decodeDLLCharacteristics returns human-readable DLL characteristics
-func (p *PEFile) decodeDLLCharacteristics() string {
-	var characteristics []string
-
-	if p.DllCharacteristics&0x0001 != 0 {
-		characteristics = append(characteristics, "PROCESS_INIT")
-	}
-	if p.DllCharacteristics&0x0002 != 0 {
-		characteristics = append(characteristics, "PROCESS_TERM")
-	}
-	if p.DllCharacteristics&0x0004 != 0 {
-		characteristics = append(characteristics, "THREAD_INIT")
-	}
-	if p.DllCharacteristics&0x0008 != 0 {
-		characteristics = append(characteristics, "THREAD_TERM")
-	}
-	if p.DllCharacteristics&0x0040 != 0 {
-		characteristics = append(characteristics, "DYNAMIC_BASE")
-	}
-	if p.DllCharacteristics&0x0080 != 0 {
-		characteristics = append(characteristics, "FORCE_INTEGRITY")
-	}
-	if p.DllCharacteristics&0x0100 != 0 {
-		characteristics = append(characteristics, "NX_COMPAT")
-	}
-	if p.DllCharacteristics&0x0200 != 0 {
-		characteristics = append(characteristics, "NO_ISOLATION")
-	}
-	if p.DllCharacteristics&0x0400 != 0 {
-		characteristics = append(characteristics, "NO_SEH")
-	}
-	if p.DllCharacteristics&0x0800 != 0 {
-		characteristics = append(characteristics, "NO_BIND")
-	}
-	if p.DllCharacteristics&0x1000 != 0 {
-		characteristics = append(characteristics, "APPCONTAINER")
-	}
-	if p.DllCharacteristics&0x2000 != 0 {
-		characteristics = append(characteristics, "WDM_DRIVER")
-	}
-	if p.DllCharacteristics&0x4000 != 0 {
-		characteristics = append(characteristics, "GUARD_CF")
-	}
-	if p.DllCharacteristics&0x8000 != 0 {
-		characteristics = append(characteristics, "TERMINAL_SERVER_AWARE")
-	}
-
-	if len(characteristics) == 0 {
-		return "None"
-	}
-
-	result := characteristics[0]
-	for i := 1; i < len(characteristics); i++ {
-		result += ", " + characteristics[i]
-	}
-	return result
-}
-
-// decodeSectionFlags returns human-readable section flags
-func (p *PEFile) decodeSectionFlags(flags uint32) string {
-	var flagStrs []string
-
-	if flags&pe.IMAGE_SCN_CNT_CODE != 0 {
-		flagStrs = append(flagStrs, "CODE")
-	}
-	if flags&pe.IMAGE_SCN_CNT_INITIALIZED_DATA != 0 {
-		flagStrs = append(flagStrs, "INITIALIZED_DATA")
-	}
-	if flags&pe.IMAGE_SCN_CNT_UNINITIALIZED_DATA != 0 {
-		flagStrs = append(flagStrs, "UNINITIALIZED_DATA")
-	}
-	if flags&pe.IMAGE_SCN_MEM_EXECUTE != 0 {
-		flagStrs = append(flagStrs, "EXECUTABLE")
-	}
-	if flags&pe.IMAGE_SCN_MEM_READ != 0 {
-		flagStrs = append(flagStrs, "READABLE")
-	}
-	if flags&pe.IMAGE_SCN_MEM_WRITE != 0 {
-		flagStrs = append(flagStrs, "WRITABLE")
-	}
-	if flags&0x10000000 != 0 { // IMAGE_SCN_MEM_SHARED
-		flagStrs = append(flagStrs, "SHARED")
-	}
-	if flags&0x02000000 != 0 { // IMAGE_SCN_MEM_DISCARDABLE
-		flagStrs = append(flagStrs, "DISCARDABLE")
-	}
-
-	if len(flagStrs) == 0 {
-		return "None"
-	}
-
-	result := flagStrs[0]
-	for i := 1; i < len(flagStrs); i++ {
-		result += ", " + flagStrs[i]
-	}
-	return result
-}
-
-// analyzeDirectoryEntries provides detailed directory analysis
-func (p *PEFile) analyzeDirectoryEntries() {
-	fmt.Printf("\n=== Directory Entries ===\n")
-	directoryNames := []string{
-		"Export Table", "Import Table", "Resource Table", "Exception Table",
-		"Certificate Table", "Base Relocation Table", "Debug", "Architecture",
-		"Global Ptr", "TLS Table", "Load Config Table", "Bound Import",
-		"IAT", "Delay Import Descriptor", "COM+ Runtime Header", "Reserved",
-	}
-
-	entriesFound := 0
-	for i, dir := range p.Directories {
-		if dir.RVA != 0 || dir.Size != 0 {
-			name := "Unknown"
-			if i < len(directoryNames) {
-				name = directoryNames[i]
-			}
-			fmt.Printf("  %s: RVA=0x%08X, Size=%d bytes\n", name, dir.RVA, dir.Size)
-			entriesFound++
-		}
-	}
-
-	if entriesFound == 0 {
-		fmt.Printf("  No directory entries found (may need manual parsing)\n")
-	}
-}
-
-// analyzeSpaceForNewSections analyzes available space for adding new sections
-func (p *PEFile) analyzeSpaceForNewSections() error {
-	if len(p.RawData) < 100 {
-		return fmt.Errorf("PE file too small for analysis")
-	}
-
-	peHeaderOffset := int64(p.RawData[60]) | int64(p.RawData[61])<<8 | int64(p.RawData[62])<<16 | int64(p.RawData[63])<<24
-
-	// Read COFF header to get optional header size
-	optionalHeaderSize := uint16(p.RawData[peHeaderOffset+20]) | uint16(p.RawData[peHeaderOffset+21])<<8
-	sectionHeaderOffset := peHeaderOffset + 24 + int64(optionalHeaderSize)
-
-	// Calculate where section headers end
-	sectionHeaderTableSize := int64(len(p.Sections)) * 40
-	sectionHeaderTableEnd := sectionHeaderOffset + sectionHeaderTableSize
-
-	// Find first section offset
-	var firstSectionOffset int64 = 0x7FFFFFFF
+func (p *PEFile) detectGoLanguage() bool {
+	// Check for Go-specific sections
 	for _, section := range p.Sections {
-		if section.Offset < firstSectionOffset {
-			firstSectionOffset = section.Offset
+		if strings.Contains(section.Name, "zdebug_") ||
+			strings.Contains(section.Name, "debug_gdb_") ||
+			section.Name == ".symtab" {
+			return true
 		}
 	}
 
-	availableSpace := firstSectionOffset - sectionHeaderTableEnd
-
-	fmt.Printf("\n=== Section Header Space Analysis ===\n")
-	fmt.Printf("Section header table offset: 0x%X\n", sectionHeaderOffset)
-	fmt.Printf("Section header table ends at: 0x%X\n", sectionHeaderTableEnd)
-	fmt.Printf("First section offset: 0x%X\n", firstSectionOffset)
-	fmt.Printf("Available space for new headers: %d bytes\n", availableSpace)
-	fmt.Printf("Can fit %d more section headers\n", availableSpace/40)
-
-	if availableSpace >= 40 {
-		fmt.Printf("✓ There is space for at least one more section header\n")
-	} else {
-		fmt.Printf("✗ No space for additional section headers\n")
+	// Check for Go runtime imports
+	for _, imp := range p.Imports {
+		for _, fn := range imp.Functions {
+			if strings.Contains(fn, "runtime.") ||
+				strings.Contains(fn, "syscall.") ||
+				strings.Contains(fn, "go.") {
+				return true
+			}
+		}
 	}
 
-	return nil
+	// Check for Go strings in binary
+	dataStr := string(p.RawData)
+	goIndicators := []string{
+		"runtime.main", "runtime.goexit", "go.buildid",
+		"runtime.newproc", "runtime.morestack", "golang.org",
+	}
+
+	for _, indicator := range goIndicators {
+		if strings.Contains(dataStr, indicator) {
+			return true
+		}
+	}
+
+	return false
 }
 
-// AnalyzePE provides detailed analysis of PE file structure
-func (p *PEFile) AnalyzePE() error {
-	fmt.Printf("=== PE File Analysis: %s ===\n", p.FileName)
-	fmt.Printf("File size: %d bytes (%.2f MB)\n", p.FileSize, float64(p.FileSize)/(1024*1024))
-	fmt.Printf("Architecture: ")
-	if p.Is64Bit {
-		fmt.Println("64-bit")
-	} else {
-		fmt.Println("32-bit")
+func (p *PEFile) detectGoCompiler() string {
+	dataStr := string(p.RawData)
+
+	// Look for Go version strings
+	if strings.Contains(dataStr, "go1.21") {
+		return "Go 1.21.x"
+	} else if strings.Contains(dataStr, "go1.20") {
+		return "Go 1.20.x"
+	} else if strings.Contains(dataStr, "go1.19") {
+		return "Go 1.19.x"
+	} else if strings.Contains(dataStr, "go1.18") {
+		return "Go 1.18.x"
+	} else if strings.Contains(dataStr, "go1.") {
+		return "Go 1.x"
 	}
-	fmt.Printf("Entry point: 0x%08X\n", p.EntryPoint)
-	fmt.Printf("Image base: 0x%016X\n", p.ImageBase)
-	fmt.Printf("Size of image: 0x%08X (%d bytes)\n", p.SizeOfImage, p.SizeOfImage)
-	fmt.Printf("Size of headers: 0x%08X (%d bytes)\n", p.SizeOfHeaders, p.SizeOfHeaders)
 
-	// PE Header information
-	peHeaderOffset := int64(binary.LittleEndian.Uint32(p.RawData[60:64]))
-	optionalHeaderSize := binary.LittleEndian.Uint16(p.RawData[peHeaderOffset+20 : peHeaderOffset+22])
-	sectionHeaderOffset := peHeaderOffset + 4 + 20 + int64(optionalHeaderSize)
+	return "Go Compiler"
+}
 
-	fmt.Printf("\n=== Headers ===\n")
-	fmt.Printf("PE header offset: 0x%X\n", peHeaderOffset)
-	fmt.Printf("Optional header size: %d bytes\n", optionalHeaderSize)
-	fmt.Printf("Section header table offset: 0x%X\n", sectionHeaderOffset)
+func (p *PEFile) detectDotNetLanguage() bool {
+	// Check for .NET imports
+	for _, imp := range p.Imports {
+		dllLower := strings.ToLower(imp.LibraryName)
+		if strings.Contains(dllLower, "mscoree") ||
+			strings.Contains(dllLower, "mscorlib") ||
+			strings.Contains(dllLower, "system.") {
+			return true
+		}
+	}
 
-	// Section analysis
-	fmt.Printf("\n=== Sections (%d total) ===\n", len(p.Sections))
-	var firstSectionOffset int64 = 0x7FFFFFFF
+	// Check for .NET sections
+	for _, section := range p.Sections {
+		if section.Name == ".text" || section.Name == ".rsrc" || section.Name == ".reloc" {
+			// Check for .NET metadata in .text section
+			if section.Size > 0 && strings.Contains(string(p.RawData[section.Offset:section.Offset+min(section.Size, 1024)]), "RuntimeCompatibility") {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func (p *PEFile) detectDotNetCompiler() string {
+	dataStr := string(p.RawData)
+
+	if strings.Contains(dataStr, "Microsoft") && strings.Contains(dataStr, ".NET") {
+		if strings.Contains(dataStr, "Framework") {
+			return ".NET Framework"
+		} else if strings.Contains(dataStr, "Core") {
+			return ".NET Core"
+		} else if strings.Contains(dataStr, "5.0") || strings.Contains(dataStr, "6.0") || strings.Contains(dataStr, "7.0") {
+			return ".NET 5+"
+		}
+		return ".NET Compiler"
+	}
+
+	return ".NET Compiler"
+}
+
+func (p *PEFile) detectCppLanguage() bool {
+	// Check for C/C++ runtime imports
+	for _, imp := range p.Imports {
+		dllLower := strings.ToLower(imp.LibraryName)
+		if strings.Contains(dllLower, "msvcr") ||
+			strings.Contains(dllLower, "msvcp") ||
+			strings.Contains(dllLower, "ucrtbase") ||
+			strings.Contains(dllLower, "vcruntime") {
+			return true
+		}
+
+		for _, fn := range imp.Functions {
+			if strings.Contains(fn, "malloc") ||
+				strings.Contains(fn, "free") ||
+				strings.Contains(fn, "printf") ||
+				strings.Contains(fn, "__") {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func (p *PEFile) detectCppCompiler() string {
+	dataStr := string(p.RawData)
+
+	// Check for compiler signatures
+	if strings.Contains(dataStr, "Microsoft") && (strings.Contains(dataStr, "VC++") || strings.Contains(dataStr, "MSVC")) {
+		if strings.Contains(dataStr, "14.3") {
+			return "MSVC 2022"
+		} else if strings.Contains(dataStr, "14.2") {
+			return "MSVC 2019"
+		} else if strings.Contains(dataStr, "14.1") {
+			return "MSVC 2017"
+		}
+		return "Microsoft Visual C++"
+	}
+
+	if strings.Contains(dataStr, "GCC") || strings.Contains(dataStr, "gcc") {
+		return "GCC"
+	}
+
+	if strings.Contains(dataStr, "clang") || strings.Contains(dataStr, "LLVM") {
+		return "Clang/LLVM"
+	}
+
+	if strings.Contains(dataStr, "MinGW") {
+		return "MinGW"
+	}
+
+	// Check imports for specific compiler patterns
+	for _, imp := range p.Imports {
+		if strings.Contains(strings.ToLower(imp.LibraryName), "msvcr") {
+			return "Microsoft Visual C++"
+		}
+	}
+
+	return "C/C++ Compiler"
+}
+
+func (p *PEFile) detectRustLanguage() bool {
+	dataStr := string(p.RawData)
+
+	rustIndicators := []string{
+		"rust_", "rustc", "std::panic", "core::panic",
+		"alloc::", "std::thread", "__rust_",
+	}
+
+	for _, indicator := range rustIndicators {
+		if strings.Contains(dataStr, indicator) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (p *PEFile) detectDelphiLanguage() bool {
+	dataStr := string(p.RawData)
+
+	delphiIndicators := []string{
+		"Borland", "CodeGear", "Embarcadero", "TObject",
+		"System.pas", "SysUtils", "Classes.pas",
+	}
+
+	for _, indicator := range delphiIndicators {
+		if strings.Contains(dataStr, indicator) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (p *PEFile) detectDelphiCompiler() string {
+	dataStr := string(p.RawData)
+
+	if strings.Contains(dataStr, "Embarcadero") {
+		return "Embarcadero Delphi"
+	} else if strings.Contains(dataStr, "CodeGear") {
+		return "CodeGear Delphi"
+	} else if strings.Contains(dataStr, "Borland") {
+		return "Borland Delphi"
+	}
+
+	return "Delphi Compiler"
+}
+
+func (p *PEFile) detectVBLanguage() bool {
+	dataStr := string(p.RawData)
+
+	vbIndicators := []string{
+		"VB5!", "VB6!", "MSVBVM", "oleaut32", "COMCTL32",
+	}
+
+	for _, indicator := range vbIndicators {
+		if strings.Contains(dataStr, indicator) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (p *PEFile) detectByImportsAndSections() (language, compiler string) {
+	// Check for specific DLL patterns
+	for _, imp := range p.Imports {
+		dllLower := strings.ToLower(imp.LibraryName)
+
+		// Python
+		if strings.Contains(dllLower, "python") {
+			return "Python", "Python Runtime"
+		}
+
+		// Java (JNI)
+		if strings.Contains(dllLower, "jvm") || strings.Contains(dllLower, "java") {
+			return "Java", "Java Runtime"
+		}
+
+		// Node.js/JavaScript
+		if strings.Contains(dllLower, "node") || strings.Contains(dllLower, "v8") {
+			return "JavaScript", "Node.js/V8"
+		}
+	}
+
+	// Check version info for additional clues
+	versionInfo := p.VersionInfo()
+	if len(versionInfo) > 0 {
+		for key, value := range versionInfo {
+			keyLower := strings.ToLower(key)
+			valueLower := strings.ToLower(value)
+
+			if strings.Contains(keyLower, "language") || strings.Contains(valueLower, "language") {
+				if strings.Contains(valueLower, "c++") {
+					return "C++", "C++ Compiler"
+				} else if strings.Contains(valueLower, "c#") {
+					return "C#", ".NET Compiler"
+				}
+			}
+		}
+	}
+
+	return "", ""
+}
+
+func (p *PEFile) printComprehensiveSecurityAnalysis() {
+	fmt.Println("🔐 SECURITY & PROTECTION ANALYSIS")
+	fmt.Println("══════════════════════════════════")
+
+	// === BINARY PROTECTION FEATURES ===
+	dllChars := p.DllCharacteristics()
+
+	// ASLR (Address Space Layout Randomization)
+	aslrEnabled := (dllChars & 0x0040) != 0
+	fmt.Printf("ASLR:               %s %s\n",
+		map[bool]string{true: common.SymbolCheck, false: common.SymbolCross}[aslrEnabled],
+		map[bool]string{true: "Enabled", false: "Disabled"}[aslrEnabled])
+
+	// DEP/NX (Data Execution Prevention)
+	depEnabled := (dllChars & 0x0100) != 0
+	fmt.Printf("DEP/NX:             %s %s\n",
+		map[bool]string{true: common.SymbolCheck, false: common.SymbolCross}[depEnabled],
+		map[bool]string{true: "Enabled", false: "Disabled"}[depEnabled])
+
+	// Control Flow Guard
+	cfgEnabled := (dllChars & 0x4000) != 0
+	fmt.Printf("Control Flow Guard: %s %s\n",
+		map[bool]string{true: common.SymbolCheck, false: common.SymbolCross}[cfgEnabled],
+		map[bool]string{true: "Enabled", false: "Disabled"}[cfgEnabled])
+
+	// SEH (Structured Exception Handling)
+	sehEnabled := (dllChars & 0x0400) == 0 // NO_SEH flag is inverted
+	fmt.Printf("SEH Protection:     %s %s\n",
+		map[bool]string{true: common.SymbolCheck, false: common.SymbolCross}[sehEnabled],
+		map[bool]string{true: "Enabled", false: "Disabled"}[sehEnabled])
+
+	// === CODE SIGNING & CERTIFICATES ===
+	directories := p.Directories()
+	hasCertificate := len(directories) > 4 && (directories[4].RVA != 0 || directories[4].Size != 0)
+
+	fmt.Printf("Digital Signature:  ")
+	if hasCertificate {
+		fmt.Printf("%s Present (%d bytes)\n", common.SymbolCheck, directories[4].Size)
+		fmt.Printf("Certificate Status: %s Signed binary (verification required)\n", common.SymbolInfo)
+	} else {
+		fmt.Printf("%s Not signed\n", common.SymbolWarn)
+		fmt.Printf("Certificate Status: %s Unsigned binary (higher risk)\n", common.SymbolWarn)
+	}
+
+	// === PACKING ANALYSIS ===
+	packingScore := p.calculatePackingScore()
+	fmt.Printf("\n📦 PACKING ANALYSIS:\n")
+	fmt.Printf("═══════════════════\n")
+
+	fmt.Printf("Packing Score:      %d/100 ", packingScore)
+	if packingScore >= 70 {
+		fmt.Printf("(%s Likely packed/encrypted)\n", common.SymbolCross)
+	} else if packingScore >= 40 {
+		fmt.Printf("(%s Possibly packed)\n", common.SymbolWarn)
+	} else {
+		fmt.Printf("(%s Probably not packed)\n", common.SymbolCheck)
+	}
+
+	// Entropy statistics
+	minEntropy, maxEntropy, avgEntropy := p.getEntropyStats()
+	fmt.Printf("Entropy Analysis:   Min=%.2f, Max=%.2f, Avg=%.2f\n", minEntropy, maxEntropy, avgEntropy)
+
+	// Count high entropy sections (excluding debug)
+	highEntropySections := 0
+	for _, section := range p.Sections {
+		if isDebugSection(section.Name) {
+			continue
+		}
+		if section.Entropy > 7.5 {
+			highEntropySections++
+		}
+	}
+	fmt.Printf("High Entropy Secs:  %d sections > 7.5 entropy (excluding debug)\n", highEntropySections)
+
+	// === OVERALL SECURITY SCORE ===
+	securityScore := 0
+	if aslrEnabled {
+		securityScore += 20
+	}
+	if depEnabled {
+		securityScore += 20
+	}
+	if cfgEnabled {
+		securityScore += 25
+	}
+	if sehEnabled {
+		securityScore += 15
+	}
+	if hasCertificate {
+		securityScore += 20
+	}
+
+	fmt.Printf("Security Score:     %d/100 ", securityScore)
+	if securityScore >= 80 {
+		fmt.Printf("(%s Excellent)\n", common.SymbolCheck)
+	} else if securityScore >= 60 {
+		fmt.Printf("(%s Good)\n", common.SymbolInfo)
+	} else if securityScore >= 40 {
+		fmt.Printf("(%s Fair)\n", common.SymbolWarn)
+	} else {
+		fmt.Printf("(%s Poor)\n", common.SymbolCross)
+	}
+
+	fmt.Println()
+}
+
+func (p *PEFile) printResourceAnalysis() {
+	fmt.Println("📦 RESOURCE ANALYSIS")
+	fmt.Println("═══════════════════")
+
+	// Check if resource directory exists
+	directories := p.Directories()
+	if len(directories) > 2 && (directories[2].RVA != 0 || directories[2].Size != 0) {
+		fmt.Printf("Resource Table:  %s Present (RVA: 0x%08X, Size: %d)\n",
+			common.SymbolCheck, directories[2].RVA, directories[2].Size)
+
+		fmt.Printf("Resource Types:  Analysis requires parsing (common: Icons, Version, Manifests)\n")
+	} else {
+		fmt.Printf("Resource Table:  %s Not present\n", common.SymbolInfo)
+	}
+	fmt.Println()
+}
+
+func (p *PEFile) printImportHashAnalysis() {
+	fmt.Println("🔍 IMPORT HASH ANALYSIS")
+	fmt.Println("══════════════════════")
+
+	if len(p.Imports) == 0 {
+		fmt.Printf("Import Hash:     %s No imports to analyze\n", common.SymbolInfo)
+		fmt.Println()
+		return
+	}
+
+	// Create normalized import list for hashing
+	var importList []string
+	for _, imp := range p.Imports {
+		normalizedDLL := strings.ToLower(strings.TrimSuffix(imp.LibraryName, ".dll"))
+		for _, fn := range imp.Functions {
+			if fn != "" {
+				importList = append(importList, normalizedDLL+"."+strings.ToLower(fn))
+			}
+		}
+	}
+
+	sort.Strings(importList)
+
+	// Simple hash calculation (for demonstration)
+	importString := strings.Join(importList, ",")
+	fmt.Printf("Import Count:    %d unique functions\n", len(importList))
+	fmt.Printf("Import String:   %s...\n", common.TruncateString(importString, 60))
+
+	// Calculate some basic metrics
+	uniqueDLLs := len(p.Imports)
+	avgFuncsPerDLL := float64(len(importList)) / float64(uniqueDLLs)
+
+	fmt.Printf("DLL Diversity:   %d libraries\n", uniqueDLLs)
+	fmt.Printf("Avg Funcs/DLL:   %.1f\n", avgFuncsPerDLL)
+
+	// Check for suspicious import patterns
+	suspiciousAPIs := map[string]string{
+		"virtualalloc":       "Memory allocation (often used in code injection)",
+		"virtualprotect":     "Memory protection modification (shellcode execution)",
+		"createprocess":      "Process creation (lateral movement/execution)",
+		"writeprocessmemory": "Cross-process memory writing (process injection)",
+		"readprocessmemory":  "Cross-process memory reading (information theft)",
+		"createremotethread": "Remote thread creation (DLL injection)",
+		"loadlibrary":        "Dynamic library loading (reflective DLL loading)",
+		"getprocaddress":     "API address resolution (API hashing/obfuscation)",
+		"createfile":         "File creation/modification (persistence/data theft)",
+		"writefile":          "File writing (data exfiltration/dropper)",
+		"regsetvalue":        "Registry modification (persistence)",
+		"regcreatekey":       "Registry key creation (persistence)",
+	}
+
+	suspiciousCount := 0
+	var detectedAPIs []string
+	for _, imp := range importList {
+		for suspicious, reason := range suspiciousAPIs {
+			if strings.Contains(imp, suspicious) {
+				suspiciousCount++
+				detectedAPIs = append(detectedAPIs, fmt.Sprintf("%s (%s)", imp, reason))
+				break
+			}
+		}
+	}
+
+	if suspiciousCount > 0 {
+		fmt.Printf("Suspicious APIs: %s %d potentially risky functions\n",
+			common.SymbolWarn, suspiciousCount)
+		fmt.Println("DETECTED RISKY APIs:")
+		for _, api := range detectedAPIs {
+			fmt.Printf("   • %s\n", api)
+		}
+	} else {
+		fmt.Printf("Suspicious APIs: %s No obviously risky functions detected\n",
+			common.SymbolCheck)
+	}
+	fmt.Println()
+}
+
+func (p *PEFile) printNetworkIndicators() {
+	fmt.Println("🌐 NETWORK INDICATORS")
+	fmt.Println("═══════════════════")
+
+	// Check for network-related imports
+	networkAPIs := []string{
+		"ws2_32.dll", "wininet.dll", "urlmon.dll", "winhttp.dll",
+	}
+
+	var networkDLLs []string
+	var networkFunctions []string
+
+	for _, imp := range p.Imports {
+		dllName := strings.ToLower(imp.LibraryName)
+		for _, netDLL := range networkAPIs {
+			if strings.Contains(dllName, strings.TrimSuffix(netDLL, ".dll")) {
+				networkDLLs = append(networkDLLs, imp.LibraryName)
+
+				// Look for specific network functions
+				networkFuncs := []string{
+					"internetopen", "internetconnect", "httpopen", "send", "recv",
+					"socket", "connect", "bind", "listen", "accept",
+				}
+
+				for _, fn := range imp.Functions {
+					fnLower := strings.ToLower(fn)
+					for _, netFunc := range networkFuncs {
+						if strings.Contains(fnLower, netFunc) {
+							networkFunctions = append(networkFunctions, fn)
+							break
+						}
+					}
+				}
+				break
+			}
+		}
+	}
+
+	if len(networkDLLs) > 0 {
+		fmt.Printf("Network DLLs:    %s %d found: %v\n",
+			common.SymbolWarn, len(networkDLLs), networkDLLs)
+		if len(networkFunctions) > 0 {
+			fmt.Printf("Network Funcs:   %d functions: %v\n",
+				len(networkFunctions), networkFunctions)
+		}
+	} else {
+		fmt.Printf("Network DLLs:    %s None detected\n", common.SymbolCheck)
+	}
+	fmt.Println()
+}
+
+func (p *PEFile) validateSectionLayout(issues, warnings *[]string) {
+	if len(p.Sections) == 0 {
+		return
+	}
+
+	// Basic section validation
 	for i, section := range p.Sections {
-		fmt.Printf("[%2d] %-15s Offset: 0x%08X  Size: %8d  VAddr: 0x%08X  VSize: %8d  Flags: 0x%08X\n",
-			i, section.Name, section.Offset, section.Size, section.VirtualAddress, section.VirtualSize, section.Flags)
-
-		// Show entropy and hashes for non-empty sections
-		if section.Size > 0 {
-			fmt.Printf("     Entropy: %6.4f  MD5: %s\n", section.Entropy, section.MD5Hash)
-			fmt.Printf("     SHA1: %s\n", section.SHA1Hash)
-			fmt.Printf("     SHA256: %s\n", section.SHA256Hash)
-		}
-
-		if section.Offset < firstSectionOffset {
-			firstSectionOffset = section.Offset
+		// Check if section extends beyond file
+		if section.Offset+section.Size > int64(len(p.RawData)) {
+			*issues = append(*issues, fmt.Sprintf("Section %d (%s): Extends beyond file end",
+				i, section.Name))
 		}
 	}
+}
 
-	// Calculate space for additional sections
-	sectionHeaderTableSize := int64(len(p.Sections)) * 40
-	sectionHeaderTableEnd := sectionHeaderOffset + sectionHeaderTableSize
-	availableSpace := firstSectionOffset - sectionHeaderTableEnd
-
-	fmt.Printf("\n=== Section Header Analysis ===\n")
-	fmt.Printf("Section header table size: %d bytes\n", sectionHeaderTableSize)
-	fmt.Printf("Section header table ends at: 0x%X\n", sectionHeaderTableEnd)
-	fmt.Printf("First section starts at: 0x%X\n", firstSectionOffset)
-	fmt.Printf("Available space for new headers: %d bytes\n", availableSpace)
-	fmt.Printf("Can fit %d more section headers\n", availableSpace/40)
-
-	if availableSpace >= 40 {
-		fmt.Println("✓ Space available for additional section headers")
-	} else {
-		fmt.Println("✗ No space for additional section headers")
-	}
-
-	// Check for overlay
-	if p.HasOverlay {
-		fmt.Printf("\n=== Overlay Detected ===\n")
-		fmt.Printf("Overlay offset: 0x%X\n", p.OverlayOffset)
-		fmt.Printf("Overlay size: %d bytes\n", p.OverlaySize)
-	}
-
-	// Import/Export analysis
-	if len(p.Imports) > 0 {
-		fmt.Printf("\n=== Imports (%d libraries) ===\n", len(p.Imports))
-		for _, imp := range p.Imports {
-			fmt.Printf("%-30s (%d functions)\n", imp.LibraryName, len(imp.Functions))
+func (p *PEFile) validateRVAMappings(issues, warnings *[]string) {
+	// Basic RVA validation
+	if p.PE != nil && len(p.Sections) > 0 {
+		// Check if sections have reasonable RVAs
+		for i, section := range p.Sections {
+			if section.VirtualAddress > 0x80000000 {
+				*warnings = append(*warnings, fmt.Sprintf("Section %d: Unusually large RVA (0x%X)", i, section.VirtualAddress))
+			}
 		}
 	}
+}
 
-	if len(p.Exports) > 0 {
-		fmt.Printf("\n=== Exports (%d functions) ===\n", len(p.Exports))
-		for _, exp := range p.Exports {
-			fmt.Printf("%-30s Ordinal: %d  RVA: 0x%08X\n", exp.Name, exp.Ordinal, exp.RVA)
+func (p *PEFile) validateDataDirectories(issues, warnings *[]string) {
+	directories := p.Directories()
+
+	for i, dir := range directories {
+		if dir.RVA == 0 && dir.Size == 0 {
+			continue // Empty directory is fine
+		}
+
+		// Check directory size reasonableness
+		if dir.Size > uint32(len(p.RawData))/2 {
+			*warnings = append(*warnings, fmt.Sprintf("Directory %d: Unusually large size (%d bytes)", i, dir.Size))
 		}
 	}
-
-	// Security features
-	fmt.Printf("\n=== Security Features ===\n")
-	if p.SignatureSize > 0 {
-		fmt.Printf("✓ Digital signature present (%d bytes)\n", p.SignatureSize)
-	} else {
-		fmt.Println("✗ No digital signature")
-	}
-
-	if p.IsPacked {
-		fmt.Println("⚠ File appears to be packed/compressed")
-	} else {
-		fmt.Println("✓ File appears unpacked")
-	}
-
-	return nil
 }
