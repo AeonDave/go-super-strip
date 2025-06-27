@@ -214,13 +214,21 @@ func runOperations(config *Configuration) error {
 	}
 
 	// Execute operations in strict order:
-	// 1. Strip/Compact (can be combined)
-	// 2. Obfuscate
-	// 3. Regex
-	// 4. Insert (always last)
+	// 1. Insert (always first - before PE structure gets corrupted)
+	// 2. Strip/Compact (can be combined)
+	// 3. Obfuscate
+	// 4. Regex
 	var operations []string
 
-	// Step 1: Strip and/or Compact operations
+	// Step 1: Insert operations (always first - while PE structure is intact)
+	if config.Insert != "" {
+		if err := runInsert(config, isPE, isELF); err != nil {
+			return err
+		}
+		operations = append(operations, "insert")
+	}
+
+	// Step 2: Strip and/or Compact operations
 	if config.Strip || config.Compact {
 		if err := runStripCompact(config, isPE, isELF); err != nil {
 			return fmt.Errorf("stripping/compact operation failed: %v", err)
@@ -235,7 +243,7 @@ func runOperations(config *Configuration) error {
 		}
 	}
 
-	// Step 2: Obfuscate operations
+	// Step 3: Obfuscate operations
 	if config.Obfuscate {
 		if err := runObfuscate(config, isPE, isELF); err != nil {
 			return err
@@ -243,20 +251,12 @@ func runOperations(config *Configuration) error {
 		operations = append(operations, "obfuscate")
 	}
 
-	// Step 3: Regex operations
+	// Step 4: Regex operations
 	if config.Regex != "" {
 		if err := runRegex(config, isPE, isELF); err != nil {
 			return err
 		}
 		operations = append(operations, "regex")
-	}
-
-	// Step 4: Insert operations (always last)
-	if config.Insert != "" {
-		if err := runInsert(config, isPE, isELF); err != nil {
-			return err
-		}
-		operations = append(operations, "insert")
 	}
 
 	if len(operations) > 0 {
@@ -568,7 +568,7 @@ USAGE:
 
 DESCRIPTION:
 	Process PE/ELF executables with stripping, obfuscation, and analysis capabilities.
-	Operations are performed in strict order: strip -> compact -> obfuscate -> regex -> insert
+	Operations are performed in strict order: insert -> strip -> compact -> obfuscate -> regex
 
 OPTIONS:
 	-s, --strip          Strip debug and symbol sections

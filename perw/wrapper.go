@@ -245,8 +245,13 @@ func AddHexSection(filePath, sectionName, sourceFile, password string) *common.O
 		return common.NewSkipped(fmt.Sprintf("failed to add hex section: %v", err))
 	}
 
-	if err := peFile.Save(true, int64(len(peFile.RawData))); err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to write changes: %v", err))
+	// For fallback mode (corrupted files), data was already written directly to file
+	// Skip Save() to avoid any potential corruption
+	if !peFile.usedFallbackMode {
+		updateHeaders := true
+		if err := peFile.Save(updateHeaders, int64(len(peFile.RawData))); err != nil {
+			return common.NewSkipped(fmt.Sprintf("failed to write changes: %v", err))
+		}
 	}
 
 	message := fmt.Sprintf("added hex section '%s'", sectionName)
@@ -274,8 +279,13 @@ func AddHexSectionFromString(filePath, sectionName, data, password string) *comm
 		return common.NewSkipped(fmt.Sprintf("failed to add hex section from string: %v", err))
 	}
 
-	if err := peFile.Save(true, int64(len(peFile.RawData))); err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to write changes: %v", err))
+	// For fallback mode (corrupted files), data was already written directly to file
+	// Skip Save() to avoid any potential corruption
+	if !peFile.usedFallbackMode {
+		updateHeaders := true
+		if err := peFile.Save(updateHeaders, int64(len(peFile.RawData))); err != nil {
+			return common.NewSkipped(fmt.Sprintf("failed to write changes: %v", err))
+		}
 	}
 
 	message := fmt.Sprintf("added hex section '%s' from string data", sectionName)

@@ -63,6 +63,13 @@ func (p *PEFile) Save(updateHeaders bool, newSize int64) error {
 		}
 	}
 
+	// For fallback mode (corrupted files), data was already written directly to file
+	// Skip all file operations to avoid corrupting the file
+	if p.usedFallbackMode {
+		return nil // Data was already appended directly, no further action needed
+	}
+
+	// Normal save process for regular files
 	if err := p.writeRawDataAtomic(); err != nil {
 		return err
 	}
@@ -100,6 +107,34 @@ func (p *PEFile) truncateFileAtomic() error {
 	if err := p.File.Truncate(int64(len(p.RawData))); err != nil {
 		return fmt.Errorf("failed to resize file: %w", err)
 	}
+	return nil
+}
+
+// saveWithAppendOnly appends new data to the end of the file without rewriting the entire file
+// This is used for corrupted/packed files to avoid damaging their structure
+func (p *PEFile) saveWithAppendOnly() error {
+	// Read the current file to get its original size
+	currentInfo, err := p.File.Stat()
+	if err != nil {
+		return fmt.Errorf("failed to get file info: %w", err)
+	}
+	originalSize := currentInfo.Size()
+
+	// Only append the new data that was added beyond the original file size
+	if int64(len(p.RawData)) > originalSize {
+		newData := p.RawData[originalSize:]
+
+		// Seek to the end of the file
+		if _, err := p.File.Seek(0, io.SeekEnd); err != nil {
+			return fmt.Errorf("failed to seek to end of file: %w", err)
+		}
+
+		// Append only the new data
+		if _, err := p.File.Write(newData); err != nil {
+			return fmt.Errorf("failed to append new data: %w", err)
+		}
+	}
+
 	return nil
 }
 
