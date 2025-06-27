@@ -151,7 +151,7 @@ func (e *ELFFile) UpdateProgramHeaders() error {
 }
 
 // WriteAtOffset writes a value to RawData at a specific offset with the given endianness.
-func WriteAtOffset(rawData []byte, offset uint64, endian binary.ByteOrder, value interface{}) error {
+func WriteAtOffset(rawData []byte, offset uint64, endian binary.ByteOrder, value any) error {
 	var size int
 	switch value.(type) {
 	case uint16:
