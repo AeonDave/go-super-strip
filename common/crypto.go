@@ -164,6 +164,37 @@ func ProcessFileForInsertion(filePath string, password string) ([]byte, error) {
 	return []byte(finalHexData), nil
 }
 
+// ProcessStringForInsertion processes a string according to the new format:
+// 1. Convert string to hex
+// 2. Encrypt with AES-256-GCM if password provided
+// 3. Convert encrypted result back to hex
+func ProcessStringForInsertion(data string, password string) ([]byte, error) {
+	// Step 1: Convert string to hex
+	hexData := hex.EncodeToString([]byte(data))
+
+	// If no password, return hex data directly
+	if password == "" {
+		return []byte(hexData), nil
+	}
+
+	// Parse password
+	cryptoConfig, err := ParsePassword(password)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse password: %w", err)
+	}
+
+	// Step 2: Encrypt hex data with AES-256-GCM
+	encryptedData, err := EncryptAES256GCM([]byte(hexData), cryptoConfig.Password)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encrypt data: %w", err)
+	}
+
+	// Step 3: Convert encrypted data to hex string for storage
+	finalHexData := hex.EncodeToString(encryptedData)
+
+	return []byte(finalHexData), nil
+}
+
 // RecoverFileFromInsertion reverses the ProcessFileForInsertion process:
 // 1. Convert hex string back to binary
 // 2. Decrypt with AES-256-GCM if password provided

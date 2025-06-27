@@ -1,6 +1,5 @@
 package common
 
-// SectionType represents the type of section for stripping
 type SectionType int
 
 const (
@@ -23,106 +22,96 @@ const (
 )
 
 type SectionMatcher struct {
-	ExactNames        []string
-	PrefixNames       []string
-	Description       string
-	StripForDLL       bool     // True if can be stripped from DLL
-	StripForEXE       bool     // True if can be stripped from EXE
-	IsRisky           bool     // True if requires -f (force)
-	ObfuscationNeeded bool     // True if needed for obfuscation (disables strip/compact if -o)
-	Fill              FillMode // ZeroFill or RandomFill
+	ExactNames  []string
+	PrefixNames []string
+	Description string
+	StripForDLL bool
+	StripForEXE bool
+	IsRisky     bool
+	Fill        FillMode // ZeroFill or RandomFill
 }
 
 func GetSectionMatchers() map[SectionType]SectionMatcher {
 	return map[SectionType]SectionMatcher{
 		DebugSections: {
-			ExactNames:        []string{".stab", ".stabstr"},
-			PrefixNames:       []string{".debug", ".zdebug", ".gnu.debuglto_"},
-			Description:       "debugging information",
-			StripForDLL:       true,
-			StripForEXE:       true,
-			IsRisky:           false,
-			ObfuscationNeeded: false,
-			Fill:              ZeroFill,
+			ExactNames:  []string{".stab", ".stabstr"},
+			PrefixNames: []string{".debug", ".zdebug", ".gnu.debuglto_"},
+			Description: "debugging information",
+			StripForDLL: true,
+			StripForEXE: true,
+			IsRisky:     false,
+			Fill:        ZeroFill,
 		},
 		SymbolSections: {
-			ExactNames:        []string{".symtab", ".strtab", ".shstrtab", ".dynsym", ".dynstr", ".hash", ".gnu.hash", ".gnu.version", ".gnu.version_d", ".gnu.version_r", ".interp"},
-			PrefixNames:       []string{".gnu.linkonce."},
-			Description:       "symbol table information",
-			StripForDLL:       true,
-			StripForEXE:       true,
-			IsRisky:           false,
-			ObfuscationNeeded: false,
-			Fill:              ZeroFill,
+			ExactNames:  []string{".symtab", ".strtab", ".shstrtab", ".dynsym", ".dynstr", ".hash", ".gnu.hash", ".gnu.version", ".gnu.version_d", ".gnu.version_r", ".interp"},
+			PrefixNames: []string{".gnu.linkonce."},
+			Description: "symbol table information",
+			StripForDLL: true,
+			StripForEXE: true,
+			IsRisky:     false,
+			Fill:        ZeroFill,
 		},
 		RelocationSections: {
-			ExactNames:        []string{".reloc"},
-			PrefixNames:       []string{},
-			Description:       "base relocation information",
-			StripForDLL:       true,
-			StripForEXE:       true,
-			IsRisky:           true,
-			ObfuscationNeeded: true,
-			Fill:              ZeroFill,
+			ExactNames:  []string{".reloc"},
+			PrefixNames: []string{},
+			Description: "base relocation information",
+			StripForDLL: true,
+			StripForEXE: true,
+			IsRisky:     true,
+			Fill:        ZeroFill,
 		},
 		TLSSections: {
-			ExactNames:        []string{".tls"},
-			PrefixNames:       []string{},
-			Description:       "Thread Local Storage sections",
-			StripForDLL:       true,
-			StripForEXE:       true,
-			IsRisky:           true,
-			ObfuscationNeeded: true,
-			Fill:              ZeroFill,
+			ExactNames:  []string{".tls"},
+			PrefixNames: []string{},
+			Description: "Thread Local Storage sections",
+			StripForDLL: true,
+			StripForEXE: true,
+			IsRisky:     true,
+			Fill:        ZeroFill,
 		},
 		NonEssentialSections: {
-			ExactNames:        []string{".comment", ".note", ".drectve", ".shared", ".cormeta", ".sxdata", ".edata", ".rsrc", ".gcc_except_table", ".note.gnu.build-id", ".note.ABI-tag", ".note.gnu.gold-version", ".gnu_debuglink", ".gnu_debugaltlink"},
-			PrefixNames:       []string{".note.", ".gnu.warning.", ".mdebug."},
-			Description:       "non-essential metadata",
-			StripForDLL:       true,
-			StripForEXE:       true,
-			IsRisky:           false,
-			ObfuscationNeeded: false,
-			Fill:              ZeroFill,
+			ExactNames:  []string{".comment", ".note", ".drectve", ".shared", ".cormeta", ".sxdata", ".edata", ".rsrc", ".gcc_except_table", ".note.gnu.build-id", ".note.ABI-tag", ".note.gnu.gold-version", ".gnu_debuglink", ".gnu_debugaltlink"},
+			PrefixNames: []string{".note.", ".gnu.warning.", ".mdebug."},
+			Description: "non-essential metadata",
+			StripForDLL: true,
+			StripForEXE: true,
+			IsRisky:     false,
+			Fill:        ZeroFill,
 		},
 		ExceptionSections: {
-			ExactNames:        []string{".pdata", ".xdata"},
-			PrefixNames:       []string{".eh_frame"},
-			Description:       "structured exception handling data",
-			StripForDLL:       true,
-			StripForEXE:       true,
-			IsRisky:           true,
-			ObfuscationNeeded: true,
-			Fill:              ZeroFill,
+			ExactNames:  []string{".pdata", ".xdata"},
+			PrefixNames: []string{".eh_frame"},
+			Description: "structured exception handling data",
+			StripForDLL: true,
+			StripForEXE: true,
+			IsRisky:     true,
+			Fill:        ZeroFill,
 		},
 		BuildInfoSections: {
-			ExactNames:        []string{".buildid", ".gfids", ".giats", ".gljmp", ".textbss", ".go.buildinfo", ".noptrdata", ".typelink", ".itablink", ".gosymtab", ".gopclntab"},
-			PrefixNames:       []string{".go.", ".gopkg."},
-			Description:       "build information and toolchain metadata",
-			StripForDLL:       true,
-			StripForEXE:       true,
-			IsRisky:           false,
-			ObfuscationNeeded: false,
-			Fill:              ZeroFill,
+			ExactNames:  []string{".buildid", ".gfids", ".giats", ".gljmp", ".textbss", ".go.buildinfo", ".noptrdata", ".typelink", ".itablink", ".gosymtab", ".gopclntab"},
+			PrefixNames: []string{".go.", ".gopkg."},
+			Description: "build information and toolchain metadata",
+			StripForDLL: true,
+			StripForEXE: true,
+			IsRisky:     false,
+			Fill:        ZeroFill,
 		},
 		CertificateSections: {
-			ExactNames:        []string{".certificate"},
-			PrefixNames:       []string{},
-			Description:       "certificate information",
-			StripForDLL:       true,
-			StripForEXE:       true,
-			IsRisky:           true,
-			ObfuscationNeeded: true,
-			Fill:              ZeroFill,
+			ExactNames:  []string{".certificate"},
+			PrefixNames: []string{},
+			Description: "certificate information",
+			StripForDLL: true,
+			StripForEXE: true,
+			IsRisky:     true,
+			Fill:        ZeroFill,
 		},
 		RuntimeSections: {
-			ExactNames:        []string{".rustc", ".rust_eh_personality", ".llvm_addrsig", ".llvm.embedded.object", ".jcr", ".tm_clone_table", ".data.rel.ro"},
-			PrefixNames:       []string{".rust.", ".llvm.", ".msvcrt.", ".mingw32."},
-			StripForDLL:       true,
-			StripForEXE:       true,
-			IsRisky:           false,
-			ObfuscationNeeded: false,
-			Fill:              ZeroFill,
+			ExactNames:  []string{".rustc", ".rust_eh_personality", ".llvm_addrsig", ".llvm.embedded.object", ".jcr", ".tm_clone_table", ".data.rel.ro"},
+			PrefixNames: []string{".rust.", ".llvm.", ".msvcrt.", ".mingw32."},
+			StripForDLL: true,
+			StripForEXE: true,
+			IsRisky:     false,
+			Fill:        ZeroFill,
 		},
 	}
 }

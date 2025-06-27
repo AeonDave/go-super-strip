@@ -18,6 +18,18 @@ func (p *PEFile) AddHexSection(sectionName string, contentFilePath string, passw
 	return p.addSectionWithContent(sectionName, finalContent, password != "")
 }
 
+// AddHexSectionFromString adds a new section to the PE file with hex-encoded content from a string
+func (p *PEFile) AddHexSectionFromString(sectionName string, data string, password string) error {
+	// Use common crypto functions for string processing
+	finalContent, err := common.ProcessStringForInsertion(data, password)
+	if err != nil {
+		return fmt.Errorf("failed to process string for insertion: %w", err)
+	}
+
+	// Now proceed with the normal section addition logic using finalContent
+	return p.addSectionWithContent(sectionName, finalContent, password != "")
+}
+
 // addSectionWithContent adds a section with the provided raw content
 func (p *PEFile) addSectionWithContent(sectionName string, content []byte, encrypted bool) error {
 	// Step 1: Ensure space for new section header

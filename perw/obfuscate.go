@@ -10,11 +10,10 @@ import (
 )
 
 const (
-	dosHeaderSize        = 0x40
-	sectionHeaderSize    = 40
-	sectionNameSize      = 8
-	maxPaddingSize       = 0x10000
-	importDescriptorSize = 20 // Size of IMAGE_IMPORT_DESCRIPTOR
+	dosHeaderSize     = 0x40
+	sectionHeaderSize = 40
+	sectionNameSize   = 8
+	maxPaddingSize    = 0x10000
 )
 
 // PE directory table offsets (relative to optional header start)
@@ -24,8 +23,8 @@ var directoryOffsets = struct {
 	debug:       map[bool]int64{true: 128, false: 112},
 	loadConfig:  map[bool]int64{true: 152, false: 136},
 	tls:         map[bool]int64{true: 144, false: 128},
-	baseReloc:   map[bool]int64{true: 168, false: 152}, // Base Relocation Table is at index 5 in Data Directory
-	importTable: map[bool]int64{true: 104, false: 88},  // Import Table is at index 1 in Data Directory
+	baseReloc:   map[bool]int64{true: 168, false: 152},
+	importTable: map[bool]int64{true: 104, false: 88},
 }
 
 // PE header field offsets
@@ -66,12 +65,10 @@ func (p *PEFile) hasBaseRelocations() bool {
 	return rva != 0 && size != 0
 }
 
-// Offusca l'ImageBase in modo sicuro
+// Offusca l'ImageBase in modo molto sicuro
 func (p *PEFile) ObfuscateBaseAddresses() *common.OperationResult {
 	// CRITICAL: Check for base relocations before modifying ImageBase
 	if !p.hasBaseRelocations() {
-		// If no relocations exist, the executable cannot be relocated at runtime
-		// Changing ImageBase would cause immediate crashes - this is too dangerous even with force
 		return common.NewSkipped("no base relocations found (changing ImageBase would break executable)")
 	}
 
@@ -87,28 +84,27 @@ func (p *PEFile) ObfuscateBaseAddresses() *common.OperationResult {
 		return common.NewSkipped(fmt.Sprintf("ImageBase offset validation failed: %v", err))
 	}
 
-	// Conservative approach: only modify the least significant byte
-	// while preserving alignment and valid address ranges
+	// Approccio ultra-conservativo: solo piccole modifiche allineate
 	if p.Is64Bit {
 		current := binary.LittleEndian.Uint64(p.RawData[imageBaseOffset:])
 
-		// For 64-bit, ensure we stay in valid user-mode range (< 0x7FF00000000)
-		// and maintain 64KB alignment (Windows requirement)
-		if current >= 0x7FF00000000 {
-			return common.NewSkipped("address in system range, unsafe to modify")
+		// Controlli di sicurezza molto stringenti per 64-bit
+		if current >= 0x7FF00000000 || current < 0x140000000 {
+			return common.NewSkipped("address outside safe modification range")
 		}
 
-		// Generate a small, aligned offset (multiple of 64KB)
-		randBytes, err := common.GenerateRandomBytes(2)
+		// Modifica solo gli ultimi 16 bit, mantenendo allineamento 64KB
+		randBytes, err := common.GenerateRandomBytes(1)
 		if err != nil {
 			return common.NewSkipped(fmt.Sprintf("failed to generate random offset: %v", err))
 		}
 
-		offset := uint64(randBytes[0]) * 0x10000 // 64KB aligned offset
-		newBase := (current & 0xFFFFFFFF0000) + offset
+		// Offset molto piccolo, multiplo di 64KB (solo 0-15 * 64KB = max 960KB)
+		offset := uint64(randBytes[0]&0x0F) * 0x10000
+		newBase := (current & 0xFFFFFFFFFFF00000) + offset
 
-		// Ensure we don't exceed safe ranges
-		if newBase < current+0x1000000 && newBase >= 0x10000 {
+		// Verifica finale di sicurezza - differenza massima di 1MB
+		if newBase >= current-0x100000 && newBase <= current+0x100000 && newBase >= 0x10000 {
 			if err := WriteAtOffset(p.RawData, imageBaseOffset, newBase); err != nil {
 				return common.NewSkipped(fmt.Sprintf("failed to write new base address: %v", err))
 			}
@@ -117,9 +113,9 @@ func (p *PEFile) ObfuscateBaseAddresses() *common.OperationResult {
 	} else {
 		current := binary.LittleEndian.Uint32(p.RawData[imageBaseOffset:])
 
-		// For 32-bit, ensure we stay below 2GB and maintain 64KB alignment
-		if current >= 0x80000000 {
-			return common.NewSkipped("address too high for 32-bit, unsafe to modify")
+		// Controlli di sicurezza molto stringenti per 32-bit
+		if current >= 0x80000000 || current < 0x400000 {
+			return common.NewSkipped("address outside safe modification range")
 		}
 
 		randBytes, err := common.GenerateRandomBytes(1)
@@ -127,10 +123,12 @@ func (p *PEFile) ObfuscateBaseAddresses() *common.OperationResult {
 			return common.NewSkipped(fmt.Sprintf("failed to generate random offset: %v", err))
 		}
 
-		offset := uint32(randBytes[0]) * 0x10000 // 64KB aligned
-		newBase := (current & 0xFFFF0000) + offset
+		// Offset piccolo per 32-bit (solo 0-15 * 64KB)
+		offset := uint32(randBytes[0]&0x0F) * 0x10000
+		newBase := (current & 0xFFF00000) + offset
 
-		if newBase < current+0x10000000 && newBase >= 0x10000 {
+		// Verifica finale - differenza massima di 16MB
+		if newBase >= current-0x1000000 && newBase <= current+0x1000000 && newBase >= 0x10000 {
 			if err := WriteAtOffset(p.RawData, imageBaseOffset, newBase); err != nil {
 				return common.NewSkipped(fmt.Sprintf("failed to write new base address: %v", err))
 			}
@@ -344,7 +342,7 @@ func (p *PEFile) ObfuscateSecondaryTimestamps() error {
 	return nil
 }
 
-// Randomizza i nomi delle sezioni
+// Randomizza i nomi delle sezioni con nomi realistici
 func (p *PEFile) RandomizeSectionNames() *common.OperationResult {
 	offsets, err := p.calculateOffsets()
 	if err != nil {
@@ -355,7 +353,16 @@ func (p *PEFile) RandomizeSectionNames() *common.OperationResult {
 		return common.NewSkipped("no sections found")
 	}
 
+	// Nomi di sezione realistici per evitare sospetti
+	realisticNames := []string{
+		".text", ".data", ".rdata", ".pdata", ".rsrc", ".reloc",
+		".idata", ".edata", ".tls", ".debug", ".bss", ".const",
+		".code", ".init", ".fini", ".rodata", ".ctors", ".dtors",
+	}
+
 	var renamedSections []string
+	usedNames := make(map[string]bool)
+
 	for i := 0; i < offsets.NumberOfSections; i++ {
 		sectionHeaderOffset := offsets.FirstSectionHdr + int64(i*sectionHeaderSize)
 		sectionNameOffset := sectionHeaderOffset
@@ -370,20 +377,38 @@ func (p *PEFile) RandomizeSectionNames() *common.OperationResult {
 			originalName = p.Sections[i].Name
 		}
 
-		// Generate random 7-character name with leading dot
-		randBytes, err := common.GenerateRandomBytes(7)
-		if err != nil {
-			return common.NewSkipped(fmt.Sprintf("failed to generate random name for section %d: %v", i, err))
+		// Scegli un nome realistico non ancora usato
+		var newName string
+		for attempts := 0; attempts < 10; attempts++ {
+			randBytes, err := common.GenerateRandomBytes(1)
+			if err != nil {
+				return common.NewSkipped(fmt.Sprintf("failed to generate random name for section %d: %v", i, err))
+			}
+
+			candidateName := realisticNames[randBytes[0]%byte(len(realisticNames))]
+			if !usedNames[candidateName] {
+				newName = candidateName
+				usedNames[candidateName] = true
+				break
+			}
 		}
 
-		randomName := "."
-		for _, b := range randBytes {
-			randomName += string(rune('a' + (b % 26)))
+		// Se non troviamo un nome unico, genera uno casuale
+		if newName == "" {
+			randBytes, err := common.GenerateRandomBytes(6)
+			if err != nil {
+				return common.NewSkipped(fmt.Sprintf("failed to generate random name for section %d: %v", i, err))
+			}
+
+			newName = "."
+			for _, b := range randBytes {
+				newName += string(rune('a' + (b % 26)))
+			}
 		}
 
 		// PE section names are 8 bytes, null-padded
 		newNameBytes := make([]byte, sectionNameSize)
-		copy(newNameBytes, randomName)
+		copy(newNameBytes, newName)
 		copy(p.RawData[sectionNameOffset:sectionNameOffset+sectionNameSize], newNameBytes)
 
 		// Update internal structure
@@ -392,9 +417,9 @@ func (p *PEFile) RandomizeSectionNames() *common.OperationResult {
 		}
 
 		if originalName != "" {
-			renamedSections = append(renamedSections, fmt.Sprintf("%s→%s", originalName, randomName))
+			renamedSections = append(renamedSections, fmt.Sprintf("%s→%s", originalName, newName))
 		} else {
-			renamedSections = append(renamedSections, randomName)
+			renamedSections = append(renamedSections, newName)
 		}
 	}
 
@@ -402,391 +427,119 @@ func (p *PEFile) RandomizeSectionNames() *common.OperationResult {
 	return common.NewApplied(message, len(renamedSections))
 }
 
-// Applica tutte le tecniche di offuscamento
-func (p *PEFile) ObfuscateAll(force bool) *common.OperationResult {
-	operations := []struct {
+// Applica tecniche di offuscamento sicure (senza -f)
+func (p *PEFile) ObfuscateSafe() *common.OperationResult {
+	safeOperations := []struct {
 		name string
 		fn   func() *common.OperationResult
 	}{
 		{"randomize section names", p.RandomizeSectionNames},
-		{"obfuscate base addresses", func() *common.OperationResult { return p.ObfuscateBaseAddresses() }},
-		{"obfuscate load config", p.ObfuscateLoadConfig},
-		{"obfuscate import table", func() *common.OperationResult { return p.ObfuscateImportTable(force) }},
+		{"obfuscate load config metadata", p.ObfuscateLoadConfig},
+		{"randomize padding", func() *common.OperationResult { return p.obfuscatePaddingSafe() }},
+		{"obfuscate timestamps", func() *common.OperationResult { return p.obfuscateTimestampsSafe() }},
 		{"obfuscate resource directory", p.ObfuscateResourceDirectory},
-		{"obfuscate export table", func() *common.OperationResult { return p.ObfuscateExportTable(force) }},
+		{"obfuscate Rich Header", func() *common.OperationResult { return p.ObfuscateRichHeader() }},
+		{"obfuscate runtime strings", p.ObfuscateRuntimeStrings},
 	}
 
-	totalApplied := 0
-	var appliedOperations []string
-	var skippedOperations []string
+	return p.executeObfuscationOperations(safeOperations, "safe")
+}
 
-	for _, op := range operations {
-		result := op.fn()
-		if result.Applied {
-			totalApplied += result.Count
-			appliedOperations = append(appliedOperations, op.name)
-		} else {
-			skippedOperations = append(skippedOperations, fmt.Sprintf("%s (%s)", op.name, result.Message))
-		}
+// Applica tecniche di offuscamento rischiose (con -f)
+func (p *PEFile) ObfuscateRisky() *common.OperationResult {
+	riskyOperations := []struct {
+		name string
+		fn   func() *common.OperationResult
+	}{
+		{"obfuscate base addresses", p.ObfuscateBaseAddresses},
+		{"clear debug directories", func() *common.OperationResult { return p.clearDebugDirectories() }},
+		{"obfuscate TLS directory", func() *common.OperationResult { return p.obfuscateTLSDirectorySafe() }},
+	}
+
+	return p.executeObfuscationOperations(riskyOperations, "risky")
+}
+
+// Applica tutte le tecniche di offuscamento
+func (p *PEFile) ObfuscateAll(force bool) *common.OperationResult {
+	// Prima applica le tecniche sicure
+	safeResult := p.ObfuscateSafe()
+
+	if !force {
+		return safeResult
+	}
+
+	// Poi applica quelle rischiose se force è abilitato
+	riskyResult := p.ObfuscateRisky()
+
+	// Combina i risultati
+	totalApplied := 0
+	var allApplied []string
+	var allSkipped []string
+
+	if safeResult.Applied {
+		totalApplied += safeResult.Count
+		allApplied = append(allApplied, "safe techniques")
+	} else {
+		allSkipped = append(allSkipped, fmt.Sprintf("safe techniques (%s)", safeResult.Message))
+	}
+
+	if riskyResult.Applied {
+		totalApplied += riskyResult.Count
+		allApplied = append(allApplied, "risky techniques")
+	} else {
+		allSkipped = append(allSkipped, fmt.Sprintf("risky techniques (%s)", riskyResult.Message))
 	}
 
 	if totalApplied > 0 {
-		message := fmt.Sprintf("applied %d techniques: %s", len(appliedOperations), strings.Join(appliedOperations, ", "))
-		if len(skippedOperations) > 0 {
-			message += fmt.Sprintf("; skipped: %s", strings.Join(skippedOperations, ", "))
+		message := fmt.Sprintf("applied %s", strings.Join(allApplied, " and "))
+		if len(allSkipped) > 0 {
+			message += fmt.Sprintf("; skipped: %s", strings.Join(allSkipped, ", "))
 		}
 		return common.NewApplied(message, totalApplied)
 	}
 
-	return common.NewSkipped(fmt.Sprintf("all techniques skipped: %s", strings.Join(skippedOperations, ", ")))
+	return common.NewSkipped(fmt.Sprintf("all techniques skipped: %s", strings.Join(allSkipped, ", ")))
 }
 
-// Offusca la import table (rischioso)
-func (p *PEFile) ObfuscateImportTable(force bool) *common.OperationResult {
-	// Import table modification is risky - can break functionality
-	if !force {
-		return common.NewSkipped("import table obfuscation skipped (risky operation, use -f to force)")
-	}
+// Rimossa - troppo rischiosa per l'integrità dell'eseguibile
+// L'obfuscation della import table può facilmente rompere la funzionalità
+// func (p *PEFile) ObfuscateImportTable(force bool) *common.OperationResult {
+// Import table modification is risky - can break functionality
 
-	// Get import table directory entry
-	offsets, err := p.calculateOffsets()
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to calculate offsets: %v", err))
-	}
+// Get import table directory entry
 
-	importDirOffset := offsets.OptionalHeader + directoryOffsets.importTable[p.Is64Bit]
-	if err := p.validateOffset(importDirOffset, 8); err != nil {
-		return common.NewSkipped("import table directory not accessible")
-	}
+// Read import table RVA and size
 
-	// Read import table RVA and size
-	importRVA := binary.LittleEndian.Uint32(p.RawData[importDirOffset:])
-	importSize := binary.LittleEndian.Uint32(p.RawData[importDirOffset+4:])
+// Convert RVA to physical offset
 
-	if importRVA == 0 || importSize == 0 {
-		return common.NewSkipped("no import table found")
-	}
-
-	// Convert RVA to physical offset
-	importPhysical, err := p.rvaToPhysical(uint64(importRVA))
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to convert import RVA to physical: %v", err))
-	}
-
-	modifications := 0
-
-	// Apply obfuscation techniques
-	if err := p.shuffleImportDescriptors(importPhysical, importSize); err == nil {
-		modifications++
-	}
-
-	if err := p.addFakeImportEntries(importPhysical, importSize); err == nil {
-		modifications++
-	}
-
-	if err := p.obfuscateImportNames(importPhysical, importSize); err == nil {
-		modifications++
-	}
-
-	if modifications > 0 {
-		return common.NewApplied(fmt.Sprintf("applied %d import table obfuscation techniques", modifications), modifications)
-	}
-	return common.NewSkipped("no import table obfuscation could be applied")
-}
+// Apply obfuscation techniques
+// }
 
 // Mischia l'ordine dei descrittori di import
-func (p *PEFile) shuffleImportDescriptors(importPhysical uint64, importSize uint32) error {
-	// Calculate number of descriptors (excluding null terminator)
-	numDescriptors := (importSize / importDescriptorSize) - 1
-	if numDescriptors <= 1 {
-		return nil // Nothing to shuffle
-	}
-
-	// Read all descriptors
-	descriptors := make([]ImportDescriptor, numDescriptors)
-	for i := uint32(0); i < numDescriptors; i++ {
-		offset := importPhysical + uint64(i*importDescriptorSize)
-		if err := p.validateOffset(int64(offset), importDescriptorSize); err != nil {
-			return err
-		}
-
-		descriptors[i] = ImportDescriptor{
-			OriginalFirstThunk: binary.LittleEndian.Uint32(p.RawData[offset:]),
-			TimeDateStamp:      binary.LittleEndian.Uint32(p.RawData[offset+4:]),
-			ForwarderChain:     binary.LittleEndian.Uint32(p.RawData[offset+8:]),
-			Name:               binary.LittleEndian.Uint32(p.RawData[offset+12:]),
-			FirstThunk:         binary.LittleEndian.Uint32(p.RawData[offset+16:]),
-		}
-	}
-
-	// Shuffle using Fisher-Yates algorithm
-	for i := len(descriptors) - 1; i > 0; i-- {
-		randBytes, err := common.GenerateRandomBytes(1)
-		if err != nil {
-			return err
-		}
-		j := int(randBytes[0]) % (i + 1)
-		descriptors[i], descriptors[j] = descriptors[j], descriptors[i]
-	}
-
-	// Write shuffled descriptors back
-	for i, desc := range descriptors {
-		offset := importPhysical + uint64(i*importDescriptorSize)
-		binary.LittleEndian.PutUint32(p.RawData[offset:], desc.OriginalFirstThunk)
-		binary.LittleEndian.PutUint32(p.RawData[offset+4:], desc.TimeDateStamp)
-		binary.LittleEndian.PutUint32(p.RawData[offset+8:], desc.ForwarderChain)
-		binary.LittleEndian.PutUint32(p.RawData[offset+12:], desc.Name)
-		binary.LittleEndian.PutUint32(p.RawData[offset+16:], desc.FirstThunk)
-	}
-
-	return nil
-}
+// Mischia l'ordine dei descrittori di import
+// RIMOSSE - TROPPO RISCHIOSE
 
 // Modifica timestamp nei descrittori di import
-func (p *PEFile) addFakeImportEntries(importPhysical uint64, importSize uint32) error {
-	// For safety, we'll just modify timestamps rather than adding new entries
-	// Adding new entries would require relocating the entire import table
-
-	numDescriptors := (importSize / importDescriptorSize) - 1
-	if numDescriptors == 0 {
-		return nil
-	}
-
-	// Randomize timestamps in existing descriptors
-	for i := uint32(0); i < numDescriptors; i++ {
-		offset := importPhysical + uint64(i*importDescriptorSize) + 4 // TimeDateStamp offset
-		if err := p.validateOffset(int64(offset), 4); err != nil {
-			continue
-		}
-
-		// Generate random timestamp (avoiding 0 and -1 which have special meaning)
-		randBytes, err := common.GenerateRandomBytes(4)
-		if err != nil {
-			continue
-		}
-
-		timestamp := binary.LittleEndian.Uint32(randBytes)
-		if timestamp == 0 || timestamp == 0xFFFFFFFF {
-			timestamp = 0x12345678 // Safe fallback
-		}
-
-		binary.LittleEndian.PutUint32(p.RawData[offset:], timestamp)
-	}
-
-	return nil
-}
+// RIMOSSE - TROPPO RISCHIOSE
 
 // Offusca metadati non critici nella import table
-func (p *PEFile) obfuscateImportNames(importPhysical uint64, importSize uint32) error {
-	// This is a conservative implementation that only modifies non-critical metadata
-	// We avoid changing actual DLL names or function names to prevent breaking functionality
-
-	numDescriptors := (importSize / importDescriptorSize) - 1
-	if numDescriptors == 0 {
-		return nil
-	}
-
-	// Only modify ForwarderChain field (usually unused)
-	for i := uint32(0); i < numDescriptors; i++ {
-		offset := importPhysical + uint64(i*importDescriptorSize) + 8 // ForwarderChain offset
-		if err := p.validateOffset(int64(offset), 4); err != nil {
-			continue
-		}
-
-		// Read current value
-		current := binary.LittleEndian.Uint32(p.RawData[offset:])
-
-		// If it's already -1 (unused), randomize it
-		if current == 0xFFFFFFFF {
-			randBytes, err := common.GenerateRandomBytes(4)
-			if err != nil {
-				continue
-			}
-
-			// Ensure we don't accidentally create a valid forwarder chain
-			randomValue := binary.LittleEndian.Uint32(randBytes)
-			if randomValue != 0xFFFFFFFF {
-				randomValue |= 0x80000000 // Set high bit to indicate it's not a real forwarder
-			}
-
-			binary.LittleEndian.PutUint32(p.RawData[offset:], randomValue)
-		}
-	}
-
-	return nil
-}
+// RIMOSSE - TROPPO RISCHIOSE
 
 // Offusca in modo aggressivo i nomi delle funzioni importate
 // This is more aggressive than the conservative obfuscateImportNames used in ObfuscateImportTable
-func (p *PEFile) ObfuscateImportNames() *common.OperationResult {
-	// Get import table directory entry
-	offsets, err := p.calculateOffsets()
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to calculate offsets: %v", err))
-	}
-
-	importDirOffset := offsets.OptionalHeader + directoryOffsets.importTable[p.Is64Bit]
-	if err := p.validateOffset(importDirOffset, 8); err != nil {
-		return common.NewSkipped("import table directory not accessible")
-	}
-
-	// Read import table RVA and size
-	importRVA := binary.LittleEndian.Uint32(p.RawData[importDirOffset:])
-	importSize := binary.LittleEndian.Uint32(p.RawData[importDirOffset+4:])
-
-	if importRVA == 0 || importSize == 0 {
-		return common.NewSkipped("no import table found")
-	}
-
-	// Convert RVA to physical offset
-	importPhysical, err := p.rvaToPhysical(uint64(importRVA))
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to convert import RVA to physical: %v", err))
-	}
-
-	if err := p.obfuscateImportNamesAggressive(importPhysical, importSize); err != nil {
-		return common.NewSkipped(fmt.Sprintf("import name obfuscation failed: %v", err))
-	}
-	return common.NewApplied("obfuscated import function names", 1)
-}
+// RIMOSSE - TROPPO RISCHIOSE
 
 // Offusca in modo aggressivo la import name table
-func (p *PEFile) obfuscateImportNamesAggressive(importPhysical uint64, importSize uint32) error {
-	numDescriptors := (importSize / importDescriptorSize) - 1
-	if numDescriptors == 0 {
-		return nil
-	}
-
-	// Process each import descriptor
-	for i := uint32(0); i < numDescriptors; i++ {
-		descOffset := importPhysical + uint64(i*importDescriptorSize)
-		if err := p.validateOffset(int64(descOffset), importDescriptorSize); err != nil {
-			continue
-		}
-
-		// Get the OriginalFirstThunk (Import Name Table) RVA
-		originalFirstThunk := binary.LittleEndian.Uint32(p.RawData[descOffset:])
-		if originalFirstThunk == 0 {
-			continue // No import name table
-		}
-
-		// Convert RVA to physical offset
-		intPhysical, err := p.rvaToPhysical(uint64(originalFirstThunk))
-		if err != nil {
-			continue // Can't access import name table
-		}
-
-		// Process the Import Name Table
-		if err := p.obfuscateImportNameTable(intPhysical); err != nil {
-			// Don't fail the entire operation if one table fails
-			continue
-		}
-	}
-
-	return nil
-}
+// RIMOSSE - TROPPO RISCHIOSE
 
 // Offusca i nomi funzione nella import name table
-func (p *PEFile) obfuscateImportNameTable(intPhysical uint64) error {
-	ptrSize := map[bool]int{true: 8, false: 4}[p.Is64Bit]
-
-	for offset := intPhysical; ; offset += uint64(ptrSize) {
-		if err := p.validateOffset(int64(offset), ptrSize); err != nil {
-			break
-		}
-
-		// Read the thunk value
-		var thunkValue uint64
-		if p.Is64Bit {
-			thunkValue = binary.LittleEndian.Uint64(p.RawData[offset:])
-		} else {
-			thunkValue = uint64(binary.LittleEndian.Uint32(p.RawData[offset:]))
-		}
-
-		// Check for end of table
-		if thunkValue == 0 {
-			break
-		}
-
-		// Check if it's an ordinal import (high bit set)
-		if (p.Is64Bit && (thunkValue&0x8000000000000000) != 0) ||
-			(!p.Is64Bit && (thunkValue&0x80000000) != 0) {
-			continue // Skip ordinal imports
-		}
-
-		// It's a name import - get the hint/name table entry
-		hintNameRVA := thunkValue
-		hintNamePhysical, err := p.rvaToPhysical(hintNameRVA)
-		if err != nil {
-			continue
-		}
-
-		// Obfuscate the function name (skip the 2-byte hint)
-		if err := p.obfuscateFunctionName(hintNamePhysical + 2); err != nil {
-			continue
-		}
-	}
-
-	return nil
-}
+// RIMOSSE - TROPPO RISCHIOSE
 
 // Randomizza un nome funzione null-terminated
-func (p *PEFile) obfuscateFunctionName(namePhysical uint64) error {
-	if err := p.validateOffset(int64(namePhysical), 1); err != nil {
-		return err
-	}
-
-	// Find the length of the original name
-	nameLen := 0
-	for i := namePhysical; int(i) < len(p.RawData); i++ {
-		if p.RawData[i] == 0 {
-			break
-		}
-		nameLen++
-	}
-
-	if nameLen == 0 || nameLen > 255 {
-		return nil // Invalid name length
-	}
-
-	// Generate a random name of the same length
-	randomName, err := p.generateRandomFunctionName(nameLen)
-	if err != nil {
-		return err
-	}
-
-	// Replace the function name (preserve null terminator)
-	copy(p.RawData[namePhysical:namePhysical+uint64(nameLen)], randomName)
-
-	return nil
-}
+// RIMOSSE - TROPPO RISCHIOSE
 
 // Genera un nome funzione random di lunghezza specificata
-func (p *PEFile) generateRandomFunctionName(length int) ([]byte, error) {
-	if length <= 0 {
-		return nil, fmt.Errorf("invalid length: %d", length)
-	}
-
-	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
-	result := make([]byte, length)
-
-	// First character should be a letter or underscore
-	randBytes, err := common.GenerateRandomBytes(length)
-	if err != nil {
-		return nil, err
-	}
-
-	// First character from letters/underscore only
-	firstCharset := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_"
-	result[0] = firstCharset[randBytes[0]%byte(len(firstCharset))]
-
-	// Remaining characters can be any valid identifier character
-	for i := 1; i < length; i++ {
-		result[i] = charset[randBytes[i]%byte(len(charset))]
-	}
-
-	return result, nil
-}
+// RIMOSSE - TROPPO RISCHIOSE
 
 // Rimuove o modifica la Rich Header
 func (p *PEFile) ObfuscateRichHeader() *common.OperationResult {
@@ -896,74 +649,7 @@ func (p *PEFile) ObfuscateResourceDirectory() *common.OperationResult {
 }
 
 // Offusca metadati della export table
-func (p *PEFile) ObfuscateExportTable(force bool) *common.OperationResult {
-	// Export table modification is risky - can break DLL functionality
-	if !force {
-		return common.NewSkipped("export table obfuscation skipped (risky operation, use -f to force)")
-	}
-
-	offsets, err := p.calculateOffsets()
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to calculate offsets: %v", err))
-	}
-
-	// Export table is at directory entry index 0
-	exportDirOffset := offsets.OptionalHeader + 96 // Export table is always at offset 96 for both 32/64-bit
-	if p.Is64Bit {
-		exportDirOffset = offsets.OptionalHeader + 112
-	}
-
-	if err := p.validateOffset(exportDirOffset, 8); err != nil {
-		return common.NewSkipped("export table directory not accessible")
-	}
-
-	// Read export table RVA and size
-	exportRVA := binary.LittleEndian.Uint32(p.RawData[exportDirOffset:])
-	exportSize := binary.LittleEndian.Uint32(p.RawData[exportDirOffset+4:])
-
-	if exportRVA == 0 || exportSize == 0 {
-		return common.NewSkipped("no export table found")
-	}
-
-	// Convert RVA to physical offset
-	exportPhysical, err := p.rvaToPhysical(uint64(exportRVA))
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to convert export RVA to physical: %v", err))
-	}
-
-	if err := p.validateOffset(int64(exportPhysical), 40); err != nil {
-		return common.NewSkipped("export directory not accessible")
-	}
-
-	modifications := 0
-
-	// IMAGE_EXPORT_DIRECTORY structure:
-	// Offset 4: TimeDateStamp - randomize this
-	// Offset 8: MajorVersion - randomize
-	// Offset 10: MinorVersion - randomize
-
-	// Randomize timestamp
-	randBytes, err := common.GenerateRandomBytes(4)
-	if err == nil {
-		copy(p.RawData[exportPhysical+4:exportPhysical+8], randBytes)
-		modifications++
-	}
-
-	// Randomize version
-	randBytes, err = common.GenerateRandomBytes(4)
-	if err == nil {
-		majorVer := uint16(randBytes[0] % 16)
-		minorVer := uint16(randBytes[1] % 100)
-		binary.LittleEndian.PutUint16(p.RawData[exportPhysical+8:], majorVer)
-		binary.LittleEndian.PutUint16(p.RawData[exportPhysical+10:], minorVer)
-		modifications++
-	}
-
-	if modifications > 0 {
-		return common.NewApplied(fmt.Sprintf("obfuscated %d export table fields", modifications), modifications)
-	}
-	return common.NewSkipped("no export table fields could be obfuscated")
-}
+// RIMOSSE - TROPPO RISCHIOSE
 
 // Offusca stringhe comuni di runtime/debug
 func (p *PEFile) ObfuscateRuntimeStrings() *common.OperationResult {
@@ -1026,4 +712,85 @@ func (p *PEFile) findSectionByName(name string) *Section {
 		}
 	}
 	return nil
+}
+
+// Helper per eseguire operazioni di obfuscation
+func (p *PEFile) executeObfuscationOperations(operations []struct {
+	name string
+	fn   func() *common.OperationResult
+}, operationType string) *common.OperationResult {
+	totalApplied := 0
+	var appliedOperations []string
+	var skippedOperations []string
+
+	for _, op := range operations {
+		result := op.fn()
+		if result.Applied {
+			totalApplied += result.Count
+			appliedOperations = append(appliedOperations, op.name)
+		} else {
+			skippedOperations = append(skippedOperations, fmt.Sprintf("%s (%s)", op.name, result.Message))
+		}
+	}
+
+	if totalApplied > 0 {
+		message := fmt.Sprintf("applied %d %s techniques: %s", len(appliedOperations), operationType, strings.Join(appliedOperations, ", "))
+		if len(skippedOperations) > 0 {
+			message += fmt.Sprintf("; skipped: %s", strings.Join(skippedOperations, ", "))
+		}
+		return common.NewApplied(message, totalApplied)
+	}
+
+	return common.NewSkipped(fmt.Sprintf("all %s techniques skipped: %s", operationType, strings.Join(skippedOperations, ", ")))
+}
+
+// Versione sicura dell'obfuscation del padding
+func (p *PEFile) obfuscatePaddingSafe() *common.OperationResult {
+	if err := p.ObfuscateSectionPadding(); err != nil {
+		return common.NewSkipped(fmt.Sprintf("padding obfuscation failed: %v", err))
+	}
+	return common.NewApplied("randomized section padding", 1)
+}
+
+// Versione sicura dell'obfuscation dei timestamp
+func (p *PEFile) obfuscateTimestampsSafe() *common.OperationResult {
+	modifications := 0
+
+	// Obfusca timestamp nelle sezioni di risorsa (sicuro)
+	if err := p.ObfuscateSecondaryTimestamps(); err == nil {
+		modifications++
+	}
+
+	// Obfusca campi riservati negli header (sicuro)
+	if err := p.ObfuscateReservedHeaderFields(); err == nil {
+		modifications++
+	}
+
+	if modifications > 0 {
+		return common.NewApplied(fmt.Sprintf("obfuscated %d timestamp areas", modifications), modifications)
+	}
+	return common.NewSkipped("no timestamps could be obfuscated")
+}
+
+// Pulisce le directory di debug in modo sicuro
+func (p *PEFile) clearDebugDirectories() *common.OperationResult {
+	modifications := 0
+
+	// Pulisci debug directory
+	if err := p.ObfuscateDebugDirectory(); err == nil {
+		modifications++
+	}
+
+	if modifications > 0 {
+		return common.NewApplied("cleared debug directories", modifications)
+	}
+	return common.NewSkipped("no debug directories found")
+}
+
+// Versione sicura dell'obfuscation TLS
+func (p *PEFile) obfuscateTLSDirectorySafe() *common.OperationResult {
+	if err := p.ObfuscateTLSDirectory(); err != nil {
+		return common.NewSkipped(fmt.Sprintf("TLS directory obfuscation failed: %v", err))
+	}
+	return common.NewApplied("cleared TLS directory", 1)
 }

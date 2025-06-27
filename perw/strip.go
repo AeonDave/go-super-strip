@@ -36,32 +36,21 @@ func (p *PEFile) fillRegion(offset int64, size int, mode common.FillMode) error 
 	return nil
 }
 
-// --- Core Stripping Logic ---
-
-// StripSectionsByType strips sections based on their type
 func (p *PEFile) StripSectionsByType(sectionType common.SectionType, fillMode common.FillMode, force bool) *common.OperationResult {
-	return p.StripSectionsByTypeWithObfuscation(sectionType, fillMode, force, false)
+	return p.StripSectionsByTypeWithObfuscation(sectionType, fillMode, force)
 }
 
-// StripSectionsByTypeWithObfuscation strips sections based on their type, considering obfuscation needs
-func (p *PEFile) StripSectionsByTypeWithObfuscation(sectionType common.SectionType, fillMode common.FillMode, force bool, obfuscationEnabled bool) *common.OperationResult {
+func (p *PEFile) StripSectionsByTypeWithObfuscation(sectionType common.SectionType, fillMode common.FillMode, force bool) *common.OperationResult {
 	sectionMatchers := common.GetSectionMatchers()
 	matcher, exists := sectionMatchers[sectionType]
 	if !exists {
 		return common.NewSkipped(fmt.Sprintf("unknown section type: %v", sectionType))
 	}
 
-	// Check if this is a risky operation and force is not enabled
 	if matcher.IsRisky && !force {
 		return common.NewSkipped(fmt.Sprintf("%s skipped (risky operation, use -f to force)", matcher.Description))
 	}
 
-	// If obfuscation is enabled and this section is needed for obfuscation, skip it
-	if obfuscationEnabled && matcher.ObfuscationNeeded {
-		return common.NewSkipped(fmt.Sprintf("%s skipped (needed for obfuscation)", matcher.Description))
-	}
-
-	// Check if we should strip this type for the current file
 	if !p.shouldStripForFileType(sectionType) {
 		return common.NewSkipped("not applicable for this file type")
 	}
@@ -139,7 +128,7 @@ func (p *PEFile) StripBytePattern(pattern *regexp.Regexp, fillMode common.FillMo
 		}
 
 		sectionStart := section.Offset
-		sectionEnd := section.Offset + int64(section.Size)
+		sectionEnd := section.Offset + section.Size
 
 		// Check bounds
 		if sectionStart >= int64(len(p.RawData)) || sectionEnd > int64(len(p.RawData)) {
@@ -260,7 +249,7 @@ func (p *PEFile) StripAllMetadata(useRandomFill bool, force bool) error {
 // AdvancedStripPEDetailed performs comprehensive PE stripping (no compaction)
 func (p *PEFile) AdvancedStripPEDetailed(force bool) *common.OperationResult {
 	originalSize := uint64(len(p.RawData))
-	operations := []string{}
+	var operations []string
 	totalCount := 0
 
 	// Strip debug sections (always safe)
@@ -432,7 +421,7 @@ func (p *PEFile) StripRichHeader() *common.OperationResult {
 func (p *PEFile) StripAllRegexRules(force bool) *common.OperationResult {
 	rules := common.GetRegexStripRules()
 	totalModifications := 0
-	messages := []string{}
+	var messages []string
 
 	for _, rule := range rules {
 		if rule.IsRisky && !force {
@@ -484,9 +473,9 @@ func (p *PEFile) formatStripOperations(operations []string) string {
 	var result strings.Builder
 
 	// Group operations by type for better readability
-	sectionOps := []string{}
-	regexOps := []string{}
-	otherOps := []string{}
+	var sectionOps []string
+	var regexOps []string
+	var otherOps []string
 
 	for _, op := range operations {
 		if strings.Contains(op, "sections (") {
