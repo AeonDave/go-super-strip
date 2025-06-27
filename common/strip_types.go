@@ -224,9 +224,9 @@ func GetRegexStripRules() []RegexStripRule {
 		// Packer/Compressor signatures (more comprehensive)
 		{
 			Patterns: []string{
+				`[0-9]\.[0-9]{2}\s+UPX!`,           // UPX version signature
 				`UPX![0-9\.\x00-\x20]{1,10}`,       // UPX signature
 				`\$UPX: [a-zA-Z0-9._\-\s]{5,}\$`,   // UPX marker string
-				`[0-9]\.[0-9]{2}\s+UPX!`,           // UPX version signature
 				`\bPECompact\b|\bASPack\b|\bUPX\b`, // Known packers
 				`\bthemida\b|\bvmprotect\b`,        // Protection software
 			},
