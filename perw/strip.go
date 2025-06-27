@@ -10,9 +10,6 @@ import (
 	"strings"
 )
 
-// --- Core Helper Functions ---
-
-// fillRegion fills a memory region with zeros or random bytes
 func (p *PEFile) fillRegion(offset int64, size int, mode common.FillMode) error {
 	if offset < 0 || size < 0 || offset+int64(size) > int64(len(p.RawData)) {
 		return fmt.Errorf("invalid region: offset %d, size %d, total %d", offset, size, len(p.RawData))

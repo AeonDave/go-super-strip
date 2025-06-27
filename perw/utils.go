@@ -398,8 +398,6 @@ func (p *PEFile) IsExecutableOrShared() bool {
 	return (c&pe.IMAGE_FILE_EXECUTABLE_IMAGE) != 0 || (c&pe.IMAGE_FILE_DLL) != 0
 }
 
-// --- Section Type Utilities ---
-
 func (p *PEFile) validateOffset(offset int64, size int) error {
 	if int(offset+int64(size)) > len(p.RawData) {
 		return fmt.Errorf("offset %d + size %d exceeds file size %d", offset, size, len(p.RawData))

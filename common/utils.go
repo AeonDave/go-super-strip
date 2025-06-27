@@ -3,8 +3,114 @@ package common
 import (
 	"crypto/rand"
 	"fmt"
+	"math"
+	"regexp"
 	"strings"
+	"unicode"
 )
+
+// CalculateStringEntropy calcola l'entropia di Shannon di una stringa
+func CalculateStringEntropy(s string) float64 {
+	if len(s) == 0 {
+		return 0.0
+	}
+	freq := make(map[rune]int)
+	for _, r := range s {
+		freq[r]++
+	}
+	entropy := 0.0
+	length := float64(len(s))
+	for _, count := range freq {
+		p := float64(count) / length
+		entropy -= p * math.Log2(p)
+	}
+	return entropy
+}
+
+// IsPureNumeric controlla se una stringa è composta principalmente da numeri
+func IsPureNumeric(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	digitCount := 0
+	for _, r := range s {
+		if unicode.IsDigit(r) {
+			digitCount++
+		}
+	}
+	return float64(digitCount)/float64(len(s)) > 0.8
+}
+
+// IsRepetitivePattern rileva pattern ripetitivi in una stringa
+func IsRepetitivePattern(s string) bool {
+	if len(s) < 8 {
+		return false
+	}
+	// Check for repeated substrings
+	for i := 1; i <= len(s)/3; i++ {
+		substr := s[:i]
+		repeated := true
+		for j := i; j+i <= len(s); j += i {
+			if s[j:j+i] != substr {
+				repeated = false
+				break
+			}
+		}
+		if repeated {
+			return true
+		}
+	}
+	// Check for single character repetition
+	charCounts := make(map[rune]int)
+	for _, r := range s {
+		charCounts[r]++
+	}
+	for _, count := range charCounts {
+		if count > len(s)/2 {
+			return true
+		}
+	}
+	return false
+}
+
+// IsBase64Like verifica se una stringa sembra base64 (ma non decodifica)
+func IsBase64Like(s string) bool {
+	if len(s)%4 != 0 {
+		return false
+	}
+	base64Pattern := regexp.MustCompile(`^[A-Za-z0-9+/]*={0,2}$`)
+	return base64Pattern.MatchString(s)
+}
+
+// IsHexStringStrict verifica se una stringa è una sequenza esadecimale (versione aggiornata, usata per analisi stringhe)
+func IsHexStringStrict(s string) bool {
+	if len(s)%2 != 0 {
+		return false
+	}
+	hexPattern := regexp.MustCompile(`^[0-9A-Fa-f]+$`)
+	return hexPattern.MatchString(s)
+}
+
+// FormatFileAge converte giorni in formato leggibile (anni, mesi, giorni)
+func FormatFileAge(totalDays float64) string {
+	years := int(totalDays) / 365
+	months := (int(totalDays) % 365) / 30
+	days := int(totalDays) % 30
+	var parts []string
+	if years > 0 {
+		parts = append(parts, fmt.Sprintf("%d years", years))
+	}
+	if months > 0 {
+		parts = append(parts, fmt.Sprintf("%d months", months))
+	}
+	if days > 0 || len(parts) == 0 {
+		parts = append(parts, fmt.Sprintf("%d days", days))
+	}
+	if len(parts) == 1 {
+		return parts[0]
+	}
+	return strings.Join(parts[:len(parts)-1], ", ") + " and " + parts[len(parts)-1]
+}
 
 // GenerateRandomBytes generates a slice of random bytes of the specified size
 func GenerateRandomBytes(size int) ([]byte, error) {
