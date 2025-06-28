@@ -812,3 +812,24 @@ func isLikelyPacked(sections []Section) bool {
 
 	return percentHigh > 0.5 || avgEntropy > 6.8
 }
+
+// ExtractOverlay extracts overlay data from a PE file if present
+func (p *PEFile) ExtractOverlay() ([]byte, error) {
+	if !p.HasOverlay {
+		return nil, fmt.Errorf("no overlay found in PE file")
+	}
+
+	if p.OverlayOffset < 0 || p.OverlayOffset >= int64(len(p.RawData)) {
+		return nil, fmt.Errorf("invalid overlay offset: %d", p.OverlayOffset)
+	}
+
+	overlayEnd := p.OverlayOffset + p.OverlaySize
+	if overlayEnd > int64(len(p.RawData)) {
+		overlayEnd = int64(len(p.RawData))
+	}
+
+	overlayData := make([]byte, overlayEnd-p.OverlayOffset)
+	copy(overlayData, p.RawData[p.OverlayOffset:overlayEnd])
+
+	return overlayData, nil
+}
