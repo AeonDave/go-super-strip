@@ -593,7 +593,6 @@ func (p *PEFile) sanitizeSectionName(nameBytes []byte) string {
 	}
 
 	if strings.HasPrefix(name, "/") && len(name) <= 3 {
-
 		return fmt.Sprintf("<coff_ref_%s>", strings.TrimPrefix(name, "/"))
 	}
 

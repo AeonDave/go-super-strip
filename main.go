@@ -203,46 +203,36 @@ func runOperations(config *Configuration) error {
 
 	var operations []string
 
-	// Step 1: Insert
 	if config.Insert != "" {
 		if err := runInsert(config, isPE); err != nil {
 			return err
 		}
 		operations = append(operations, "insert")
 	}
-
-	// Step 2: StripAll
 	if config.Strip {
 		if err := runStrip(config, isPE); err != nil {
 			return fmt.Errorf("strip operation failed: %v", err)
 		}
 		operations = append(operations, "strip")
 	}
-
-	// Step 3: Compact
 	if config.Compact {
 		if err := runCompact(config, isPE); err != nil {
 			return fmt.Errorf("compact operation failed: %v", err)
 		}
 		operations = append(operations, "compact")
 	}
-
-	// Step 4: Obfuscate
 	if config.Obfuscate {
 		if err := runObfuscate(config, isPE); err != nil {
 			return err
 		}
 		operations = append(operations, "obfuscate")
 	}
-
-	// Step 5: Regex
 	if config.Regex != "" {
 		if err := runRegex(config, isPE); err != nil {
 			return err
 		}
 		operations = append(operations, "regex")
 	}
-
 	if len(operations) > 0 {
 		fmt.Printf("Completed operations: %s\n", strings.Join(operations, ", "))
 	}

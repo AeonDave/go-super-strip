@@ -7,7 +7,7 @@ const (
 	SymbolSections
 	BuildInfoSections
 	NonEssentialSections
-	//ExceptionSections
+	ExceptionSections
 	RelocationSections
 	TLSSections
 	CertificateSections
@@ -85,15 +85,15 @@ func GetSectionStripRule() map[SectionType]SectionStripRule {
 			IsRisky:     false,
 			Fill:        ZeroFill,
 		},
-		//ExceptionSections: {
-		//	ExactNames:  []string{".pdata", ".xdata"},
-		//	PrefixNames: []string{".eh_frame"},
-		//	Description: "structured exception handling data",
-		//	StripForDLL: true,
-		//	StripForEXE: true,
-		//	IsRisky:     true,
-		//	Fill:        ZeroFill,
-		//},
+		ExceptionSections: {
+			ExactNames:  []string{".pdata", ".xdata"},
+			PrefixNames: []string{".eh_frame"},
+			Description: "structured exception handling data",
+			StripForDLL: true,
+			StripForEXE: true,
+			IsRisky:     true,
+			Fill:        ZeroFill,
+		},
 		BuildInfoSections: {
 			ExactNames:  []string{".buildid", ".gfids", ".giats", ".gljmp", ".textbss", ".go.buildinfo", ".noptrdata", ".typelink", ".itablink", ".gosymtab", ".gopclntab"},
 			PrefixNames: []string{".go.", ".gopkg."},
