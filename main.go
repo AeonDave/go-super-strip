@@ -12,23 +12,18 @@ import (
 )
 
 type Configuration struct {
-	FilePath string
-	Verbose  bool
-
-	// Core operation flags (-a, -s, -o, -c, -i, -r)
+	FilePath  string
+	Verbose   bool
 	Analyze   bool   // -a: Analyze file structure only (standalone)
 	Strip     bool   // -s: Strip info, metadata and sections
 	Obfuscate bool   // -o: Apply obfuscation techniques
 	Compact   bool   // -c: Apply file size reduction
 	Insert    string // -i: Add section (format: name:filepath[:password])
 	Regex     string // -r: Strip bytes matching regex pattern
-
-	// Modifier flags
-	Force bool // -f: Apply risky operations for -s, -c, -o
+	Force     bool   // -f: Apply risky operations for -s, -c, -o
 }
 
 var (
-	// Core techniques
 	analyzeFlag     = flag.Bool("a", false, "Analyze executable file structure and exit")
 	analyzeFlagLong = flag.Bool("analyze", false, "Analyze executable file structure and exit")
 
@@ -55,10 +50,6 @@ var (
 	verboseFlag = flag.Bool("v", false, "Enable verbose output")
 	helpFlag    = flag.Bool("h", false, "Show this help")
 )
-
-func init() {
-	flag.Usage = printUsage
-}
 
 func main() {
 	for _, arg := range os.Args {
@@ -359,12 +350,12 @@ DESCRIPTION:
 	Operations are performed in strict order: insert -> strip -> compact -> obfuscate -> regex
 
 OPTIONS:
+	-a, --analyze        Analyze executable file structure and exit
 	-s, --strip          StripAll debug and symbol sections
 	-c, --compact        Apply size reduction by removing sections
 	-f, --force          Apply risky operations to -s, -c, or -o
 	-o, --obfuscate      Apply obfuscation techniques
 	-r, --regex <pattern> StripAll bytes matching a custom regex pattern
-	-a, --analyze        Analyze executable file structure and exit
 	-i, --insert <spec>  Add hex section (format: name:data_or_file[:password])
 	                     - name:file.txt (file without password)
 	                     - name:HelloWorld (string without password)  
@@ -375,17 +366,17 @@ OPTIONS:
 	-h                   Show this help
 
 EXAMPLES:
-	%s -a program                		  	# Analyze PE file structure
-	%s -s program                		  	# StripAll debug sections
-	%s -c program              				# Compact file (remove sections)
-	%s -o program              		 		# Apply obfuscation techniques
-	%s -s -c -o program        		 	   	# StripAll, compact, and obfuscate (full pipeline)
-	%s -s -f program            		   	# StripAll with risky operations (relocations, etc.)
-	%s -c -f program               			# Compact with risky operations
-	%s -s -r 'UPX!' program        			# StripAll built-in rules, then custom regex 'UPX!'
-	%s -i 'custom:data.bin' program 		# Add hex section from file
-	%s -i 'custom:HelloWorld' program 		# Add hex section from string
-	%s -i 'secret:data.bin:pass123' program # Add encrypted hex section
+	%s -a bin                		  	# Analyze PE file structure
+	%s -s bin                		  	# StripAll debug sections
+	%s -c bin              				# Compact file (remove sections)
+	%s -o bin              		 		# Apply obfuscation techniques
+	%s -s -c -o bin        		 	   	# StripAll, compact, and obfuscate (full pipeline)
+	%s -s -f bin            		   	# StripAll with risky operations (relocations, etc.)
+	%s -c -f bin               			# Compact with risky operations
+	%s -s -r 'UPX!' bin        			# StripAll built-in rules, then custom regex 'UPX!'
+	%s -i 'custom:data.bin' bin 		# Add hex section from file
+	%s -i 'custom:HelloWorld' bin 		# Add hex section from string
+	%s -i 'secret:data.bin:pass123' bin # Add encrypted hex section
 
 `, os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0])
 }
