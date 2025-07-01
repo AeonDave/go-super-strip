@@ -1,7 +1,6 @@
 package perw
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
 	"gosstrip/common"
@@ -9,20 +8,9 @@ import (
 	"strings"
 )
 
-type compactionInfo struct {
-	keepableSectionIndices []int
-	keepableSections       []Section
-	sectionDataMap         map[int][]byte
-	fileAlignment          uint32
-	sectionAlignment       uint32
-	newSizeOfHeaders       uint32
-	removedNames           []string
-	originalSections       []Section
-}
-
 func (p *PEFile) Compact(force bool) (*common.OperationResult, error) {
 	if force {
-		res, err := p.physicalCompactPE(force)
+		res, err := p.properSectionRemoval(force)
 		if err != nil {
 			return common.NewSkipped(fmt.Sprintf("physical compaction failed: %v", err)), nil
 		}
@@ -132,9 +120,6 @@ func (p *PEFile) sectionsReferencedByDataDirectories() map[int]struct{} {
 			continue
 		}
 		for idx, s := range p.Sections {
-			if strings.ToLower(s.Name) == ".reloc" {
-				continue
-			}
 			if s.VirtualAddress <= rva && rva < s.VirtualAddress+s.VirtualSize {
 				protected[idx] = struct{}{}
 				break
@@ -144,407 +129,241 @@ func (p *PEFile) sectionsReferencedByDataDirectories() map[int]struct{} {
 	return protected
 }
 
-func (p *PEFile) physicalCompactPE(force bool) (*common.OperationResult, error) {
+func (p *PEFile) properSectionRemoval(force bool) (*common.OperationResult, error) {
 	if len(p.Sections) == 0 {
 		return common.NewSkipped("no sections to process"), nil
 	}
+
 	originalSize := uint64(len(p.RawData))
-	originalSections := make([]Section, len(p.Sections))
-	copy(originalSections, p.Sections)
-	removableSectionIndices, keepableSectionIndices := p.identifyStripSections(force)
+	removableSectionIndices, _ := p.identifyStripSections(force)
+
 	if len(removableSectionIndices) == 0 {
 		return common.NewSkipped("no removable sections found"), nil
 	}
-	if len(keepableSectionIndices) == 0 {
-		return common.NewSkipped("no sections to keep after compaction"), nil
-	}
-	compactInfo, err := p.prepareCompaction(originalSections, keepableSectionIndices, removableSectionIndices)
-	if err != nil {
-		return nil, fmt.Errorf("preparation failed: %w", err)
-	}
-	if err := p.executeCompaction(compactInfo); err != nil {
-		return nil, fmt.Errorf("execution failed: %w", err)
-	}
-	if err := p.finalizeCompaction(removableSectionIndices, originalSections); err != nil {
-		return nil, fmt.Errorf("finalization failed: %w", err)
-	}
-	if err := p.validatePEAfterCompaction(); err != nil {
-		return nil, fmt.Errorf("PE validation failed after compaction: %w", err)
-	}
-	return p.generateCompactionResult(originalSize, removableSectionIndices, compactInfo.removedNames), nil
-}
 
-func (p *PEFile) prepareCompaction(originalSections []Section, keepableSectionIndices, removableSectionIndices []int) (*compactionInfo, error) {
-	info := &compactionInfo{
-		keepableSectionIndices: keepableSectionIndices,
-		sectionDataMap:         make(map[int][]byte),
-		removedNames:           make([]string, 0, len(removableSectionIndices)),
-		originalSections:       originalSections,
-	}
+	// CORREZIONE 1: Salva gli RVA rimossi PRIMA di modificare p.Sections
+	removedRVAs := make(map[uint32]bool)
+	removedNames := make([]string, 0, len(removableSectionIndices))
 	for _, idx := range removableSectionIndices {
-		info.removedNames = append(info.removedNames, p.Sections[idx].Name)
+		if idx >= 0 && idx < len(p.Sections) {
+			removedRVAs[p.Sections[idx].VirtualAddress] = true
+			removedNames = append(removedNames, p.Sections[idx].Name)
+		}
 	}
-	keepableIndexMap := make(map[int]bool)
-	for _, idx := range keepableSectionIndices {
-		keepableIndexMap[idx] = true
+
+	// CORREZIONE 2: Estrai FileAlignment dinamicamente
+	fileAlignment, err := p.extractFileAlignment()
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract file alignment: %w", err)
 	}
-	sort.Ints(info.keepableSectionIndices)
-	for _, idx := range info.keepableSectionIndices {
-		info.keepableSections = append(info.keepableSections, originalSections[idx])
+
+	// Ordina gli indici delle sezioni rimovibili in ordine decrescente
+	sort.Sort(sort.Reverse(sort.IntSlice(removableSectionIndices)))
+
+	totalRemovedSize := int64(0)
+
+	// Rimozione fisica delle sezioni
+	for _, sectionIdx := range removableSectionIndices {
+		if err := p.removeSingleSection(sectionIdx, &totalRemovedSize, fileAlignment); err != nil {
+			return nil, fmt.Errorf("failed to remove section %d: %w", sectionIdx, err)
+		}
 	}
-	if err := p.extractAlignmentParameters(&info.fileAlignment, &info.sectionAlignment); err != nil {
-		return nil, err
+
+	// Aggiorna NumberOfSections nel COFF header
+	if err := p.updateNumberOfSections(len(p.Sections) - len(removableSectionIndices)); err != nil {
+		return nil, fmt.Errorf("failed to update NumberOfSections: %w", err)
 	}
-	p.preserveSectionData(originalSections, keepableIndexMap, info.sectionDataMap)
-	info.newSizeOfHeaders = p.calculateNewHeaderSize(info.fileAlignment, len(info.keepableSections))
-	p.recalculateSectionOffsets(info.keepableSections, info.fileAlignment, info.newSizeOfHeaders)
-	return info, nil
+
+	// CORREZIONE 3: Ricalcola VirtualSize prima di aggiornare la section table
+	newSections := p.buildNewSectionsWithCorrectVirtualSize(removableSectionIndices, removedRVAs)
+
+	// Aggiorna la section table con le nuove sezioni
+	if err := p.updateSectionTableWithNewSections(newSections); err != nil {
+		return nil, fmt.Errorf("failed to update section table: %w", err)
+	}
+
+	// CORREZIONE 4: Azzera i Data Directories usando gli RVA salvati
+	if err := p.clearDataDirectoriesForRemovedRVAs(removedRVAs); err != nil {
+		return nil, fmt.Errorf("failed to clear data directories: %w", err)
+	}
+
+	// Aggiorna p.Sections
+	p.Sections = newSections
+
+	newSize := uint64(len(p.RawData))
+	percentage := float64(originalSize-newSize) * 100.0 / float64(originalSize)
+	message := fmt.Sprintf("rimozione sezioni: %d -> %d byte (riduzione del %.1f%%), rimosse %d sezioni: %s",
+		originalSize, newSize, percentage, len(removableSectionIndices), strings.Join(removedNames, ", "))
+
+	return common.NewApplied(message, len(removableSectionIndices)), nil
 }
 
-func (p *PEFile) extractAlignmentParameters(fileAlignment, sectionAlignment *uint32) error {
+func (p *PEFile) extractFileAlignment() (uint32, error) {
 	peHeaderOffset := int64(binary.LittleEndian.Uint32(p.RawData[0x3C:0x40]))
 	coffHeaderOffset := peHeaderOffset + 4
 	optionalHeaderOffset := coffHeaderOffset + 20
+	fileAlignmentOffset := optionalHeaderOffset + 36
 
-	*sectionAlignment = binary.LittleEndian.Uint32(p.RawData[optionalHeaderOffset+32:])
-	*fileAlignment = binary.LittleEndian.Uint32(p.RawData[optionalHeaderOffset+36:])
+	if fileAlignmentOffset+4 > int64(len(p.RawData)) {
+		return 512, nil // Default fallback
+	}
 
-	if *fileAlignment == 0 || *fileAlignment < 512 {
-		*fileAlignment = 512
+	fileAlignment := binary.LittleEndian.Uint32(p.RawData[fileAlignmentOffset:])
+	if fileAlignment == 0 || fileAlignment < 512 {
+		fileAlignment = 512 // Default minimum
+	}
+
+	return fileAlignment, nil
+}
+
+func (p *PEFile) removeSingleSection(sectionIdx int, totalRemovedSize *int64, fileAlignment uint32) error {
+	if sectionIdx < 0 || sectionIdx >= len(p.Sections) {
+		return fmt.Errorf("invalid section index: %d", sectionIdx)
+	}
+
+	sectionToRemove := p.Sections[sectionIdx]
+
+	// Se la sezione ha dati fisici, rimuovili dal file
+	if sectionToRemove.Offset > 0 && sectionToRemove.Size > 0 {
+		// CORREZIONE 2: Usa FileAlignment dinamico invece di 512 fisso
+		alignedSize := alignUp64(sectionToRemove.Size, int64(fileAlignment))
+
+		// Rimuovi i dati della sezione dal RawData
+		start := int(sectionToRemove.Offset)
+		end := int(sectionToRemove.Offset + alignedSize)
+
+		if end > len(p.RawData) {
+			end = len(p.RawData)
+		}
+
+		// Crea nuovo RawData senza i dati della sezione
+		newRawData := make([]byte, len(p.RawData)-(end-start))
+		copy(newRawData[:start], p.RawData[:start])
+		copy(newRawData[start:], p.RawData[end:])
+		p.RawData = newRawData
+
+		// Aggiusta i PointerToRawData delle sezioni che seguono
+		removedSize := int64(end - start)
+		*totalRemovedSize += removedSize
+
+		for i := range p.Sections {
+			if i != sectionIdx && p.Sections[i].Offset > sectionToRemove.Offset {
+				p.Sections[i].Offset -= removedSize
+			}
+		}
 	}
 
 	return nil
 }
 
-func (p *PEFile) preserveSectionData(originalSections []Section, keepableIndexMap map[int]bool, sectionDataMap map[int][]byte) {
-	for originalIdx, sec := range originalSections {
-		if keepableIndexMap[originalIdx] {
-			if sec.Offset > 0 && sec.Size > 0 && sec.Offset+sec.Size <= int64(len(p.RawData)) {
-				data := make([]byte, sec.Size)
-				copy(data, p.RawData[sec.Offset:sec.Offset+sec.Size])
-				sectionDataMap[originalIdx] = data
-			}
+func (p *PEFile) buildNewSectionsWithCorrectVirtualSize(removedIndices []int, removedRVAs map[uint32]bool) []Section {
+	// Crea una mappa degli indici rimossi per un accesso veloce
+	removedMap := make(map[int]bool)
+	for _, idx := range removedIndices {
+		removedMap[idx] = true
+	}
+
+	// Crea nuova lista di sezioni senza quelle rimosse
+	newSections := make([]Section, 0, len(p.Sections)-len(removedIndices))
+	for i, section := range p.Sections {
+		if !removedMap[i] {
+			newSections = append(newSections, section)
 		}
 	}
+
+	// CORREZIONE 3: Ricalcola VirtualSize per le sezioni che precedono una rimossa
+	for i := 0; i < len(newSections)-1; i++ {
+		currentSection := &newSections[i]
+		nextSection := &newSections[i+1]
+
+		// Se tra currentSection e nextSection c'era una sezione rimossa,
+		// dobbiamo aggiustare la VirtualSize di currentSection
+		hasRemovedSectionBetween := false
+		for rva := range removedRVAs {
+			if rva > currentSection.VirtualAddress && rva < nextSection.VirtualAddress {
+				hasRemovedSectionBetween = true
+				break
+			}
+		}
+
+		if hasRemovedSectionBetween {
+			// Ricalcola VirtualSize = VA_next - VA_this
+			currentSection.VirtualSize = nextSection.VirtualAddress - currentSection.VirtualAddress
+		}
+	}
+
+	return newSections
 }
 
-func (p *PEFile) calculateNewHeaderSize(fileAlignment uint32, numSections int) uint32 {
+func (p *PEFile) updateSectionTableWithNewSections(newSections []Section) error {
 	peHeaderOffset := int64(binary.LittleEndian.Uint32(p.RawData[0x3C:0x40]))
 	coffHeaderOffset := peHeaderOffset + 4
 	optionalHeaderOffset := coffHeaderOffset + 20
 	sizeOfOptionalHeader := int64(binary.LittleEndian.Uint16(p.RawData[coffHeaderOffset+16:]))
 	sectionTableOffset := optionalHeaderOffset + sizeOfOptionalHeader
-	minHeaderSize := sectionTableOffset + int64(numSections*40) + 4
-	return alignUp(uint32(minHeaderSize), fileAlignment)
-}
 
-func (p *PEFile) recalculateSectionOffsets(keepableSections []Section, fileAlignment, newSizeOfHeaders uint32) {
-	currentFileOffset := int64(newSizeOfHeaders)
-	for i := range keepableSections {
-		sec := &keepableSections[i]
-		sec.Offset = alignUp64(currentFileOffset, int64(fileAlignment))
-		sizeOnDisk := alignUp64(sec.Size, int64(fileAlignment))
-		currentFileOffset = sec.Offset + sizeOnDisk
-	}
-}
-
-func (p *PEFile) executeCompaction(info *compactionInfo) error {
-	finalFileSize := p.calculateFinalFileSizeWithPadding(info.keepableSections, info.fileAlignment)
-	newRawData := make([]byte, finalFileSize)
-	headerSize := int64(info.newSizeOfHeaders)
-	if headerSize > int64(len(p.RawData)) {
-		headerSize = int64(len(p.RawData))
-	}
-	copy(newRawData[:headerSize], p.RawData[:headerSize])
-	if err := p.updatePEHeadersInNewBuffer(newRawData, info); err != nil {
-		return fmt.Errorf("failed to update headers: %w", err)
-	}
-	if err := p.updateSectionTableInNewBuffer(newRawData, info); err != nil {
-		return fmt.Errorf("failed to update section table: %w", err)
-	}
-	if err := p.copySectionData(newRawData, info.keepableSections, info.keepableSectionIndices, info.sectionDataMap); err != nil {
-		return err
-	}
-	fmt.Printf("DEBUG: Prima dell'aggiornamento - DOS: %02x %02x\n", newRawData[0], newRawData[1])
-	p.RawData = newRawData
-	p.Sections = info.keepableSections
-	p.debugPEStructure()
-	return nil
-}
-
-func (p *PEFile) calculateFinalFileSizeWithPadding(keepableSections []Section, fileAlignment uint32) int64 {
-	if len(keepableSections) == 0 {
-		return 0
-	}
-	lastSection := keepableSections[len(keepableSections)-1]
-	lastSectionAlignedSize := alignUp64(lastSection.Size, int64(fileAlignment))
-	lastSectionEnd := lastSection.Offset + lastSectionAlignedSize
-	return alignUp64(lastSectionEnd, int64(fileAlignment))
-}
-
-func (p *PEFile) copySectionData(newRawData []byte, keepableSections []Section, keepableSectionIndices []int, sectionDataMap map[int][]byte) error {
-	for i, originalIdx := range keepableSectionIndices {
-		sec := keepableSections[i]
-		data, ok := sectionDataMap[originalIdx]
-		if !ok {
-			continue
+	// CORREZIONE 5: Azzera l'intera section table originale
+	originalSectionCount := len(p.Sections)
+	sectionTableSize := originalSectionCount * 40
+	for i := 0; i < sectionTableSize; i++ {
+		if sectionTableOffset+int64(i) < int64(len(p.RawData)) {
+			p.RawData[sectionTableOffset+int64(i)] = 0
 		}
-
-		end := sec.Offset + int64(len(data))
-		if end > int64(len(newRawData)) {
-			return fmt.Errorf("section %s exceeds file size", sec.Name)
-		}
-
-		copy(newRawData[sec.Offset:end], data)
 	}
-	return nil
-}
 
-func (p *PEFile) finalizeCompaction(removableSectionIndices []int, originalSections []Section) error {
-	p.clearInvalidDataDirectories(removableSectionIndices, originalSections)
-	if err := p.validateEntryPoint(); err != nil {
-		return fmt.Errorf("invalid entry point: %w", err)
-	}
-	if err := p.validateDataDirectoriesAfterCompaction(); err != nil {
-		return fmt.Errorf("data directories validation failed: %w", err)
-	}
-	return nil
-}
-
-func (p *PEFile) updatePEHeadersInNewBuffer(data []byte, info *compactionInfo) error {
-	peHeaderOffset := int64(binary.LittleEndian.Uint32(data[0x3C:0x40]))
-	coffHeaderOffset := peHeaderOffset + 4
-	optionalHeaderOffset := coffHeaderOffset + 20
-	binary.LittleEndian.PutUint16(data[coffHeaderOffset+2:], uint16(len(info.keepableSections)))
-
-	characteristics := binary.LittleEndian.Uint16(data[coffHeaderOffset+18:])
-	hasRelocSection := false
-	for _, sec := range info.keepableSections {
-		if strings.ToLower(sec.Name) == ".reloc" {
-			hasRelocSection = true
+	// Scrivi la nuova section table con le VirtualSize corrette
+	for i, section := range newSections {
+		hdrOff := sectionTableOffset + int64(i*40)
+		if hdrOff+40 > int64(len(p.RawData)) {
 			break
 		}
-	}
-	if !hasRelocSection {
-		characteristics |= 0x0001 // IMAGE_FILE_RELOCS_STRIPPED
-		binary.LittleEndian.PutUint16(data[coffHeaderOffset+18:], characteristics)
-	}
 
-	binary.LittleEndian.PutUint32(data[coffHeaderOffset+8:], 0)  // PointerToSymbolTable
-	binary.LittleEndian.PutUint32(data[coffHeaderOffset+12:], 0) // NumberOfSymbols
-	//binary.LittleEndian.PutUint16(data[coffHeaderOffset+2:], uint16(len(info.keepableSections)))
-	if len(info.keepableSections) > 0 {
-		lastSection := info.keepableSections[len(info.keepableSections)-1]
-		newSizeOfImage := alignUp(lastSection.VirtualAddress+lastSection.VirtualSize, info.sectionAlignment)
-		binary.LittleEndian.PutUint32(data[optionalHeaderOffset+56:], newSizeOfImage)
-	}
-	binary.LittleEndian.PutUint32(data[optionalHeaderOffset+60:], info.newSizeOfHeaders)
-	return nil
-}
-
-func (p *PEFile) shouldClearRelocations(sectionName string) bool {
-	name := strings.ToLower(sectionName)
-	switch name {
-	case ".text", ".code", ".data", ".rdata", ".idata":
-		return false
-	case ".reloc":
-		return false
-	}
-	if strings.Contains(name, "debug") || strings.Contains(name, "symtab") {
-		return true
-	}
-	return false
-}
-
-func (p *PEFile) updateSectionTableInNewBuffer(data []byte, info *compactionInfo) error {
-	peHeaderOffset := int64(binary.LittleEndian.Uint32(data[0x3C:0x40]))
-	coffHeaderOffset := peHeaderOffset + 4
-	optionalHeaderOffset := coffHeaderOffset + 20
-	sizeOfOptionalHeader := int64(binary.LittleEndian.Uint16(data[coffHeaderOffset+16:]))
-	sectionTableOffset := optionalHeaderOffset + sizeOfOptionalHeader
-
-	for i, originalIdx := range info.keepableSectionIndices {
-		sec := info.keepableSections[i]
-		hdrOff := sectionTableOffset + int64(i*40)
-		if hdrOff+40 > int64(len(data)) {
-			return fmt.Errorf("section table exceeds file bounds")
-		}
-		originalSec := info.originalSections[originalIdx]
+		// Nome sezione (8 byte)
 		nameBytes := make([]byte, 8)
-		copy(nameBytes, sec.Name)
-		copy(data[hdrOff:hdrOff+8], nameBytes)
-		binary.LittleEndian.PutUint32(data[hdrOff+8:], sec.VirtualSize)
-		binary.LittleEndian.PutUint32(data[hdrOff+12:], sec.VirtualAddress)
-		sizeRaw := alignUp(uint32(sec.Size), info.fileAlignment)
-		binary.LittleEndian.PutUint32(data[hdrOff+16:], sizeRaw)
-		binary.LittleEndian.PutUint32(data[hdrOff+20:], uint32(sec.Offset))
+		copy(nameBytes, section.Name)
+		copy(p.RawData[hdrOff:hdrOff+8], nameBytes)
 
-		if p.shouldClearRelocations(sec.Name) {
-			// Azzera relocazioni per sezioni modificate
-			binary.LittleEndian.PutUint32(data[hdrOff+24:], 0) // PointerToRelocations
-			binary.LittleEndian.PutUint32(data[hdrOff+28:], 0) // PointerToLineNumbers
-			binary.LittleEndian.PutUint16(data[hdrOff+32:], 0) // NumberOfRelocations
-			binary.LittleEndian.PutUint16(data[hdrOff+34:], 0) // NumberOfLineNumbers
-		} else {
-			// Mantieni relocazioni originali per sezioni critiche
-			binary.LittleEndian.PutUint32(data[hdrOff+24:], originalSec.PointerToRelocations)
-			binary.LittleEndian.PutUint32(data[hdrOff+28:], originalSec.PointerToLineNumbers)
-			binary.LittleEndian.PutUint16(data[hdrOff+32:], originalSec.NumberOfRelocations)
-			binary.LittleEndian.PutUint16(data[hdrOff+34:], originalSec.NumberOfLineNumbers)
-		}
-		binary.LittleEndian.PutUint32(data[hdrOff+36:], sec.Flags)
-	}
-
-	totalOriginalSections := len(p.Sections)
-	for i := len(info.keepableSections); i < totalOriginalSections; i++ {
-		hdrOff := sectionTableOffset + int64(i*40)
-		if hdrOff+40 <= int64(len(data)) {
-			for j := 0; j < 40; j++ {
-				data[hdrOff+int64(j)] = 0
-			}
-		}
+		// CORREZIONE 3: Scrivi la VirtualSize corretta
+		binary.LittleEndian.PutUint32(p.RawData[hdrOff+8:], section.VirtualSize)
+		binary.LittleEndian.PutUint32(p.RawData[hdrOff+12:], section.VirtualAddress) // NON CAMBIA
+		binary.LittleEndian.PutUint32(p.RawData[hdrOff+16:], uint32(section.Size))
+		binary.LittleEndian.PutUint32(p.RawData[hdrOff+20:], uint32(section.Offset)) // Aggiustato
+		binary.LittleEndian.PutUint32(p.RawData[hdrOff+24:], section.PointerToRelocations)
+		binary.LittleEndian.PutUint32(p.RawData[hdrOff+28:], section.PointerToLineNumbers)
+		binary.LittleEndian.PutUint16(p.RawData[hdrOff+32:], section.NumberOfRelocations)
+		binary.LittleEndian.PutUint16(p.RawData[hdrOff+34:], section.NumberOfLineNumbers)
+		binary.LittleEndian.PutUint32(p.RawData[hdrOff+36:], section.Flags)
 	}
 
 	return nil
 }
 
-func (p *PEFile) generateCompactionResult(originalSize uint64, removableSectionIndices []int, removedNames []string) *common.OperationResult {
-	newSize := uint64(len(p.RawData))
-	percentage := float64(originalSize-newSize) * 100.0 / float64(originalSize)
-	message := fmt.Sprintf("compattazione fisica: %d -> %d byte (riduzione del %.1f%%), rimosse %d sezioni: %s",
-		originalSize, newSize, percentage, len(removableSectionIndices), strings.Join(removedNames, ", "))
-	return common.NewApplied(message, len(removableSectionIndices))
-}
-
-func (p *PEFile) clearInvalidDataDirectories(removedIndices []int, originalSections []Section) {
+func (p *PEFile) clearDataDirectoriesForRemovedRVAs(removedRVAs map[uint32]bool) error {
 	peHeaderOffset := int64(binary.LittleEndian.Uint32(p.RawData[0x3C:0x40]))
 	coffHeaderOffset := peHeaderOffset + 4
 	optionalHeaderOffset := coffHeaderOffset + 20
 
-	var numberOfRvaAndSizes uint32
 	var dataDirectoryOffset int64
-
 	if p.Is64Bit {
-		numberOfRvaAndSizes = binary.LittleEndian.Uint32(p.RawData[optionalHeaderOffset+108:])
 		dataDirectoryOffset = optionalHeaderOffset + 112
 	} else {
-		numberOfRvaAndSizes = binary.LittleEndian.Uint32(p.RawData[optionalHeaderOffset+92:])
 		dataDirectoryOffset = optionalHeaderOffset + 96
 	}
 
-	if numberOfRvaAndSizes > 16 {
-		numberOfRvaAndSizes = 16
-	}
-
-	removedRanges := make([]struct{ start, end uint32 }, 0, len(removedIndices))
-	for _, idx := range removedIndices {
-		if idx >= 0 && idx < len(originalSections) {
-			sec := originalSections[idx]
-			removedRanges = append(removedRanges, struct{ start, end uint32 }{
-				start: sec.VirtualAddress,
-				end:   sec.VirtualAddress + sec.VirtualSize,
-			})
-		}
-	}
-
-	// Se non ci sono sezioni rimosse, niente da fare
-	if len(removedRanges) == 0 {
-		return
-	}
-
-	// Controlla ogni Data Directory
-	for i := uint32(0); i < numberOfRvaAndSizes; i++ {
+	// CORREZIONE 4: Usa gli RVA salvati prima della modifica
+	for i := 0; i < 16; i++ {
 		entryOffset := dataDirectoryOffset + int64(i*8)
 		if entryOffset+8 > int64(len(p.RawData)) {
 			break
 		}
 
 		rva := binary.LittleEndian.Uint32(p.RawData[entryOffset:])
-		size := binary.LittleEndian.Uint32(p.RawData[entryOffset+4:])
-
 		if rva == 0 {
 			continue
 		}
 
-		// Controlla se l'RVA (o parte della struttura) cade in un range rimosso
-		structEnd := rva + size
-		for _, r := range removedRanges {
-			// Verifica sovrapposizione: la struttura interseca il range rimosso?
-			if (rva >= r.start && rva < r.end) ||
-				(structEnd > r.start && structEnd <= r.end) ||
-				(rva < r.start && structEnd > r.end) {
-				// Azzera la directory se interseca con una sezione rimossa
-				binary.LittleEndian.PutUint32(p.RawData[entryOffset:], 0)
-				binary.LittleEndian.PutUint32(p.RawData[entryOffset+4:], 0)
-				break
-			}
-		}
-	}
-}
-
-func (p *PEFile) validateEntryPoint() error {
-	peHeaderOffset := int64(binary.LittleEndian.Uint32(p.RawData[0x3C:0x40]))
-	coffHeaderOffset := peHeaderOffset + 4
-	optionalHeaderOffset := coffHeaderOffset + 20
-	epRVAOffset := optionalHeaderOffset + 40
-	if epRVAOffset+4 > int64(len(p.RawData)) {
-		return fmt.Errorf("entry point offset out of bounds")
-	}
-	epRVA := binary.LittleEndian.Uint32(p.RawData[epRVAOffset:])
-	if epRVA == 0 {
-		return nil
-	}
-	for _, sec := range p.Sections {
-		if sec.VirtualAddress <= epRVA && epRVA < sec.VirtualAddress+sec.VirtualSize {
-			return nil
-		}
-	}
-	return fmt.Errorf("entry point RVA 0x%X points to removed section", epRVA)
-}
-
-func (p *PEFile) validateDataDirectoriesAfterCompaction() error {
-	peHeaderOffset := int64(binary.LittleEndian.Uint32(p.RawData[0x3C:0x40]))
-	coffHeaderOffset := peHeaderOffset + 4
-	optionalHeaderOffset := coffHeaderOffset + 20
-
-	var numberOfRvaAndSizes uint32
-	var dataDirectoryOffset int64
-
-	if p.Is64Bit {
-		numberOfRvaAndSizes = binary.LittleEndian.Uint32(p.RawData[optionalHeaderOffset+108:])
-		dataDirectoryOffset = optionalHeaderOffset + 112
-	} else {
-		numberOfRvaAndSizes = binary.LittleEndian.Uint32(p.RawData[optionalHeaderOffset+92:])
-		dataDirectoryOffset = optionalHeaderOffset + 96
-	}
-
-	if numberOfRvaAndSizes > 16 {
-		numberOfRvaAndSizes = 16
-	}
-
-	for i := uint32(0); i < numberOfRvaAndSizes; i++ {
-		entryOffset := dataDirectoryOffset + int64(i*8)
-		rva := binary.LittleEndian.Uint32(p.RawData[entryOffset:])
-		size := binary.LittleEndian.Uint32(p.RawData[entryOffset+4:])
-
-		if rva == 0 {
-			continue // Entry vuota, ok
-		}
-
-		// Verifica che l'RVA punti a una sezione valida
-		foundValidSection := false
-		for _, sec := range p.Sections {
-			if rva >= sec.VirtualAddress && rva < sec.VirtualAddress+sec.VirtualSize {
-				// Verifica che la struttura completa sia contenuta nella sezione
-				if rva+size <= sec.VirtualAddress+sec.VirtualSize {
-					foundValidSection = true
-					break
-				}
-			}
-		}
-
-		if !foundValidSection {
-			// Se l'RVA non è valido, azzeralo per evitare crashes
+		// Se l'RVA corrisponde esattamente a una sezione rimossa, azzeralo
+		if removedRVAs[rva] {
 			binary.LittleEndian.PutUint32(p.RawData[entryOffset:], 0)
 			binary.LittleEndian.PutUint32(p.RawData[entryOffset+4:], 0)
 		}
@@ -553,34 +372,15 @@ func (p *PEFile) validateDataDirectoriesAfterCompaction() error {
 	return nil
 }
 
-func (p *PEFile) validatePEAfterCompaction() error {
-	if len(p.RawData) < 64 || p.RawData[0] != 'M' || p.RawData[1] != 'Z' {
-		return fmt.Errorf("invalid DOS signature")
+func (p *PEFile) updateNumberOfSections(newCount int) error {
+	peHeaderOffset := int64(binary.LittleEndian.Uint32(p.RawData[0x3C:0x40]))
+	coffHeaderOffset := peHeaderOffset + 4
+	numberOfSectionsOffset := coffHeaderOffset + 2
+
+	if numberOfSectionsOffset+2 > int64(len(p.RawData)) {
+		return fmt.Errorf("NumberOfSections offset out of bounds")
 	}
-	peOffset := binary.LittleEndian.Uint32(p.RawData[0x3C:0x40])
-	if int(peOffset+24) > len(p.RawData) ||
-		!bytes.Equal(p.RawData[peOffset:peOffset+4], []byte{'P', 'E', 0, 0}) {
-		return fmt.Errorf("invalid PE signature")
-	}
+
+	binary.LittleEndian.PutUint16(p.RawData[numberOfSectionsOffset:], uint16(newCount))
 	return nil
-}
-
-func (p *PEFile) debugPEStructure() {
-	if len(p.RawData) < 64 {
-		fmt.Printf("DEBUG: File troppo piccolo: %d bytes\n", len(p.RawData))
-		return
-	}
-	if p.RawData[0] != 'M' || p.RawData[1] != 'Z' {
-		fmt.Printf("DEBUG: DOS signature invalida: %02x %02x\n", p.RawData[0], p.RawData[1])
-		return
-	}
-	peOffset := binary.LittleEndian.Uint32(p.RawData[0x3C:0x40])
-	fmt.Printf("DEBUG: PE offset: 0x%x\n", peOffset)
-
-	if int(peOffset+4) > len(p.RawData) {
-		fmt.Printf("DEBUG: PE offset fuori dai limiti\n")
-		return
-	}
-	peSignature := p.RawData[peOffset : peOffset+4]
-	fmt.Printf("DEBUG: PE signature: %c%c%02x%02x\n", peSignature[0], peSignature[1], peSignature[2], peSignature[3])
 }
