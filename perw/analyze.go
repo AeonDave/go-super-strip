@@ -473,7 +473,7 @@ func (p *PEFile) printImportsAnalysis() {
 		})
 
 		fmt.Println("IMPORTED LIBRARIES WITH FUNCTIONS:")
-		for i, imp := range dllsWithFunctions {
+		for _, imp := range dllsWithFunctions {
 			dllName := strings.ToUpper(imp.LibraryName)
 
 			functionCount := make(map[string]int)
@@ -498,10 +498,6 @@ func (p *PEFile) printImportsAnalysis() {
 					fmt.Printf("   • %s\n", fn)
 				}
 			}
-
-			if i < len(dllsWithFunctions)-1 {
-				fmt.Println("   ────────────────────────────────────")
-			}
 		}
 	}
 
@@ -522,22 +518,220 @@ func (p *PEFile) printImportsAnalysis() {
 
 func AnalyzeSectionAnomalies(sections []SectionInfo) []string {
 	var issues []string
+
 	for i, s := range sections {
 		if s.Size == 0 {
 			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' has zero size")
 		}
 		if s.IsExecutable && s.IsWritable {
-			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' is both executable and writable")
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' is both executable and writable (RWX)")
 		}
 		if len(s.Name) == 0 || s.Name == "\x00" {
 			issues = append(issues, common.SymbolWarn+" Section with empty or invalid name")
 		}
-
 		if i > 0 && s.FileOffset < sections[i-1].FileOffset+sections[i-1].Size {
 			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' overlaps previous section")
 		}
+		// 1. Suspicious section names
+		if isSuspiciousSectionName(s.Name) {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' has suspicious/unusual name")
+		}
+		// 2. Abnormal section sizes
+		if s.Size > 100*1024*1024 { // > 100MB
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' is unusually large ("+formatSize(s.Size)+")")
+		}
+		// 3. Sections with negative file offsets
+		if s.FileOffset < 0 {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' has invalid file offset")
+		}
+		// 4. Sections with non-aligned file offsets
+		if s.FileOffset > 0 && s.FileOffset%0x200 != 0 {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' has non-aligned file offset (0x"+fmt.Sprintf("%X", s.FileOffset)+")")
+		}
+		// 5. Executable sections unexpected
+		if s.IsExecutable && !isExpectedExecutableSection(s.Name) {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' is executable but has unexpected name")
+		}
+		// 6. Writable sections unexpected
+		if s.IsWritable && !isExpectedWritableSection(s.Name) {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' is writable but has unexpected name")
+		}
+		// 7. Unusual section order
+		if i > 0 && isWrongSectionOrder(sections[i-1].Name, s.Name) {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' appears after '"+sections[i-1].Name+"' (unusual order)")
+		}
+		// 8. Gap too large between sections
+		if i > 0 {
+			prevEnd := sections[i-1].FileOffset + sections[i-1].Size
+			gap := s.FileOffset - prevEnd
+			if gap > 64*1024 { // Gap > 64KB
+				issues = append(issues, common.SymbolWarn+" Large gap ("+formatSize(gap)+") between '"+sections[i-1].Name+"' and '"+s.Name+"'")
+			}
+		}
+		// 9. Sections with unusual permissions
+		if strings.HasPrefix(s.Name, ".text") && !s.IsExecutable {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' should be executable but isn't")
+		}
+		if strings.HasPrefix(s.Name, ".data") && !s.IsWritable {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' should be writable but isn't")
+		}
+		if strings.HasPrefix(s.Name, ".rodata") && s.IsWritable {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' should be read-only but is writable")
+		}
 	}
+	analyzeGlobalSectionAnomalies(sections, &issues)
 	return issues
+}
+
+func isSuspiciousSectionName(name string) bool {
+	suspiciousNames := []string{
+		"UPX0", "UPX1", "UPX2", "UPX3", "UPX!", ".UPX0", ".UPX1", ".UPX2",
+		".aspack", ".ASPack", "ASPack", ".adata",
+		".petite",
+		"MEW",
+		"FSG!",
+		".themida", ".Themida", "Themida", "WinLicen",
+		".vmp", ".vmp0", ".vmp1", ".vmp2", "VProtect", "VMProtect",
+		".enigma", ".enigma1", ".enigma2",
+		".obsidium",
+		".armadillo",
+		".RLPack",
+		"PEPACK!!",
+		"ProCrypt",
+		".svkp",
+		".shrink1", ".shrink2", ".shrink3",
+		".nsp0", ".nsp1", ".nsp2", "nsp0", "nsp1", "nsp2",
+		".MPRESS1", ".MPRESS2",
+		".neolite", ".neolit",
+		"pebundle", "PEBundle",
+		"PEC2TO", "PECompact2", "PEC2", "pec", "pec1", "pec2", "pec3", "pec4", "pec5", "pec6", "PEC2MO",
+		"PELOCKnt",
+		".perplex",
+		"PESHiELD",
+		".Upack", ".ByDwing",
+		".WWPACK", ".WWP32",
+		".yP", ".y0da",
+		"BitArts",
+		"DAStub",
+		"!EPack",
+		"kkrunchy",
+		".MaskPE",
+		"RCryptor", ".RPCrypt",
+		".seau",
+		".sforce3",
+		"_winzip_",
+
+		// Generic suspicious names
+		".packed", ".compress", ".crypt", ".encode",
+		".stub", ".loader", ".inject", ".shell",
+		".payload", ".hook", ".keylog",
+
+		// Other known suspicious/uncommon names
+		".boom",
+		".ccg",
+		".charmve", ".pinclie", // PIN tool
+		".ecode", ".edata", // EPL
+		".gentee",
+		".imrsiv",
+		"lz32.dll",             // Crinkler
+		".mackt",               // ImpRec
+		".mnbvcx1", ".mnbvcx2", // Firseria PUP
+		".profile", // NightHawk C2
+		".rmnet",   // Ramnit virus
+		".spack",
+		".taz",                 // PESpin
+		".tsuarch", ".tsustub", // TSULoader
+		".winapi", // API Override tool
+
+		// Legacy/generic names that can be suspicious
+		"CODE", "DATA",
+	}
+
+	for _, suspicious := range suspiciousNames {
+		if strings.Contains(name, suspicious) {
+			return true
+		}
+	}
+	for _, c := range name {
+		if c < 32 || c > 126 {
+			return true
+		}
+	}
+	return false
+}
+
+func isExpectedExecutableSection(name string) bool {
+	executableSections := []string{".text", ".code", "CODE", ".init", ".fini"}
+	name = strings.ToLower(name)
+	for _, expected := range executableSections {
+		if strings.HasPrefix(name, strings.ToLower(expected)) {
+			return true
+		}
+	}
+	return false
+}
+
+func isExpectedWritableSection(name string) bool {
+	writableSections := []string{".data", ".bss", ".rdata", ".idata", ".tls", ".CRT"}
+	name = strings.ToLower(name)
+	for _, expected := range writableSections {
+		if strings.HasPrefix(name, strings.ToLower(expected)) {
+			return true
+		}
+	}
+	return false
+}
+
+func isWrongSectionOrder(prev, current string) bool {
+	if strings.HasPrefix(strings.ToLower(prev), ".data") &&
+		strings.HasPrefix(strings.ToLower(current), ".text") {
+		return true
+	}
+	if strings.HasPrefix(strings.ToLower(prev), ".bss") &&
+		(strings.HasPrefix(strings.ToLower(current), ".text") ||
+			strings.HasPrefix(strings.ToLower(current), ".data")) {
+		return true
+	}
+
+	return false
+}
+
+func analyzeGlobalSectionAnomalies(sections []SectionInfo, issues *[]string) {
+	if len(sections) < 3 {
+		*issues = append(*issues, common.SymbolWarn+" Very few sections ("+fmt.Sprintf("%d", len(sections))+") - possible packing")
+	}
+	if len(sections) > 20 {
+		*issues = append(*issues, common.SymbolWarn+" Unusually many sections ("+fmt.Sprintf("%d", len(sections))+")")
+	}
+	hasExecutable := false
+	for _, s := range sections {
+		if s.IsExecutable {
+			hasExecutable = true
+			break
+		}
+	}
+	if !hasExecutable {
+		*issues = append(*issues, common.SymbolWarn+" No executable sections found")
+	}
+	nameCount := make(map[string]int)
+	for _, s := range sections {
+		nameCount[s.Name]++
+	}
+	for name, count := range nameCount {
+		if count > 1 {
+			*issues = append(*issues, common.SymbolWarn+" Duplicate section name '"+name+"' ("+fmt.Sprintf("%d", count)+" times)")
+		}
+	}
+}
+
+func formatSize(size int64) string {
+	if size < 1024 {
+		return fmt.Sprintf("%d B", size)
+	} else if size < 1024*1024 {
+		return fmt.Sprintf("%.1f KB", float64(size)/1024)
+	} else {
+		return fmt.Sprintf("%.1f MB", float64(size)/(1024*1024))
+	}
 }
 
 func OverlayInfo(fileSize int64, lastSectionOffset int64, lastSectionSize int64, data []byte) (present bool, offset int64, size int64, entropy float64) {
@@ -552,7 +746,6 @@ func OverlayInfo(fileSize int64, lastSectionOffset int64, lastSectionSize int64,
 func PrintSuspiciousStrings(p *PEFile) {
 	fmt.Println("🔎 SUSPICIOUS CONTENT ANALYSIS")
 	fmt.Println("═══════════════════════════════")
-
 	categories := map[string][]string{
 		"🌐 Network URLs":          {},
 		"🔑 Cryptographic Content": {},
@@ -563,19 +756,15 @@ func PrintSuspiciousStrings(p *PEFile) {
 		"🔧 Versions/Compiler":     {},
 		"🏗️ Build Information":    {},
 	}
-
 	ascii := ExtractSuspiciousStrings(p.RawData, false)
 	uni := ExtractSuspiciousStrings(p.RawData, true)
 	allStrings := append(ascii, uni...)
-
 	if len(allStrings) == 0 {
 		fmt.Printf("%s No strings extracted for analysis\n", common.SymbolInfo)
 		fmt.Println()
 		return
 	}
-
 	filteredStrings := filterRelevantStrings(allStrings)
-
 	if len(filteredStrings) == 0 {
 		fmt.Printf("%s No suspicious content detected (filtered %d benign strings)\n",
 			common.SymbolCheck, len(allStrings))
@@ -585,100 +774,56 @@ func PrintSuspiciousStrings(p *PEFile) {
 
 	for _, s := range filteredStrings {
 		categorized := false
-
 		if isVersionOrCompilerString(s) {
 			categories["🔧 Versions/Compiler"] = append(categories["🔧 Versions/Compiler"], s)
 			categorized = true
 		}
-
 		if !categorized && isBuildInformationString(s) {
 			categories["🏗️ Build Information"] = append(categories["🏗️ Build Information"], s)
 			categorized = true
 		}
-
 		if !categorized && isNetworkURL(s) {
 			categories["🌐 Network URLs"] = append(categories["🌐 Network URLs"], s)
 			categorized = true
 		}
-
 		if !categorized && isCryptographicContent(s) {
 			categories["🔑 Cryptographic Content"] = append(categories["🔑 Cryptographic Content"], s)
 			categorized = true
 		}
-
 		if !categorized && isSuspiciousFilePath(s) {
 			categories["💾 Suspicious File Paths"] = append(categories["💾 Suspicious File Paths"], s)
 			categorized = true
 		}
-
 		if !categorized && isShellCommand(s) {
 			categories["⚡ Shell Commands"] = append(categories["⚡ Shell Commands"], s)
 			categorized = true
 		}
-
 		if !categorized && isObfuscatedContent(s) {
 			categories["🎭 Obfuscated Content"] = append(categories["🎭 Obfuscated Content"], s)
 			categorized = true
 		}
-
 		if !categorized && isExternalReference(s) {
 			categories["🔗 External References"] = append(categories["🔗 External References"], s)
 		}
 	}
-
 	totalFindings := 0
-	highConfidenceFindings := 0
-
+	for _, items := range categories {
+		totalFindings += len(items)
+	}
 	for category, items := range categories {
 		if len(items) > 0 {
-			totalFindings += len(items)
-
-			if strings.Contains(category, "🌐") || strings.Contains(category, "🔑") ||
-				strings.Contains(category, "⚡") || strings.Contains(category, "🔧") ||
-				strings.Contains(category, "🏗️") {
-				highConfidenceFindings += len(items)
-			}
-
-			displayCount := len(items)
-			if displayCount > 8 {
-				displayCount = 8
-			}
-
-			fmt.Printf("\n%s (%d items", category, len(items))
-			if len(items) > 8 {
-				fmt.Printf(", showing top 8")
-			}
-			fmt.Printf("):\n")
-
-			sortedItems := make([]string, len(items))
-			copy(sortedItems, items)
-			sort.Slice(sortedItems, func(i, j int) bool {
-				return len(sortedItems[i]) < len(sortedItems[j])
-			})
-
-			for i := 0; i < displayCount; i++ {
-				item := sortedItems[i]
-
-				if len(item) > 100 {
-					item = item[:97] + "..."
-				}
+			fmt.Printf("\n%s (%d items):\n", category, len(items))
+			for _, item := range items {
 				fmt.Printf("   • %s\n", item)
-			}
-
-			if len(items) > 8 {
-				fmt.Printf("   ... and %d more\n", len(items)-8)
 			}
 		}
 	}
-
-	if totalFindings == 0 {
-		fmt.Printf("%s No suspicious content found (analyzed %d strings)\n",
-			common.SymbolCheck, len(filteredStrings))
+	if totalFindings > 0 {
+		fmt.Printf("\n📊 Found %d potentially suspicious items\n", totalFindings)
 	} else {
-		fmt.Printf("\n📊 Analysis Results: %d potentially suspicious items found\n", totalFindings)
-		fmt.Printf("   High confidence: %d items\n", highConfidenceFindings)
-		fmt.Printf("   Requires review: %d items\n", totalFindings-highConfidenceFindings)
+		fmt.Printf("\n%s No suspicious content detected\n", common.SymbolCheck)
 	}
+
 	fmt.Println()
 }
 
