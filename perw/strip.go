@@ -46,41 +46,6 @@ func (p *PEFile) StripSectionsByType(sectionType SectionType, fillMode FillMode,
 	return common.NewApplied(message, strippedCount)
 }
 
-func (p *PEFile) StripSectionsByNames(names []string, prefix bool, useRandomFill bool) error {
-	fillMode := ZeroFill
-	if useRandomFill {
-		fillMode = RandomFill
-	}
-
-	for _, section := range p.Sections {
-		shouldStrip := false
-
-		if prefix {
-			for _, name := range names {
-				if strings.HasPrefix(section.Name, name) {
-					shouldStrip = true
-					break
-				}
-			}
-		} else {
-			for _, name := range names {
-				if section.Name == name {
-					shouldStrip = true
-					break
-				}
-			}
-		}
-
-		if shouldStrip && section.Offset > 0 && section.Size > 0 {
-			if err := p.fillRegion(section.Offset, int(section.Size), fillMode); err != nil {
-				return fmt.Errorf("failed to fill section %s: %w", section.Name, err)
-			}
-		}
-	}
-
-	return nil
-}
-
 func (p *PEFile) StripByPattern(pattern *regexp.Regexp, fillMode FillMode) (int, error) {
 	if pattern == nil {
 		return 0, fmt.Errorf("regex pattern cannot be nil")
@@ -272,16 +237,11 @@ func (p *PEFile) StripHeader() *common.OperationResult {
 }
 
 func (p *PEFile) StripRichHeader() *common.OperationResult {
-	// Rich Header is located between DOS header and PE header
 	offsets, err := p.calculateOffsets()
 	if err != nil {
 		return common.NewSkipped(fmt.Sprintf("failed to calculate offsets: %v", err))
 	}
-
-	// Search for Rich Header signature "Rich" (0x68636952)
 	richSignature := []byte{0x52, 0x69, 0x63, 0x68} // "Rich" in little endian
-
-	// Search in the area between DOS header end and PE header start
 	searchStart := int64(dosHeaderSize)
 	searchEnd := offsets.ELfanew
 
@@ -295,27 +255,19 @@ func (p *PEFile) StripRichHeader() *common.OperationResult {
 		}
 
 		if bytes.Equal(p.RawData[i:i+4], richSignature) {
-			// Found Rich Header, now find the start (DanS signature)
 			dansSignature := []byte{0x44, 0x61, 0x6E, 0x53} // "DanS"
-
-			// Search backwards for DanS
 			for j := i - 4; j >= searchStart; j -= 4 {
 				if err := p.validateOffset(j, 4); err != nil {
 					continue
 				}
-
 				if bytes.Equal(p.RawData[j:j+4], dansSignature) {
-					// Found complete Rich Header from j to i+8 (including checksum)
 					headerSize := int(i + 8 - j)
 					if err := p.validateOffset(j, headerSize); err != nil {
 						return common.NewSkipped("Rich Header not accessible")
 					}
-
-					// Zero out the entire Rich Header
 					for k := 0; k < headerSize; k++ {
 						p.RawData[j+int64(k)] = 0x00
 					}
-
 					return common.NewApplied(fmt.Sprintf("removed Rich Header (%d bytes)", headerSize), 1)
 				}
 			}
@@ -454,11 +406,9 @@ func (p *PEFile) StripLoadConfigDirectory() *common.OperationResult {
 		return common.NewSkipped("load configuration structure not accessible")
 	}
 	modifications := 0
-	// Azzera TimeDateStamp (offset 4, 4 byte)
 	if err := p.fillRegion(int64(loadConfigPhysical+4), 4, ZeroFill); err == nil {
 		modifications++
 	}
-	// Azzera MajorVersion e MinorVersion (offset 8, 4 byte)
 	if err := p.fillRegion(int64(loadConfigPhysical+8), 4, ZeroFill); err == nil {
 		modifications++
 	}
