@@ -100,7 +100,6 @@ func CalculateEntropy(data []byte) float64 {
 	return entropy
 }
 
-// decodeSectionFlags returns human-readable section flags
 func (p *PEFile) decodeSectionFlags(flags uint32) string {
 	var flagStrs []string
 	if flags&pe.IMAGE_SCN_CNT_CODE != 0 {
@@ -218,14 +217,6 @@ func getSubsystemName(subsystem uint16) string {
 	default:
 		return "Unknown"
 	}
-}
-
-type PEOffsets struct {
-	ELfanew          int64
-	OptionalHeader   int64
-	FirstSectionHdr  int64
-	NumberOfSections int
-	OptionalHdrSize  int
 }
 
 func (p *PEFile) calculateOffsets() (*PEOffsets, error) {
@@ -379,7 +370,6 @@ func (p *PEFile) checkSectionFlag(index int, flag uint32) (bool, error) {
 	return flags&flag != 0, nil
 }
 
-// GetExecutableSections returns all executable sections
 func (p *PEFile) GetExecutableSections() []Section {
 	var execSections []Section
 	for _, section := range p.Sections {
@@ -421,4 +411,18 @@ func (p *PEFile) CalculatePhysicalFileSize() (uint64, error) {
 	}
 
 	return maxSize, nil
+}
+
+func alignUp(value, alignment uint32) uint32 {
+	if alignment == 0 {
+		return value
+	}
+	return ((value + alignment - 1) / alignment) * alignment
+}
+
+func alignUp64(value, alignment int64) int64 {
+	if alignment <= 0 {
+		return value
+	}
+	return ((value + alignment - 1) / alignment) * alignment
 }

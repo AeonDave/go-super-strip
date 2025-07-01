@@ -1,15 +1,15 @@
-package common
+package perw
 
 type SectionType int
 
 const (
 	DebugSections SectionType = iota
 	SymbolSections
+	BuildInfoSections
+	NonEssentialSections
+	//ExceptionSections
 	RelocationSections
 	TLSSections
-	NonEssentialSections
-	ExceptionSections
-	BuildInfoSections
 	CertificateSections
 	RuntimeSections
 )
@@ -21,18 +21,25 @@ const (
 	RandomFill
 )
 
-type SectionMatcher struct {
+type SectionStripRule struct {
 	ExactNames  []string
 	PrefixNames []string
 	Description string
 	StripForDLL bool
 	StripForEXE bool
 	IsRisky     bool
-	Fill        FillMode // ZeroFill or RandomFill
+	Fill        FillMode
 }
 
-func GetSectionMatchers() map[SectionType]SectionMatcher {
-	return map[SectionType]SectionMatcher{
+type RegexStripRule struct {
+	Patterns    []string
+	Description string
+	Fill        FillMode
+	IsRisky     bool
+}
+
+func GetSectionStripRule() map[SectionType]SectionStripRule {
+	return map[SectionType]SectionStripRule{
 		DebugSections: {
 			ExactNames:  []string{".stab", ".stabstr"},
 			PrefixNames: []string{".debug", ".zdebug", ".gnu.debuglto_"},
@@ -78,15 +85,15 @@ func GetSectionMatchers() map[SectionType]SectionMatcher {
 			IsRisky:     false,
 			Fill:        ZeroFill,
 		},
-		ExceptionSections: {
-			ExactNames:  []string{".pdata", ".xdata"},
-			PrefixNames: []string{".eh_frame"},
-			Description: "structured exception handling data",
-			StripForDLL: true,
-			StripForEXE: true,
-			IsRisky:     true,
-			Fill:        ZeroFill,
-		},
+		//ExceptionSections: {
+		//	ExactNames:  []string{".pdata", ".xdata"},
+		//	PrefixNames: []string{".eh_frame"},
+		//	Description: "structured exception handling data",
+		//	StripForDLL: true,
+		//	StripForEXE: true,
+		//	IsRisky:     true,
+		//	Fill:        ZeroFill,
+		//},
 		BuildInfoSections: {
 			ExactNames:  []string{".buildid", ".gfids", ".giats", ".gljmp", ".textbss", ".go.buildinfo", ".noptrdata", ".typelink", ".itablink", ".gosymtab", ".gopclntab"},
 			PrefixNames: []string{".go.", ".gopkg."},
@@ -116,17 +123,8 @@ func GetSectionMatchers() map[SectionType]SectionMatcher {
 	}
 }
 
-type RegexStripRule struct {
-	Patterns    []string
-	Description string
-	Fill        FillMode
-	IsRisky     bool
-}
-
-// GetRegexStripRules returns all regex-based stripping rules
 func GetRegexStripRules() []RegexStripRule {
 	return []RegexStripRule{
-		// Go build/runtime markers
 		{
 			Patterns: []string{
 				`Go build ID: "[a-zA-Z0-9/_\-=+]{20,}"`,                    // More specific build ID pattern

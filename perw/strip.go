@@ -2,46 +2,15 @@ package perw
 
 import (
 	"bytes"
-	"crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"gosstrip/common"
-	"log"
 	"regexp"
 	"strings"
 )
 
-func (p *PEFile) fillRegion(offset int64, size int, mode common.FillMode) error {
-	if offset < 0 || size < 0 || offset+int64(size) > int64(len(p.RawData)) {
-		return fmt.Errorf("invalid region: offset %d, size %d, total %d", offset, size, len(p.RawData))
-	}
-
-	if size == 0 {
-		return nil
-	}
-
-	switch mode {
-	case common.ZeroFill:
-		for i := int64(0); i < int64(size); i++ {
-			p.RawData[offset+i] = 0
-		}
-	case common.RandomFill:
-		fillBytes := make([]byte, size)
-		if _, err := rand.Read(fillBytes); err != nil {
-			return fmt.Errorf("failed to generate random bytes: %w", err)
-		}
-		copy(p.RawData[offset:offset+int64(size)], fillBytes)
-	default:
-		return fmt.Errorf("unknown fill mode: %v", mode)
-	}
-	return nil
-}
-
-func (p *PEFile) StripSectionsByType(sectionType common.SectionType, fillMode common.FillMode, force bool) *common.OperationResult {
-	return p.StripSectionsByTypeWithObfuscation(sectionType, fillMode, force)
-}
-
-func (p *PEFile) StripSectionsByTypeWithObfuscation(sectionType common.SectionType, fillMode common.FillMode, force bool) *common.OperationResult {
-	sectionMatchers := common.GetSectionMatchers()
+func (p *PEFile) StripSectionsByType(sectionType SectionType, fillMode FillMode, force bool) *common.OperationResult {
+	sectionMatchers := GetSectionStripRule()
 	matcher, exists := sectionMatchers[sectionType]
 	if !exists {
 		return common.NewSkipped(fmt.Sprintf("unknown section type: %v", sectionType))
@@ -70,20 +39,17 @@ func (p *PEFile) StripSectionsByTypeWithObfuscation(sectionType common.SectionTy
 			strippedSections = append(strippedSections, section.Name)
 		}
 	}
-
 	if strippedCount == 0 {
 		return common.NewSkipped(fmt.Sprintf("no %s found", matcher.Description))
 	}
-
 	message := fmt.Sprintf("stripped %d %s sections (%s)", strippedCount, matcher.Description, strings.Join(strippedSections, ", "))
 	return common.NewApplied(message, strippedCount)
 }
 
-// StripSectionsByNames strips sections by exact names or prefix matching
 func (p *PEFile) StripSectionsByNames(names []string, prefix bool, useRandomFill bool) error {
-	fillMode := common.ZeroFill
+	fillMode := ZeroFill
 	if useRandomFill {
-		fillMode = common.RandomFill
+		fillMode = RandomFill
 	}
 
 	for _, section := range p.Sections {
@@ -115,8 +81,7 @@ func (p *PEFile) StripSectionsByNames(names []string, prefix bool, useRandomFill
 	return nil
 }
 
-// StripBytePattern overwrites byte patterns matching a regex in sections
-func (p *PEFile) StripBytePattern(pattern *regexp.Regexp, fillMode common.FillMode) (int, error) {
+func (p *PEFile) StripByPattern(pattern *regexp.Regexp, fillMode FillMode) (int, error) {
 	if pattern == nil {
 		return 0, fmt.Errorf("regex pattern cannot be nil")
 	}
@@ -153,216 +118,159 @@ func (p *PEFile) StripBytePattern(pattern *regexp.Regexp, fillMode common.FillMo
 	return totalMatches, nil
 }
 
-// --- Convenience Functions ---
-
-// StripDebugSections strips debug information sections
-func (p *PEFile) StripDebugSections(useRandomFill bool) *common.OperationResult {
-	fillMode := common.ZeroFill
-	if useRandomFill {
-		fillMode = common.RandomFill
-	}
-	return p.StripSectionsByType(common.DebugSections, fillMode, false)
-}
-
-// StripSymbolTables strips symbol table sections
-func (p *PEFile) StripSymbolTables(useRandomFill bool) *common.OperationResult {
-	fillMode := common.ZeroFill
-	if useRandomFill {
-		fillMode = common.RandomFill
-	}
-	return p.StripSectionsByType(common.SymbolSections, fillMode, false)
-}
-
-// StripRelocationTable strips relocation table sections
-func (p *PEFile) StripRelocationTable(useRandomFill bool, force bool) *common.OperationResult {
-	fillMode := common.ZeroFill
-	if useRandomFill {
-		fillMode = common.RandomFill
-	}
-	return p.StripSectionsByType(common.RelocationSections, fillMode, force) // Pass force parameter through
-}
-
-// StripNonEssentialSections strips non-essential metadata sections
-func (p *PEFile) StripNonEssentialSections(useRandomFill bool) *common.OperationResult {
-	fillMode := common.ZeroFill
-	if useRandomFill {
-		fillMode = common.RandomFill
-	}
-	return p.StripSectionsByType(common.NonEssentialSections, fillMode, false)
-}
-
-// StripExceptionHandlingData strips exception handling data
-func (p *PEFile) StripExceptionHandlingData(useRandomFill bool, force bool) *common.OperationResult {
-	fillMode := common.ZeroFill
-	if useRandomFill {
-		fillMode = common.RandomFill
-	}
-	return p.StripSectionsByType(common.ExceptionSections, fillMode, force) // Pass force parameter through
-}
-
-// StripBuildInfoSections strips build information sections
-func (p *PEFile) StripBuildInfoSections(useRandomFill bool) *common.OperationResult {
-	fillMode := common.ZeroFill
-	if useRandomFill {
-		fillMode = common.RandomFill
-	}
-	return p.StripSectionsByType(common.BuildInfoSections, fillMode, false)
-}
-
-// StripAllMetadata strips all types of metadata from PE file
-func (p *PEFile) StripAllMetadata(useRandomFill bool, force bool) error {
-	fillMode := common.ZeroFill
-	if useRandomFill {
-		fillMode = common.RandomFill
-	}
-
-	// List of section types to strip (safe operations only)
-	sectionTypes := []common.SectionType{
-		common.DebugSections,
-		common.SymbolSections,
-		common.NonEssentialSections,
-		common.BuildInfoSections,
-	}
-
-	for _, sectionType := range sectionTypes {
-		result := p.StripSectionsByType(sectionType, fillMode, false)
-		if result != nil && result.Applied {
-			log.Printf("Stripped: %s", result.Message)
-		}
-	}
-
-	// Handle relocation sections separately (risky operation)
-	if force {
-		result := p.StripSectionsByType(common.RelocationSections, fillMode, force)
-		if result != nil && result.Applied {
-			log.Printf("WARNING: Stripped relocation sections (risky): %s", result.Message)
-		}
-	}
-
-	return nil
-}
-
-// --- Main Strip and Compact Functions ---
-
-// CompactAndStripPE performs aggressive PE stripping with actual file size reduction
-
-// AdvancedStripPEDetailed performs comprehensive PE stripping (no compaction)
-func (p *PEFile) AdvancedStripPEDetailed(force bool) *common.OperationResult {
+func (p *PEFile) StripAll(force bool) *common.OperationResult {
 	originalSize := uint64(len(p.RawData))
 	var operations []string
 	totalCount := 0
-
-	// Strip debug sections (always safe)
-	debugResult := p.StripSectionsByType(common.DebugSections, common.ZeroFill, false)
-	if debugResult != nil && debugResult.Applied {
-		operations = append(operations, debugResult.Message)
-		totalCount += debugResult.Count
+	sectionRules := GetSectionStripRule()
+	for sectionType, rule := range sectionRules {
+		if rule.IsRisky && !force {
+			continue
+		}
+		if !p.shouldStripForFileType(sectionType) {
+			continue
+		}
+		result := p.StripSectionsByType(sectionType, rule.Fill, force)
+		if result != nil && result.Applied {
+			message := result.Message
+			if rule.IsRisky {
+				message = fmt.Sprintf("⚠️  %s (risky)", message)
+			}
+			operations = append(operations, message)
+			totalCount += result.Count
+		}
 	}
-
-	// Strip build info and metadata
-	buildInfoResult := p.StripSectionsByType(common.BuildInfoSections, common.ZeroFill, false)
-	if buildInfoResult != nil && buildInfoResult.Applied {
-		operations = append(operations, buildInfoResult.Message)
-		totalCount += buildInfoResult.Count
+	// StripAll StripAllHeaders
+	if timeDateStampResult := p.StripAllHeaders(); timeDateStampResult != nil && timeDateStampResult.Applied {
+		operations = append(operations, timeDateStampResult.Message)
+		totalCount += timeDateStampResult.Count
 	}
-
-	// Strip non-essential sections
-	nonEssentialResult := p.StripSectionsByType(common.NonEssentialSections, common.ZeroFill, false)
-	if nonEssentialResult != nil && nonEssentialResult.Applied {
-		operations = append(operations, nonEssentialResult.Message)
-		totalCount += nonEssentialResult.Count
+	// StripAll Debug Directory
+	if debugDirResult := p.StripAllDirs(); debugDirResult != nil && debugDirResult.Applied {
+		operations = append(operations, debugDirResult.Message)
+		totalCount += debugDirResult.Count
 	}
-
-	// Strip symbol tables (safe for most executables)
-	symbolResult := p.StripSectionsByType(common.SymbolSections, common.ZeroFill, false)
-	if symbolResult != nil && symbolResult.Applied {
-		operations = append(operations, symbolResult.Message)
-		totalCount += symbolResult.Count
-	}
-
-	// Strip exception handling data (risky - requires force flag)
-	exceptionResult := p.StripSectionsByType(common.ExceptionSections, common.ZeroFill, force)
-	if exceptionResult != nil && exceptionResult.Applied {
-		operations = append(operations, fmt.Sprintf("⚠️  %s (risky)", exceptionResult.Message))
-		totalCount += exceptionResult.Count
-	}
-
-	// Strip Rich Header (compilation metadata)
-	richHeaderResult := p.StripRichHeader()
-	if richHeaderResult != nil && richHeaderResult.Applied {
-		operations = append(operations, richHeaderResult.Message)
-		totalCount += richHeaderResult.Count
-	}
-
-	// Strip compiler signatures and build metadata (GCC, MinGW, Go, etc.)
-	// Strip all regex-based metadata (compiler, version, build info, etc.)
-	regexResult := p.StripAllRegexRules(force)
-	if regexResult != nil && regexResult.Applied {
+	// StripAll regex-based patterns
+	if regexResult := p.StripAllRegexRules(force); regexResult != nil && regexResult.Applied {
 		operations = append(operations, regexResult.Message)
 		totalCount += regexResult.Count
 	}
-
-	// Strip relocation tables (RISKY - may break some executables)
-	relocationResult := p.StripSectionsByType(common.RelocationSections, common.ZeroFill, force)
-	if relocationResult != nil && relocationResult.Applied {
-		operations = append(operations, fmt.Sprintf("⚠️  %s (risky)", relocationResult.Message))
-		totalCount += relocationResult.Count
-	}
-
 	if len(operations) == 0 {
 		return common.NewSkipped("no stripping operations applied")
 	}
-
-	// Build professional output message
 	message := fmt.Sprintf("PE strip completed: %d bytes processed\n%s",
 		originalSize, p.formatStripOperations(operations))
 
 	return common.NewApplied(message, totalCount)
 }
 
-// --- Helper Functions ---
+func (p *PEFile) StripAllRegexRules(force bool) *common.OperationResult {
+	rules := GetRegexStripRules()
+	totalModifications := 0
+	var messages []string
 
-// shouldStripForFileType checks if stripping is appropriate for the file type
-func (p *PEFile) shouldStripForFileType(sectionType common.SectionType) bool {
-	sectionMatchers := common.GetSectionMatchers()
-	matcher, exists := sectionMatchers[sectionType]
-	if !exists {
-		return false
+	for _, rule := range rules {
+		if rule.IsRisky && !force {
+			continue
+		}
+
+		for _, patternStr := range rule.Patterns {
+			pattern, err := regexp.Compile(patternStr)
+			if err != nil {
+				messages = append(messages, fmt.Sprintf("invalid regex '%s': %v", patternStr, err))
+				continue
+			}
+
+			modifications, err := p.StripByPattern(pattern, rule.Fill)
+			if err != nil {
+				messages = append(messages, fmt.Sprintf("error processing '%s': %v", patternStr, err))
+				continue
+			}
+
+			if modifications > 0 {
+				msg := fmt.Sprintf("stripped %d matches for '%s' (%s)", modifications, patternStr, rule.Description)
+				messages = append(messages, msg)
+				totalModifications += modifications
+			}
+		}
 	}
 
-	isDLL := p.isDLL()
-	if isDLL {
-		return matcher.StripForDLL
+	if totalModifications > 0 {
+		return common.NewApplied(strings.Join(messages, "; "), totalModifications)
 	}
-	return matcher.StripForEXE
+	return common.NewSkipped("no regex-based metadata found")
 }
 
-// isDLL checks if the PE file is a DLL
-func (p *PEFile) isDLL() bool {
-	if len(p.RawData) < 64 {
-		return false
+func (p *PEFile) StripAllHeaders() *common.OperationResult {
+	var operations []string
+	totalCount := 0
+
+	if result := p.StripPEHeaderTimeDateStamp(); result != nil && result.Applied {
+		operations = append(operations, result.Message)
+		totalCount += result.Count
 	}
 
-	peHeaderOffset := uint32(p.RawData[0x3C]) | uint32(p.RawData[0x3D])<<8 |
-		uint32(p.RawData[0x3E])<<16 | uint32(p.RawData[0x3F])<<24
-
-	if peHeaderOffset+24 > uint32(len(p.RawData)) {
-		return false
+	if result := p.StripRichHeader(); result != nil && result.Applied {
+		operations = append(operations, result.Message)
+		totalCount += result.Count
 	}
 
-	// Check the Characteristics field in the COFF header
-	characteristicsOffset := peHeaderOffset + 4 + 18
-	if characteristicsOffset+2 > uint32(len(p.RawData)) {
-		return false
+	if result := p.StripHeader(); result != nil && result.Applied {
+		operations = append(operations, result.Message)
+		totalCount += result.Count
 	}
 
-	characteristics := uint16(p.RawData[characteristicsOffset]) | uint16(p.RawData[characteristicsOffset+1])<<8
+	if totalCount == 0 {
+		return common.NewSkipped("no header stripping operations were applied")
+	}
 
-	// IMAGE_FILE_DLL = 0x2000
-	return characteristics&0x2000 != 0
+	message := fmt.Sprintf("Header strip completed:\n%s", p.formatStripOperations(operations))
+	return common.NewApplied(message, totalCount)
 }
 
-// StripRichHeader removes the Rich Header (hidden Microsoft compilation metadata)
+func (p *PEFile) StripAllDirs() *common.OperationResult {
+	var operations []string
+	totalCount := 0
+
+	if result := p.StripDebugDirectory(); result != nil && result.Applied {
+		operations = append(operations, result.Message)
+		totalCount += result.Count
+	}
+
+	if result := p.StripResourceDirectory(); result != nil && result.Applied {
+		operations = append(operations, result.Message)
+		totalCount += result.Count
+	}
+
+	if result := p.StripLoadConfigDirectory(); result != nil && result.Applied {
+		operations = append(operations, result.Message)
+		totalCount += result.Count
+	}
+
+	if result := p.StripTlsDirectory(); result != nil && result.Applied {
+		operations = append(operations, result.Message)
+		totalCount += result.Count
+	}
+
+	if totalCount == 0 {
+		return common.NewSkipped("no dirs stripping operations were applied")
+	}
+
+	message := fmt.Sprintf("Debug/Resource strip completed:\n%s", p.formatStripOperations(operations))
+	return common.NewApplied(message, totalCount)
+}
+
+func (p *PEFile) StripHeader() *common.OperationResult {
+	dosReservedStart, dosReservedSize := int64(0x1C), 0x3C-0x1C
+	if err := p.validateOffset(dosReservedStart, dosReservedSize); err != nil {
+		return common.NewSkipped("DOS header reserved fields not accessible")
+	}
+	if err := p.fillRegion(dosReservedStart, dosReservedSize, ZeroFill); err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to strip DOS header reserved fields: %v", err))
+	}
+	return common.NewApplied(fmt.Sprintf("removed %d bytes from DOS header reserved fields", dosReservedSize), 1)
+}
+
 func (p *PEFile) StripRichHeader() *common.OperationResult {
 	// Rich Header is located between DOS header and PE header
 	offsets, err := p.calculateOffsets()
@@ -417,113 +325,302 @@ func (p *PEFile) StripRichHeader() *common.OperationResult {
 	return common.NewSkipped("no Rich Header found")
 }
 
-// StripAllRegexRules applica tutte le regole regex centralizzate su tutte le sezioni
-func (p *PEFile) StripAllRegexRules(force bool) *common.OperationResult {
-	rules := common.GetRegexStripRules()
-	totalModifications := 0
-	var messages []string
-
-	for _, rule := range rules {
-		if rule.IsRisky && !force {
-			continue
-		}
-		for _, patternStr := range rule.Patterns {
-			pattern, err := regexp.Compile(patternStr)
-			if err != nil {
-				messages = append(messages, fmt.Sprintf("invalid regex '%s': %v", patternStr, err))
-				continue
-			}
-			modifications := 0
-			for _, section := range p.Sections {
-				data, err := p.ReadBytes(section.Offset, int(section.Size))
-				if err != nil || len(data) < 1 {
-					continue
-				}
-				matches := pattern.FindAllIndex(data, -1)
-				for _, match := range matches {
-					for i := match[0]; i < match[1]; i++ {
-						data[i] = 0x00
-					}
-					modifications++
-				}
-				if modifications > 0 {
-					copy(p.RawData[section.Offset:section.Offset+int64(len(data))], data)
-				}
-			}
-			if modifications > 0 {
-				msg := fmt.Sprintf("stripped %d matches for '%s' (%s)", modifications, patternStr, rule.Description)
-				messages = append(messages, msg)
-				totalModifications += modifications
-			}
-		}
+func (p *PEFile) StripPEHeaderTimeDateStamp() *common.OperationResult {
+	if len(p.RawData) < 64 {
+		return common.NewSkipped("file too small for PE structure")
 	}
-
-	if totalModifications > 0 {
-		return common.NewApplied(strings.Join(messages, "; "), totalModifications)
+	peHeaderOffset := int64(binary.LittleEndian.Uint32(p.RawData[60:64]))
+	coffHeaderOffset := peHeaderOffset + 4
+	timeDateStampOffset := coffHeaderOffset + 4
+	if err := p.validateOffset(timeDateStampOffset, 4); err != nil {
+		return common.NewSkipped("TimeDateStamp field not accessible")
 	}
-	return common.NewSkipped("no regex-based metadata found")
+	for i := 0; i < 4; i++ {
+		p.RawData[timeDateStampOffset+int64(i)] = 0
+	}
+	return common.NewApplied("removed PE header TimeDateStamp", 1)
 }
 
-// formatStripOperations formats the stripping operations into a professional output
+func (p *PEFile) StripSecondaryTimestamps() *common.OperationResult {
+	timestampPattern := regexp.MustCompile(`19\d{2}|20\d{2}`)
+	targetSections := map[string]bool{".rsrc": true, ".data": true, ".rdata": true}
+
+	totalMatches := 0
+	var strippedSections []string
+
+	for _, section := range p.Sections {
+		if !targetSections[section.Name] {
+			continue
+		}
+		if section.Offset <= 0 || section.Size <= 0 {
+			continue
+		}
+		sectionData, err := p.ReadBytes(section.Offset, int(section.Size))
+		if err != nil {
+			continue
+		}
+		matches := timestampPattern.FindAllIndex(sectionData, -1)
+		if len(matches) == 0 {
+			continue
+		}
+
+		sectionModified := false
+		for _, match := range matches {
+			start := match[0]
+			end := match[1]
+			if err := p.fillRegion(section.Offset+int64(start), end-start, ZeroFill); err == nil {
+				totalMatches++
+				sectionModified = true
+			}
+		}
+
+		if sectionModified {
+			strippedSections = append(strippedSections, section.Name)
+		}
+	}
+
+	if totalMatches == 0 {
+		return common.NewSkipped("no secondary timestamps found in data sections")
+	}
+
+	message := fmt.Sprintf("stripped %d secondary timestamps from sections: %s", totalMatches, strings.Join(strippedSections, ", "))
+	return common.NewApplied(message, totalMatches)
+}
+
+func (p *PEFile) StripDebugDirectory() *common.OperationResult {
+	offsets, err := p.calculateOffsets()
+	if err != nil {
+		return common.NewSkipped("failed to calculate offsets for debug directory")
+	}
+	debugDirEntryOffset := offsets.OptionalHeader + directoryOffsets.debug[p.Is64Bit]
+	if err := p.validateOffset(debugDirEntryOffset, 8); err != nil {
+		return common.NewSkipped("debug directory entry not accessible")
+	}
+	rva := binary.LittleEndian.Uint32(p.RawData[debugDirEntryOffset:])
+	size := binary.LittleEndian.Uint32(p.RawData[debugDirEntryOffset+4:])
+	if rva == 0 && size == 0 {
+		return common.NewSkipped("no debug directory found")
+	}
+	if err := p.fillRegion(debugDirEntryOffset, 8, ZeroFill); err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to strip debug directory entry: %v", err))
+	}
+	return common.NewApplied("removed debug directory entry from PE header", 1)
+}
+
+func (p *PEFile) StripResourceDirectory() *common.OperationResult {
+	section := p.findSectionByName(".rsrc")
+	if section == nil {
+		return common.NewSkipped("no resource section (.rsrc) found")
+	}
+	if section.Size < 16 {
+		return common.NewSkipped("resource section is too small to contain a directory header")
+	}
+	resourceHeaderOffset := section.Offset
+	if err := p.validateOffset(resourceHeaderOffset, 16); err != nil {
+		return common.NewSkipped("resource directory header not accessible")
+	}
+	modifications := 0
+	if err := p.fillRegion(resourceHeaderOffset+4, 4, ZeroFill); err == nil {
+		modifications++
+	}
+	if err := p.fillRegion(resourceHeaderOffset+8, 4, ZeroFill); err == nil {
+		modifications++
+	}
+	if modifications == 0 {
+		return common.NewSkipped("could not strip any fields from resource directory header")
+	}
+	return common.NewApplied("removed timestamp and version from resource directory header", modifications)
+}
+
+func (p *PEFile) StripLoadConfigDirectory() *common.OperationResult {
+	offsets, err := p.calculateOffsets()
+	if err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to calculate offsets: %v", err))
+	}
+	dirOffset := offsets.OptionalHeader + directoryOffsets.loadConfig[p.Is64Bit]
+	if err := p.validateOffset(dirOffset, 8); err != nil {
+		return common.NewSkipped("load config directory offset validation failed")
+	}
+	rva := binary.LittleEndian.Uint32(p.RawData[dirOffset:])
+	size := binary.LittleEndian.Uint32(p.RawData[dirOffset+4:])
+	if rva == 0 || size < 12 {
+		return common.NewSkipped("no valid load configuration directory found")
+	}
+	loadConfigPhysical, err := p.rvaToPhysical(uint64(rva))
+	if err != nil {
+		return common.NewSkipped("failed to convert load config RVA to physical")
+	}
+	if err := p.validateOffset(int64(loadConfigPhysical), 12); err != nil {
+		return common.NewSkipped("load configuration structure not accessible")
+	}
+	modifications := 0
+	// Azzera TimeDateStamp (offset 4, 4 byte)
+	if err := p.fillRegion(int64(loadConfigPhysical+4), 4, ZeroFill); err == nil {
+		modifications++
+	}
+	// Azzera MajorVersion e MinorVersion (offset 8, 4 byte)
+	if err := p.fillRegion(int64(loadConfigPhysical+8), 4, ZeroFill); err == nil {
+		modifications++
+	}
+	if modifications > 0 {
+		return common.NewApplied("removed timestamp and version from load config directory", modifications)
+	}
+	return common.NewSkipped("no load config fields could be stripped")
+}
+
+func (p *PEFile) StripTlsDirectory() *common.OperationResult {
+	offsets, err := p.calculateOffsets()
+	if err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to calculate offsets: %v", err))
+	}
+	dirOffset := offsets.OptionalHeader + directoryOffsets.tls[p.Is64Bit]
+	if err := p.validateOffset(dirOffset, 8); err != nil {
+		return common.NewSkipped("TLS directory offset validation failed")
+	}
+	rva := binary.LittleEndian.Uint32(p.RawData[dirOffset:])
+	size := binary.LittleEndian.Uint32(p.RawData[dirOffset+4:])
+	if rva == 0 || size < 0x18 { // TLS directory minima: 0x18 (32bit), 0x28 (64bit)
+		return common.NewSkipped("no valid TLS directory found")
+	}
+	tlsPhysical, err := p.rvaToPhysical(uint64(rva))
+	if err != nil {
+		return common.NewSkipped("failed to convert TLS RVA to physical")
+	}
+	// TimeDateStamp: offset 0x10 (4 byte), MajorVersion: 0x14 (2 byte), MinorVersion: 0x16 (2 byte)
+	if err := p.validateOffset(int64(tlsPhysical+0x10), 8); err != nil {
+		return common.NewSkipped("TLS directory fields not accessible")
+	}
+	modifications := 0
+	if err := p.fillRegion(int64(tlsPhysical+0x10), 4, ZeroFill); err == nil {
+		modifications++
+	}
+	if err := p.fillRegion(int64(tlsPhysical+0x14), 4, ZeroFill); err == nil {
+		modifications++
+	}
+	if modifications > 0 {
+		return common.NewApplied("removed timestamp and version from TLS directory", modifications)
+	}
+	return common.NewSkipped("no TLS directory fields could be stripped")
+}
+
+func (p *PEFile) StripSingleRegexRule(regex string) *common.OperationResult {
+	pattern, err := regexp.Compile(regex)
+	if err != nil {
+		return common.NewSkipped(fmt.Sprintf("invalid regex '%s': %v", regex, err))
+	}
+	modifications, err := p.StripByPattern(pattern, ZeroFill)
+	if err != nil {
+		return common.NewSkipped(fmt.Sprintf("error processing '%s': %v", regex, err))
+	}
+
+	return common.NewApplied(fmt.Sprintf("stripped %d matches for '%s'", modifications, regex), modifications)
+}
+
+func (p *PEFile) fillRegion(offset int64, size int, mode FillMode) error {
+	if offset < 0 || size <= 0 || offset+int64(size) > int64(len(p.RawData)) {
+		return fmt.Errorf("invalid region: offset %d, size %d, total %d", offset, size, len(p.RawData))
+	}
+	region := p.RawData[offset : offset+int64(size)]
+	switch mode {
+	case ZeroFill:
+		common.ZeroFillData(region)
+	case RandomFill:
+		if err := common.RandomFillData(region); err != nil {
+			return fmt.Errorf("failed to generate random bytes: %w", err)
+		}
+	default:
+		return fmt.Errorf("unknown fill mode: %v", mode)
+	}
+	return nil
+}
+
+func (p *PEFile) shouldStripForFileType(sectionType SectionType) bool {
+	matcher, ok := GetSectionStripRule()[sectionType]
+	if !ok {
+		return false
+	}
+	if p.isDLL() {
+		return matcher.StripForDLL
+	}
+	return matcher.StripForEXE
+}
+
+func (p *PEFile) isDLL() bool {
+	if len(p.RawData) < 64 {
+		return false
+	}
+	peHeaderOffset := binary.LittleEndian.Uint32(p.RawData[0x3C:0x40])
+	if peHeaderOffset+26 > uint32(len(p.RawData)) {
+		return false
+	}
+	characteristics := binary.LittleEndian.Uint16(p.RawData[peHeaderOffset+22 : peHeaderOffset+24])
+	return characteristics&0x2000 != 0
+}
+
 func (p *PEFile) formatStripOperations(operations []string) string {
 	if len(operations) == 0 {
 		return "No operations performed"
 	}
 
 	var result strings.Builder
-
-	// Group operations by type for better readability
-	var sectionOps []string
-	var regexOps []string
-	var otherOps []string
+	grouped := map[string][]string{
+		"section": {},
+		"regex":   {},
+		"other":   {},
+	}
 
 	for _, op := range operations {
-		if strings.Contains(op, "sections (") {
-			sectionOps = append(sectionOps, op)
-		} else if strings.Contains(op, "matches for") {
-			regexOps = append(regexOps, op)
-		} else {
-			otherOps = append(otherOps, op)
+		switch {
+		case strings.Contains(op, "sections ("):
+			grouped["section"] = append(grouped["section"], op)
+		case strings.Contains(op, "matches for"):
+			grouped["regex"] = append(grouped["regex"], op)
+		default:
+			grouped["other"] = append(grouped["other"], op)
 		}
 	}
 
-	// Format section operations
-	if len(sectionOps) > 0 {
+	if len(grouped["section"]) > 0 {
 		result.WriteString("📦 SECTIONS STRIPPED:\n")
-		for _, op := range sectionOps {
+		for _, op := range grouped["section"] {
+			prefix := "   ✓ "
 			if strings.HasPrefix(op, "⚠️") {
-				result.WriteString(fmt.Sprintf("   %s\n", op))
-			} else {
-				result.WriteString(fmt.Sprintf("   ✓ %s\n", op))
+				prefix = "   "
 			}
+			result.WriteString(prefix + op + "\n")
 		}
 	}
-
-	// Format regex operations (if any)
-	if len(regexOps) > 0 {
+	if len(grouped["regex"]) > 0 {
 		result.WriteString("🔍 REGEX PATTERNS STRIPPED:\n")
-		for _, op := range regexOps {
-			// Split the concatenated regex messages and format each one
-			regexMessages := strings.Split(op, "; ")
-			for _, regexMsg := range regexMessages {
-				if strings.TrimSpace(regexMsg) != "" {
-					result.WriteString(fmt.Sprintf("   ✓ %s\n", strings.TrimSpace(regexMsg)))
+		for _, op := range grouped["regex"] {
+			for _, msg := range strings.Split(op, "; ") {
+				msg = strings.TrimSpace(msg)
+				if msg != "" {
+					result.WriteString("   ✓ " + msg + "\n")
 				}
 			}
 		}
 	}
-
-	// Format other operations
-	if len(otherOps) > 0 {
-		result.WriteString("🛠️  OTHER OPERATIONS:\n")
-		for _, op := range otherOps {
+	if len(grouped["other"]) > 0 {
+		for _, op := range grouped["other"] {
+			prefix := "   ✓ "
 			if strings.HasPrefix(op, "⚠️") {
-				result.WriteString(fmt.Sprintf("   %s\n", op))
-			} else {
-				result.WriteString(fmt.Sprintf("   ✓ %s\n", op))
+				prefix = "   "
 			}
+			result.WriteString(prefix + op + "\n")
 		}
 	}
 
 	return strings.TrimSuffix(result.String(), "\n")
+}
+
+func (p *PEFile) rvaToPhysical(rva uint64) (uint64, error) {
+	for _, section := range p.Sections {
+		if rva >= uint64(section.VirtualAddress) &&
+			rva < uint64(section.VirtualAddress+section.VirtualSize) {
+			offset := rva - uint64(section.VirtualAddress)
+			return uint64(section.Offset) + offset, nil
+		}
+	}
+	return 0, fmt.Errorf("RVA %x not found in any section", rva)
 }

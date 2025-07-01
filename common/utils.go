@@ -203,3 +203,28 @@ func TruncateString(s string, maxLen int) string {
 	}
 	return s[:maxLen-3] + "..."
 }
+
+func ZeroFillData(data []byte) {
+	for i := range data {
+		data[i] = 0
+	}
+}
+
+func RandomFillData(data []byte) error {
+	if _, err := rand.Read(data); err != nil {
+		return err
+	}
+	return nil
+}
+
+func PutUint32(b []byte, v uint32) {
+	b[0] = byte(v)
+	b[1] = byte(v >> 8)
+	b[2] = byte(v >> 16)
+	b[3] = byte(v >> 24)
+}
+
+func PutUint16(b []byte, v uint16) {
+	b[0] = byte(v)
+	b[1] = byte(v >> 8)
+}

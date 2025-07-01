@@ -452,7 +452,7 @@ func (e *ELFFile) ObfuscateAll(force bool) *common.OperationResult {
 		name string
 		fn   func() *common.OperationResult
 	}{
-		{"RandomizeSectionNames", e.RandomizeSectionNames},
+		{"RenameSectionNames", e.RandomizeSectionNames},
 		{"ObfuscateBaseAddresses", func() *common.OperationResult {
 			if isGoBinary && !force {
 				return common.NewSkipped("skipping base address randomization for Go binary (would break runtime, use -f to force)")

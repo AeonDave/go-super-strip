@@ -904,21 +904,21 @@ func (e *ELFFile) AdvancedStripDetailed(compact bool) *common.OperationResult {
 	operations := []string{}
 	totalCount := 0
 
-	// Step 1: Strip debug sections (always safe)
+	// Step 1: StripAll debug sections (always safe)
 	debugResult := e.StripDebugSections(false)
 	if debugResult.Applied {
 		operations = append(operations, debugResult.Message)
 		totalCount += debugResult.Count
 	}
 
-	// Step 2: Strip symbol tables (safe for most executables)
+	// Step 2: StripAll symbol tables (safe for most executables)
 	symbolResult := e.StripSymbolTables(false)
 	if symbolResult.Applied {
 		operations = append(operations, symbolResult.Message)
 		totalCount += symbolResult.Count
 	}
 
-	// Step 3: Strip build info and metadata
+	// Step 3: StripAll build info and metadata
 	buildInfoResult := e.StripBuildInfoSections(false)
 	if buildInfoResult.Applied {
 		operations = append(operations, buildInfoResult.Message)

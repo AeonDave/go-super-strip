@@ -5,33 +5,28 @@ import (
 	"encoding/binary"
 	"fmt"
 	"gosstrip/common"
+	"os"
 )
 
-// AddHexSection adds a new section to the PE file with hex-encoded content from the specified file
-func (p *PEFile) AddHexSection(sectionName string, contentFilePath string, password string) error {
-	// Use common crypto functions
-	finalContent, err := common.ProcessFileForInsertion(contentFilePath, password)
-	if err != nil {
-		return fmt.Errorf("failed to process file for insertion: %w", err)
-	}
+func (p *PEFile) AddHexSection(sectionName string, dataOrFile string, password string) error {
+	fileStat, err := os.Stat(dataOrFile)
+	isFile := err == nil && !fileStat.IsDir()
 
-	// Now proceed with the normal section addition logic using finalContent
+	var finalContent []byte
+	if isFile {
+		finalContent, err = common.ProcessFileForInsertion(dataOrFile, password)
+		if err != nil {
+			return fmt.Errorf("failed to process file for insertion: %w", err)
+		}
+	} else {
+		finalContent, err = common.ProcessStringForInsertion(dataOrFile, password)
+		if err != nil {
+			return fmt.Errorf("failed to process string for insertion: %w", err)
+		}
+	}
 	return p.addSectionWithContent(sectionName, finalContent, password != "")
 }
 
-// AddHexSectionFromString adds a new section to the PE file with hex-encoded content from a string
-func (p *PEFile) AddHexSectionFromString(sectionName string, data string, password string) error {
-	// Use common crypto functions for string processing
-	finalContent, err := common.ProcessStringForInsertion(data, password)
-	if err != nil {
-		return fmt.Errorf("failed to process string for insertion: %w", err)
-	}
-
-	// Now proceed with the normal section addition logic using finalContent
-	return p.addSectionWithContent(sectionName, finalContent, password != "")
-}
-
-// addSectionWithContent adds a section with the provided raw content
 func (p *PEFile) addSectionWithContent(sectionName string, content []byte, encrypted bool) error {
 	// Step 0: Check if this PE has specific corruption indicators that require fallback
 	if p.hasStringTableCorruption() {
@@ -105,7 +100,6 @@ func (p *PEFile) addSectionWithContent(sectionName string, content []byte, encry
 	return nil
 }
 
-// addSectionWithContentFallback adds a section as overlay without PE header modifications (for corrupted/packed files)
 func (p *PEFile) addSectionWithContentFallback(sectionName string, content []byte, encrypted bool) error {
 	// Ultra-conservative fallback: append data directly to file without modifying memory structures
 	// This is the safest approach for corrupted files that have damaged PE structures

@@ -212,37 +212,65 @@ func (p *PEFile) fillSectionHashesAndEntropy(section *Section) {
 }
 
 func (p *PEFile) parseImportsAtomic() error {
-	p.Imports = make([]ImportInfo, 0)
 	if p.PE == nil {
-		return nil
+		return fmt.Errorf("PE not initialized")
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("⚠️  Import error: %v\n", r)
+			p.Imports = nil
+		}
+	}()
+
+	syms, err := p.PE.ImportedSymbols()
+	if err != nil {
+		return err
 	}
 
-	symbols, err := p.PE.ImportedSymbols()
-	if err != nil {
-		return nil
-	}
-	if len(symbols) == 0 {
-		return nil
-	}
-	libMapping := make(map[string][]string)
-	for _, symbol := range symbols {
-		if strings.Contains(symbol, ":") {
-			parts := strings.SplitN(symbol, ":", 2)
-			if len(parts) == 2 {
-				function := parts[0]
-				library := strings.ToLower(parts[1])
-				libMapping[library] = append(libMapping[library], function)
+	importsMap := map[string]*ImportInfo{}
+	for _, s := range syms {
+		parts := strings.SplitN(s, ":", 2)
+		if len(parts) != 2 {
+			continue // Skip malformed symbols
+		}
+
+		// Determine which part is the library and which is the function
+		// Check if first part looks like a DLL name
+		var dll, fn string
+		if strings.HasSuffix(strings.ToLower(parts[0]), ".dll") ||
+			strings.HasSuffix(strings.ToLower(parts[0]), ".sys") ||
+			strings.HasSuffix(strings.ToLower(parts[0]), ".ocx") {
+			// Format: library:function
+			dll = strings.ToLower(parts[0])
+			fn = parts[1]
+		} else if strings.HasSuffix(strings.ToLower(parts[1]), ".dll") ||
+			strings.HasSuffix(strings.ToLower(parts[1]), ".sys") ||
+			strings.HasSuffix(strings.ToLower(parts[1]), ".ocx") {
+			// Format: function:library (old format)
+			fn = parts[0]
+			dll = strings.ToLower(parts[1])
+		} else {
+			// Fallback: assume first part is function, second is library
+			fn = parts[0]
+			dll = strings.ToLower(parts[1])
+		}
+
+		if _, ok := importsMap[dll]; !ok {
+			importsMap[dll] = &ImportInfo{
+				LibraryName: dll,
+				DLL:         dll,
+				Functions:   make([]string, 0),
 			}
 		}
+		if fn != "" {
+			importsMap[dll].Functions = append(importsMap[dll].Functions, fn)
+		}
 	}
-	p.Imports = make([]ImportInfo, 0, len(libMapping))
-	for lib, functions := range libMapping {
-		if len(functions) > 0 {
-			p.Imports = append(p.Imports, ImportInfo{
-				LibraryName: lib,
-				DLL:         lib,
-				Functions:   functions,
-			})
+
+	p.Imports = make([]ImportInfo, 0, len(importsMap))
+	for _, info := range importsMap {
+		if len(info.Functions) > 0 {
+			p.Imports = append(p.Imports, *info)
 		}
 	}
 	return nil

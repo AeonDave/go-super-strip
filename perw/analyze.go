@@ -79,7 +79,6 @@ func (p *PEFile) printSectionAnomalies() {
 func (p *PEFile) Analyze() error {
 	p.calculateSectionEntropy()
 	p.IsPacked = p.detectPacking()
-	p.printHeader()
 	p.printBasicInfo()
 	p.printPEHeaders()
 	p.printSectionAnalysis()
@@ -88,13 +87,6 @@ func (p *PEFile) Analyze() error {
 	p.printExportAnalysis()
 	PrintSuspiciousStrings(p)
 	return nil
-}
-
-func (p *PEFile) printHeader() {
-	fmt.Println("╔══════════════════════════════════════════════════════════════════════════════╗")
-	fmt.Println("║                           PE FILE ANALYSIS REPORT                            ║")
-	fmt.Println("╚══════════════════════════════════════════════════════════════════════════════╝")
-	fmt.Println()
 }
 
 func (p *PEFile) calculateSectionEntropy() {
