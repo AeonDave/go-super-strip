@@ -7,60 +7,6 @@ import (
 	"strings"
 )
 
-func ContainsSuspiciousPattern(s string) bool {
-	suspiciousPatterns := []string{
-		"\\x", "0x", "%x", "\\u", "\\U",
-		"[\\", "\\]", "^_", "A\\A", "\\$",
-	}
-	for _, pattern := range suspiciousPatterns {
-		if strings.Contains(s, pattern) {
-			return true
-		}
-	}
-	return false
-}
-
-func DecodeSectionFlags(flags uint64) string {
-	var flagStrs []string
-
-	if flags&uint64(elf.SHF_WRITE) != 0 {
-		flagStrs = append(flagStrs, "WRITE")
-	}
-	if flags&uint64(elf.SHF_ALLOC) != 0 {
-		flagStrs = append(flagStrs, "ALLOC")
-	}
-	if flags&uint64(elf.SHF_EXECINSTR) != 0 {
-		flagStrs = append(flagStrs, "EXEC")
-	}
-	if flags&uint64(elf.SHF_MERGE) != 0 {
-		flagStrs = append(flagStrs, "MERGE")
-	}
-	if flags&uint64(elf.SHF_STRINGS) != 0 {
-		flagStrs = append(flagStrs, "STRINGS")
-	}
-	if flags&uint64(elf.SHF_INFO_LINK) != 0 {
-		flagStrs = append(flagStrs, "INFO_LINK")
-	}
-	if flags&uint64(elf.SHF_LINK_ORDER) != 0 {
-		flagStrs = append(flagStrs, "LINK_ORDER")
-	}
-	if flags&uint64(elf.SHF_OS_NONCONFORMING) != 0 {
-		flagStrs = append(flagStrs, "OS_NONCONFORMING")
-	}
-	if flags&uint64(elf.SHF_GROUP) != 0 {
-		flagStrs = append(flagStrs, "GROUP")
-	}
-	if flags&uint64(elf.SHF_TLS) != 0 {
-		flagStrs = append(flagStrs, "TLS")
-	}
-
-	if len(flagStrs) == 0 {
-		return "None"
-	}
-
-	return strings.Join(flagStrs, ", ")
-}
-
 func DecodeSegmentFlags(flags uint32) string {
 	var flagStrs []string
 
@@ -79,53 +25,6 @@ func DecodeSegmentFlags(flags uint32) string {
 	}
 
 	return strings.Join(flagStrs, ", ")
-}
-
-func GetSectionTypeName(sectionType uint32) string {
-	switch elf.SectionType(sectionType) {
-	case elf.SHT_NULL:
-		return "NULL"
-	case elf.SHT_PROGBITS:
-		return "PROGBITS"
-	case elf.SHT_SYMTAB:
-		return "SYMTAB"
-	case elf.SHT_STRTAB:
-		return "STRTAB"
-	case elf.SHT_RELA:
-		return "RELA"
-	case elf.SHT_HASH:
-		return "HASH"
-	case elf.SHT_DYNAMIC:
-		return "DYNAMIC"
-	case elf.SHT_NOTE:
-		return "NOTE"
-	case elf.SHT_NOBITS:
-		return "NOBITS"
-	case elf.SHT_REL:
-		return "REL"
-	case elf.SHT_SHLIB:
-		return "SHLIB"
-	case elf.SHT_DYNSYM:
-		return "DYNSYM"
-	case elf.SHT_INIT_ARRAY:
-		return "INIT_ARRAY"
-	case elf.SHT_FINI_ARRAY:
-		return "FINI_ARRAY"
-	case elf.SHT_PREINIT_ARRAY:
-		return "PREINIT_ARRAY"
-	case elf.SHT_GROUP:
-		return "GROUP"
-	case elf.SHT_SYMTAB_SHNDX:
-		return "SYMTAB_SHNDX"
-	default:
-		if sectionType >= uint32(elf.SHT_LOPROC) && sectionType <= uint32(elf.SHT_HIPROC) {
-			return "PROCESSOR_SPECIFIC"
-		}
-		if sectionType >= uint32(elf.SHT_LOUSER) && sectionType <= uint32(elf.SHT_HIUSER) {
-			return "USER_DEFINED"
-		}
-		return fmt.Sprintf("UNKNOWN(0x%x)", sectionType)
-	}
 }
 
 func GetSegmentTypeName(segmentType uint32) string {
@@ -273,18 +172,4 @@ func (e *ELFFile) readUint16(pos int) uint16 {
 		return binary.LittleEndian.Uint16(e.RawData[pos : pos+2])
 	}
 	return binary.BigEndian.Uint16(e.RawData[pos : pos+2])
-}
-
-func AlignUp(value, alignment uint64) uint64 {
-	if alignment == 0 {
-		return value
-	}
-	return ((value + alignment - 1) / alignment) * alignment
-}
-
-func AlignDown(value, alignment uint64) uint64 {
-	if alignment == 0 {
-		return value
-	}
-	return (value / alignment) * alignment
 }
