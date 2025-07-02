@@ -25,17 +25,6 @@ func (e *ELFFile) GetEndian() binary.ByteOrder {
 	return binary.BigEndian
 }
 
-// ReadBytes reads a slice of bytes from RawData at a given offset.
-func (e *ELFFile) ReadBytes(offset uint64, size int) ([]byte, error) {
-	if offset+uint64(size) > uint64(len(e.RawData)) {
-		return nil, fmt.Errorf("read beyond file limits: offset %d, size %d, file size %d",
-			offset, size, len(e.RawData))
-	}
-	result := make([]byte, size)
-	copy(result, e.RawData[offset:offset+uint64(size)])
-	return result, nil
-}
-
 // fillRegion fills a memory region with either zeros or random bytes
 func (e *ELFFile) fillRegion(offset uint64, size int, useRandom bool) error {
 	if offset+uint64(size) > uint64(len(e.RawData)) {
@@ -168,19 +157,19 @@ func (e *ELFFile) stripSectionData(sectionIndex int, useRandom bool) error {
 	}
 
 	// Validate section bounds
-	if section.Offset >= uint64(len(e.RawData)) {
+	if uint64(section.Offset) >= uint64(len(e.RawData)) {
 		return fmt.Errorf("section '%s' offset (%d) out of bounds (%d)",
 			section.Name, section.Offset, len(e.RawData))
 	}
 
 	// Cap size if it would extend beyond file boundary
 	size := section.Size
-	if section.Offset+size > uint64(len(e.RawData)) {
-		size = uint64(len(e.RawData)) - section.Offset
+	if uint64(section.Offset)+uint64(size) > uint64(len(e.RawData)) {
+		size = int64(uint64(len(e.RawData)) - uint64(section.Offset))
 	}
 
 	// Fill the section data
-	if err := e.fillRegion(section.Offset, int(size), useRandom); err != nil {
+	if err := e.fillRegion(uint64(section.Offset), int(size), useRandom); err != nil {
 		return fmt.Errorf("failed to fill section %s: %w", section.Name, err)
 	}
 
@@ -320,13 +309,13 @@ func (e *ELFFile) StripByteRegex(pattern *regexp.Regexp, useRandom bool) (int, e
 		}
 
 		// Validate and cap section bounds
-		if section.Offset >= uint64(len(e.RawData)) {
+		if uint64(section.Offset) >= uint64(len(e.RawData)) {
 			continue
 		}
 
 		readSize := section.Size
-		if section.Offset+readSize > uint64(len(e.RawData)) {
-			readSize = uint64(len(e.RawData)) - section.Offset
+		if uint64(section.Offset)+uint64(readSize) > uint64(len(e.RawData)) {
+			readSize = int64(uint64(len(e.RawData)) - uint64(section.Offset))
 			if readSize == 0 {
 				continue
 			}
@@ -396,15 +385,15 @@ func (e *ELFFile) StripNonLoadableSegments(useRandom bool) error {
 			continue
 		}
 
-		if segment.Offset > 0 && segment.Size > 0 {
-			if err := e.fillRegion(segment.Offset, int(segment.Size), useRandom); err != nil {
+		if segment.Offset > 0 && segment.FileSize > 0 {
+			if err := e.fillRegion(segment.Offset, int(segment.FileSize), useRandom); err != nil {
 				return fmt.Errorf("failed to fill non-loadable segment %d: %w", i, err)
 			}
 		}
 
 		// Mark segment as stripped
 		e.Segments[i].Offset = 0
-		e.Segments[i].Size = 0
+		e.Segments[i].FileSize = 0
 	}
 
 	return e.UpdateProgramHeaders()
@@ -750,7 +739,7 @@ func (e *ELFFile) calculateMinimumFileSize() (uint64, error) {
 	// Include all data referenced by loadable segments
 	for _, segment := range e.Segments {
 		if segment.Type == 1 { // PT_LOAD
-			segmentEnd := segment.Offset + segment.Size
+			segmentEnd := segment.Offset + segment.FileSize
 			if segmentEnd > minSize {
 				minSize = segmentEnd
 			}
@@ -830,16 +819,16 @@ func (e *ELFFile) modifyHeadersForSize(newSize uint64) error {
 		if segment.Offset >= newSize {
 			// Segment is completely beyond new file size - zero it out
 			e.Segments[i].Offset = newSize
-			e.Segments[i].Size = 0
+			e.Segments[i].FileSize = 0
 
 			// Update in raw data
 			err := e.writeProgramHeaderEntry(phdrPos, e.Segments[i])
 			if err != nil {
 				return err
 			}
-		} else if segment.Offset+segment.Size > newSize {
+		} else if segment.Offset+segment.FileSize > newSize {
 			// Segment extends beyond new file size - truncate it
-			e.Segments[i].Size = newSize - segment.Offset
+			e.Segments[i].FileSize = newSize - segment.Offset
 
 			// Update in raw data
 			err := e.writeProgramHeaderEntry(phdrPos, e.Segments[i])
@@ -879,7 +868,7 @@ func (e *ELFFile) writeProgramHeaderEntry(offset uint64, segment Segment) error 
 		// Write p_offset (64-bit)
 		endian.PutUint64(e.RawData[offset+8:], segment.Offset)
 		// Write p_filesz (64-bit)
-		endian.PutUint64(e.RawData[offset+32:], segment.Size)
+		endian.PutUint64(e.RawData[offset+32:], segment.FileSize)
 	} else {
 		// 32-bit program header
 		if offset+32 > uint64(len(e.RawData)) {
@@ -888,7 +877,7 @@ func (e *ELFFile) writeProgramHeaderEntry(offset uint64, segment Segment) error 
 		// Write p_offset (32-bit)
 		endian.PutUint32(e.RawData[offset+4:], uint32(segment.Offset))
 		// Write p_filesz (32-bit)
-		endian.PutUint32(e.RawData[offset+16:], uint32(segment.Size))
+		endian.PutUint32(e.RawData[offset+16:], uint32(segment.FileSize))
 	}
 
 	return nil
@@ -952,4 +941,76 @@ func (e *ELFFile) AdvancedStripDetailed(compact bool) *common.OperationResult {
 		originalSize, newSize, percentage, strings.Join(operations, "; "))
 
 	return common.NewApplied(message, totalCount)
+}
+
+// StripAll strips all sections according to rules similar to PE
+func (e *ELFFile) StripAll(force bool) *common.OperationResult {
+	originalSize := uint64(len(e.RawData))
+	var operations []string
+	totalCount := 0
+
+	// Strip debug sections
+	debugResult := e.StripDebugSections(force)
+	if debugResult != nil && debugResult.Applied {
+		operations = append(operations, debugResult.Message)
+		totalCount++
+	}
+
+	// Strip relocations if force is enabled
+	if force {
+		relocResult := e.StripRelocationSections(force)
+		if relocResult != nil && relocResult.Applied {
+			operations = append(operations, relocResult.Message)
+			totalCount++
+		}
+	}
+
+	if totalCount == 0 {
+		return common.NewSkipped("No sections were stripped")
+	}
+
+	newSize := uint64(len(e.RawData))
+	bytesRemoved := originalSize - newSize
+
+	message := fmt.Sprintf("Stripped %d section types", totalCount)
+	if len(operations) > 0 {
+		message += ": " + strings.Join(operations, ", ")
+	}
+	if bytesRemoved > 0 {
+		message += fmt.Sprintf(" (saved %d bytes)", bytesRemoved)
+	}
+
+	return common.NewApplied(message, totalCount)
+}
+
+// CommitChanges saves the changes to the file
+func (e *ELFFile) CommitChanges(newSize uint64) error {
+	if e.File == nil {
+		return fmt.Errorf("file is not open")
+	}
+
+	// Truncate file to new size if needed
+	if newSize < uint64(len(e.RawData)) {
+		e.RawData = e.RawData[:newSize]
+	}
+
+	// Seek to beginning and write the data
+	if _, err := e.File.Seek(0, 0); err != nil {
+		return fmt.Errorf("failed to seek to beginning: %w", err)
+	}
+
+	if _, err := e.File.Write(e.RawData); err != nil {
+		return fmt.Errorf("failed to write data: %w", err)
+	}
+
+	// Truncate file to exact size
+	if err := e.File.Truncate(int64(newSize)); err != nil {
+		return fmt.Errorf("failed to truncate file: %w", err)
+	}
+
+	if err := e.File.Sync(); err != nil {
+		return fmt.Errorf("failed to sync file: %w", err)
+	}
+
+	return nil
 }

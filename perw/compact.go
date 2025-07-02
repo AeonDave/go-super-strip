@@ -345,7 +345,7 @@ func (p *PEFile) updateSectionTableWithNewSections(newSections []Section) error 
 		if hdrOff+40 > int64(len(p.RawData)) {
 			break
 		}
-		copy(p.RawData[hdrOff:hdrOff+8], []byte(section.Name))
+		copy(p.RawData[hdrOff:hdrOff+8], section.Name)
 		binary.LittleEndian.PutUint32(p.RawData[hdrOff+8:], section.VirtualSize)
 		binary.LittleEndian.PutUint32(p.RawData[hdrOff+12:], section.VirtualAddress)
 		binary.LittleEndian.PutUint32(p.RawData[hdrOff+16:], uint32(section.Size))

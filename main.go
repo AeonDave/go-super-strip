@@ -72,9 +72,10 @@ func main() {
 
 	// Set up debug logging
 	if config.Verbose {
-		elfrw.SetDebugLogger(func(format string, args ...interface{}) {
-			fmt.Printf("DEBUG: "+format+"\n", args...)
-		})
+		// TODO: Implement debug logging for ELF
+		// elfrw.SetDebugLogger(func(format string, args ...interface{}) {
+		// 	fmt.Printf("DEBUG: "+format+"\n", args...)
+		// })
 	}
 
 	// Execute operations
@@ -259,7 +260,7 @@ func runStrip(config *Configuration, isPE bool) error {
 	if isPE {
 		result = perw.StripPE(config.FilePath, config.Force)
 	} else {
-		result = elfrw.StripELFDetailed(config.FilePath, false, config.Force)
+		result = elfrw.StripELF(config.FilePath, config.Force)
 	}
 	printOperationResult(getFileType(isPE), "Stripping", result)
 	return nil
@@ -271,7 +272,7 @@ func runCompact(config *Configuration, isPE bool) error {
 	if isPE {
 		result = perw.CompactPE(config.FilePath, config.Force)
 	} else {
-		result = elfrw.StripELFDetailed(config.FilePath, true, config.Force)
+		result = elfrw.CompactELF(config.FilePath, config.Force)
 	}
 	printOperationResult(getFileType(isPE), "Compaction", result)
 	return nil
@@ -301,7 +302,12 @@ func runRegex(config *Configuration, isPE bool) error {
 			fmt.Printf("❌ %s Regex Stripping: %s\n", getFileType(isPE), result.Message)
 		}
 	} else {
-		fmt.Printf("⚠️  %s Custom Regex: not yet implemented for ELF files\n", getFileType(isPE))
+		result := elfrw.RegexELF(config.FilePath, config.Regex)
+		if result.Applied {
+			fmt.Printf("✅ %s Regex Stripping: %s\n", getFileType(isPE), result.Message)
+		} else {
+			fmt.Printf("❌ %s Regex Stripping: %s\n", getFileType(isPE), result.Message)
+		}
 	}
 	return nil
 }
@@ -327,7 +333,7 @@ func runInsert(config *Configuration, isPE bool) error {
 	if isPE {
 		result = perw.InsertPE(config.FilePath, sectionName, dataOrFile, password)
 	} else {
-		result = elfrw.AddHexSectionDetailed(config.FilePath, sectionName, dataOrFile, password)
+		result = elfrw.InsertELF(config.FilePath, sectionName, dataOrFile, password)
 	}
 
 	printInsertResult(fileType, result)

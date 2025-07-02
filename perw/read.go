@@ -102,7 +102,7 @@ func (p *PEFile) parseAllPEComponents() error {
 		errors = append(errors, fmt.Sprintf("headers: %v", err))
 	}
 
-	if err := p.parseSectionsAtomic(); err != nil {
+	if err := p.parseSections(); err != nil {
 		errors = append(errors, fmt.Sprintf("sections: %v", err))
 
 		if p.Sections == nil {
@@ -114,7 +114,7 @@ func (p *PEFile) parseAllPEComponents() error {
 		errors = append(errors, fmt.Sprintf("directories: %v", err))
 	}
 
-	if err := p.parseImportsAtomic(); err != nil {
+	if err := p.parseImports(); err != nil {
 		errors = append(errors, fmt.Sprintf("imports: %v", err))
 
 		if p.Imports == nil {
@@ -141,7 +141,7 @@ func (p *PEFile) parseAllPEComponents() error {
 	return nil
 }
 
-func (p *PEFile) parseSectionsAtomic() error {
+func (p *PEFile) parseSections() error {
 	p.Sections = make([]Section, 0)
 
 	if p.PE == nil {
@@ -211,7 +211,7 @@ func (p *PEFile) fillSectionHashesAndEntropy(section *Section) {
 	}
 }
 
-func (p *PEFile) parseImportsAtomic() error {
+func (p *PEFile) parseImports() error {
 	if p.PE == nil {
 		return fmt.Errorf("PE not initialized")
 	}

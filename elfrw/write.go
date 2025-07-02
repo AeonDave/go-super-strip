@@ -8,47 +8,116 @@ import (
 	"os"
 )
 
-func (e *ELFFile) ModifyHeaders(newSize uint64) error {
-	shoffPos, shNumPos, shStrNdxPos := e.getHeaderPositions()
-	sectionHeaderOffset := e.getSectionHeaderOffset(shoffPos)
-
-	if sectionHeaderOffset >= newSize {
-		if err := e.clearSectionHeaders(shoffPos, shNumPos, shStrNdxPos); err != nil {
-			return err
+// WriteAtOffset writes a value to rawData at a specific offset with the given endianness.
+func WriteAtOffset(rawData []byte, offset int64, value interface{}, endian binary.ByteOrder) error {
+	var size int
+	switch v := value.(type) {
+	case uint16:
+		size = 2
+		if int(offset)+size > len(rawData) {
+			return fmt.Errorf("offset out of range: %d", offset)
 		}
-	} else if err := e.UpdateSectionHeaders(); err != nil {
-		return err
-	}
-
-	for i := uint16(0); i < e.ELF.GetSegmentCount(); i++ {
-		if err := e.updateProgramHeader(i, newSize); err != nil {
-			return err
+		endian.PutUint16(rawData[int(offset):int(offset)+size], v)
+	case uint32:
+		size = 4
+		if int(offset)+size > len(rawData) {
+			return fmt.Errorf("offset out of range: %d", offset)
 		}
+		endian.PutUint32(rawData[int(offset):int(offset)+size], v)
+	case uint64:
+		size = 8
+		if int(offset)+size > len(rawData) {
+			return fmt.Errorf("offset out of range: %d", offset)
+		}
+		endian.PutUint64(rawData[int(offset):int(offset)+size], v)
+	case uint8:
+		if int(offset) >= len(rawData) {
+			return fmt.Errorf("offset out of range: %d", offset)
+		}
+		rawData[int(offset)] = v
+	case []byte:
+		size = len(v)
+		if int(offset)+size > len(rawData) {
+			return fmt.Errorf("offset out of range: %d", offset)
+		}
+		copy(rawData[int(offset):int(offset)+size], v)
+	default:
+		return fmt.Errorf("unsupported type: %T", value)
 	}
 	return nil
 }
 
-func (e *ELFFile) UpdateRawData() error {
-	if err := e.UpdateSectionHeaders(); err != nil {
+// Save writes RawData to the file with optional header updates and truncation
+func (e *ELFFile) Save(updateHeaders bool, newSize int64) error {
+	if e.File == nil {
+		return fmt.Errorf("invalid file reference")
+	}
+
+	if newSize > 0 && int64(len(e.RawData)) > newSize {
+		e.RawData = e.RawData[:newSize]
+	}
+
+	if updateHeaders {
+		if err := e.updateHeadersAtomic(); err != nil {
+			return err
+		}
+	}
+
+	// Normal save process for ELF files
+	if err := e.writeRawDataAtomic(); err != nil {
 		return err
 	}
-	return e.UpdateProgramHeaders()
+	if err := e.truncateFileAtomic(); err != nil {
+		return err
+	}
+	return nil
 }
 
-func (e *ELFFile) CommitChanges(newSize uint64) error {
-	if err := e.ModifyHeaders(newSize); err != nil {
-		return fmt.Errorf("failed to modify headers: %w", err)
+// updateHeadersAtomic updates all headers needed before saving
+func (e *ELFFile) updateHeadersAtomic() error {
+	if err := e.UpdateELFHeader(); err != nil {
+		return fmt.Errorf("failed to update ELF header: %w", err)
 	}
+	return nil
+}
+
+// writeRawDataAtomic writes RawData to the file from the start
+func (e *ELFFile) writeRawDataAtomic() error {
 	if _, err := e.File.Seek(0, io.SeekStart); err != nil {
 		return fmt.Errorf("failed to reposition file: %w", err)
 	}
-	if _, err := e.File.Write(e.RawData[:newSize]); err != nil {
-		return fmt.Errorf("failed to write to file: %w", err)
+	if _, err := e.File.Write(e.RawData); err != nil {
+		return fmt.Errorf("failed to write changes to disk: %w", err)
 	}
-	if err := e.File.Truncate(int64(newSize)); err != nil {
+	return nil
+}
+
+// truncateFileAtomic truncates the file to the length of RawData
+func (e *ELFFile) truncateFileAtomic() error {
+	if err := e.File.Truncate(int64(len(e.RawData))); err != nil {
 		return fmt.Errorf("failed to resize file: %w", err)
 	}
 	return nil
+}
+
+// UpdateELFHeader updates the ELF header fields in RawData
+func (e *ELFFile) UpdateELFHeader() error {
+	if len(e.RawData) < 64 {
+		return fmt.Errorf("file too small for ELF structure")
+	}
+
+	endian := e.GetEndian()
+
+	// Update section count (e_shnum)
+	numberOfSections := uint16(len(e.Sections))
+	var shNumOffset int
+	if e.Is64Bit {
+		shNumOffset = 60
+	} else {
+		shNumOffset = 48
+	}
+
+	return WriteAtOffset(e.RawData, int64(shNumOffset), numberOfSections, endian)
 }
 
 func (e *ELFFile) updateProgramHeader(index uint16, newSize uint64) error {
@@ -135,56 +204,18 @@ func (e *ELFFile) UpdateProgramHeaders() error {
 			if err := e.writeAtOffset(int(pos+8), segment.Offset); err != nil {
 				return err
 			}
-			if err := e.writeAtOffset(int(pos+32), segment.Size); err != nil {
+			if err := e.writeAtOffset(int(pos+32), segment.FileSize); err != nil {
 				return err
 			}
 		} else {
 			if err := e.writeAtOffset(int(pos+4), uint32(segment.Offset)); err != nil {
 				return err
 			}
-			if err := e.writeAtOffset(int(pos+16), uint32(segment.Size)); err != nil {
+			if err := e.writeAtOffset(int(pos+16), uint32(segment.FileSize)); err != nil {
 				return err
 			}
 		}
 	}
-	return nil
-}
-
-// WriteAtOffset writes a value to RawData at a specific offset with the given endianness.
-func WriteAtOffset(rawData []byte, offset uint64, endian binary.ByteOrder, value any) error {
-	var size int
-	switch value.(type) {
-	case uint16:
-		size = 2
-	case uint32:
-		size = 4
-	case uint64:
-		size = 8
-	default:
-		return fmt.Errorf("unsupported type: %T", value)
-	}
-
-	// Check for integer overflow in the offset calculation
-	if offset > uint64(len(rawData)) {
-		return fmt.Errorf("offset too large: %d (file size: %d)", offset, len(rawData))
-	}
-
-	// Check if we have enough space to write
-	if int(offset)+size > len(rawData) {
-		return fmt.Errorf("write would exceed buffer limits: offset %d + size %d > length %d",
-			offset, size, len(rawData))
-	}
-
-	buf := make([]byte, size)
-	switch v := value.(type) {
-	case uint16:
-		endian.PutUint16(buf, v)
-	case uint32:
-		endian.PutUint32(buf, v)
-	case uint64:
-		endian.PutUint64(buf, v)
-	}
-	copy(rawData[offset:offset+uint64(size)], buf)
 	return nil
 }
 
@@ -216,11 +247,11 @@ func (e *ELFFile) AddSection(sectionName string, contentFilePath string) error {
 	// Create new section metadata
 	newSection := Section{
 		Name:   sectionName,
-		Offset: newDataOffset,
-		Size:   contentSize,
+		Offset: int64(newDataOffset),
+		Size:   int64(contentSize),
 		Type:   1, // SHT_PROGBITS
 		Flags:  2, // SHF_ALLOC
-		Index:  uint16(len(e.Sections)),
+		Index:  len(e.Sections),
 	}
 
 	// Update string table with new section name
@@ -283,8 +314,8 @@ func (e *ELFFile) findSectionDataLocation() uint64 {
 	for _, section := range e.Sections {
 		if section.Type != 8 { // Skip SHT_NOBITS sections
 			sectionEnd := section.Offset + section.Size
-			if sectionEnd > maxEnd {
-				maxEnd = sectionEnd
+			if uint64(sectionEnd) > maxEnd {
+				maxEnd = uint64(sectionEnd)
 			}
 		}
 	}
@@ -397,8 +428,8 @@ func (e *ELFFile) rebuildStringTableWithNewName(newName string, shstrndx uint16)
 
 	// Update string table section metadata
 	strtabSection := &e.Sections[shstrndx]
-	strtabSection.Offset = newOffset
-	strtabSection.Size = newTableSize
+	strtabSection.Offset = int64(newOffset)
+	strtabSection.Size = int64(newTableSize)
 
 	// Store the name offset mapping for quick lookup during section header writing
 	e.nameOffsets = nameOffsets
@@ -470,16 +501,16 @@ func (e *ELFFile) writeSectionHeader(section Section, offset uint64) error {
 			return fmt.Errorf("section header would exceed file bounds")
 		}
 
-		endian.PutUint32(e.RawData[offset:offset+4], nameOffset)         // sh_name
-		endian.PutUint32(e.RawData[offset+4:offset+8], section.Type)     // sh_type
-		endian.PutUint64(e.RawData[offset+8:offset+16], section.Flags)   // sh_flags
-		endian.PutUint64(e.RawData[offset+16:offset+24], 0)              // sh_addr
-		endian.PutUint64(e.RawData[offset+24:offset+32], section.Offset) // sh_offset
-		endian.PutUint64(e.RawData[offset+32:offset+40], section.Size)   // sh_size
-		endian.PutUint32(e.RawData[offset+40:offset+44], 0)              // sh_link
-		endian.PutUint32(e.RawData[offset+44:offset+48], 0)              // sh_info
-		endian.PutUint64(e.RawData[offset+48:offset+56], 1)              // sh_addralign
-		endian.PutUint64(e.RawData[offset+56:offset+64], 0)              // sh_entsize
+		endian.PutUint32(e.RawData[offset:offset+4], nameOffset)                 // sh_name
+		endian.PutUint32(e.RawData[offset+4:offset+8], section.Type)             // sh_type
+		endian.PutUint64(e.RawData[offset+8:offset+16], section.Flags)           // sh_flags
+		endian.PutUint64(e.RawData[offset+16:offset+24], 0)                      // sh_addr
+		endian.PutUint64(e.RawData[offset+24:offset+32], uint64(section.Offset)) // sh_offset
+		endian.PutUint64(e.RawData[offset+32:offset+40], uint64(section.Size))   // sh_size
+		endian.PutUint32(e.RawData[offset+40:offset+44], 0)                      // sh_link
+		endian.PutUint32(e.RawData[offset+44:offset+48], 0)                      // sh_info
+		endian.PutUint64(e.RawData[offset+48:offset+56], 1)                      // sh_addralign
+		endian.PutUint64(e.RawData[offset+56:offset+64], 0)                      // sh_entsize
 	} else {
 		// 32-bit section header
 		if offset+40 > uint64(len(e.RawData)) {
@@ -621,11 +652,11 @@ func (e *ELFFile) addSectionWithContent(sectionName string, content []byte, encr
 	// Create new section metadata
 	newSection := Section{
 		Name:   sectionName,
-		Offset: newDataOffset,
-		Size:   contentSize,
+		Offset: int64(newDataOffset),
+		Size:   int64(contentSize),
 		Type:   1, // SHT_PROGBITS
 		Flags:  2, // SHF_ALLOC
-		Index:  uint16(len(e.Sections)),
+		Index:  len(e.Sections),
 	}
 
 	// Update string table with new section name
@@ -665,5 +696,38 @@ func (e *ELFFile) addSectionWithContent(sectionName string, content []byte, encr
 		fmt.Printf(" (encrypted)")
 	}
 	fmt.Printf("\n")
+	return nil
+}
+
+// Add fallback mode support for corrupted ELF files
+type ELFFileMode struct {
+	usedFallbackMode bool
+}
+
+// saveWithAppendOnly appends new data to the end of the file without rewriting the entire file
+// This is used for corrupted/packed files to avoid damaging their structure
+func (e *ELFFile) saveWithAppendOnly() error {
+	// Read the current file to get its original size
+	currentInfo, err := e.File.Stat()
+	if err != nil {
+		return fmt.Errorf("failed to get file info: %w", err)
+	}
+	originalSize := currentInfo.Size()
+
+	// Only append the new data that was added beyond the original file size
+	if int64(len(e.RawData)) > originalSize {
+		newData := e.RawData[originalSize:]
+
+		// Seek to the end of the file
+		if _, err := e.File.Seek(0, io.SeekEnd); err != nil {
+			return fmt.Errorf("failed to seek to end of file: %w", err)
+		}
+
+		// Append only the new data
+		if _, err := e.File.Write(newData); err != nil {
+			return fmt.Errorf("failed to append new data: %w", err)
+		}
+	}
+
 	return nil
 }
