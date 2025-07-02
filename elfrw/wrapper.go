@@ -63,6 +63,33 @@ func AddHexSectionDetailed(filePath, sectionName, sourceFile, password string) *
 	return common.NewApplied(message, 1)
 }
 
+// OverlayELF adds data as an overlay to an ELF file without creating a named section
+func OverlayELF(filePath, dataOrFile, password string) *common.OperationResult {
+	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
+	if err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
+	}
+	defer func(file *os.File) {
+		_ = file.Close()
+	}(file)
+
+	elfFile, err := ReadELF(file)
+	if err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to read ELF file: %v", err))
+	}
+
+	// Add overlay
+	if err := elfFile.AddOverlay(dataOrFile, password); err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to add overlay: %v", err))
+	}
+
+	message := "added overlay data"
+	if password != "" {
+		message += " (encrypted)"
+	}
+	return common.NewApplied(message, 1)
+}
+
 // ObfuscateELF performs all ELF obfuscation operations with detailed result
 func ObfuscateELF(filePath string, force bool) *common.OperationResult {
 	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)

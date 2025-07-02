@@ -42,6 +42,11 @@ func (p *PEFile) StripSectionsByType(sectionType SectionType, fillMode FillMode,
 	if strippedCount == 0 {
 		return common.NewSkipped(fmt.Sprintf("no %s found", matcher.Description))
 	}
+	if sectionType == SymbolSections && strippedCount > 0 {
+		if err := p.fixCOFFHeaderAfterStripping(); err != nil {
+			return common.NewSkipped(fmt.Sprintf("failed to fix COFF header: %v", err))
+		}
+	}
 	message := fmt.Sprintf("stripped %d %s sections (%s)", strippedCount, matcher.Description, strings.Join(strippedSections, ", "))
 	return common.NewApplied(message, strippedCount)
 }
@@ -573,4 +578,45 @@ func (p *PEFile) rvaToPhysical(rva uint64) (uint64, error) {
 		}
 	}
 	return 0, fmt.Errorf("RVA %x not found in any section", rva)
+}
+
+func (p *PEFile) fixCOFFHeaderAfterStripping() error {
+	if len(p.RawData) < 64 {
+		return fmt.Errorf("file too small for PE structure")
+	}
+	peHeaderOffset := int64(binary.LittleEndian.Uint32(p.RawData[60:64]))
+	if peHeaderOffset < 0 || peHeaderOffset+24 >= int64(len(p.RawData)) {
+		return fmt.Errorf("invalid PE header")
+	}
+
+	coffHeaderOffset := peHeaderOffset + 4
+	if coffHeaderOffset+16 > int64(len(p.RawData)) {
+		return fmt.Errorf("invalid COFF header")
+	}
+	symbolTableOffset := binary.LittleEndian.Uint32(p.RawData[coffHeaderOffset+8 : coffHeaderOffset+12])
+	numberOfSymbols := binary.LittleEndian.Uint32(p.RawData[coffHeaderOffset+12 : coffHeaderOffset+16])
+	if symbolTableOffset == 0 && numberOfSymbols == 0 {
+		return nil
+	}
+	stringTableCorrupted := false
+	if symbolTableOffset > 0 && numberOfSymbols > 0 {
+		stringTableOffset := int64(symbolTableOffset) + int64(numberOfSymbols)*18
+		if stringTableOffset+4 > int64(len(p.RawData)) {
+			stringTableCorrupted = true
+		} else {
+			stringTableSize := binary.LittleEndian.Uint32(p.RawData[stringTableOffset : stringTableOffset+4])
+			if stringTableOffset+int64(stringTableSize) > int64(len(p.RawData)) {
+				stringTableCorrupted = true
+			}
+		}
+	}
+	if stringTableCorrupted {
+		if err := WriteAtOffset(p.RawData, coffHeaderOffset+8, uint32(0)); err != nil {
+			return err
+		}
+		if err := WriteAtOffset(p.RawData, coffHeaderOffset+12, uint32(0)); err != nil {
+			return err
+		}
+	}
+	return nil
 }

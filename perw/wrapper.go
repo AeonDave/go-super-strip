@@ -139,3 +139,26 @@ func InsertPE(filePath, sectionName, dataOrFile, password string) *common.Operat
 	}
 	return common.NewApplied(message, 1)
 }
+
+func OverlayPE(filePath, dataOrFile, password string) *common.OperationResult {
+	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
+	if err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
+	}
+	defer func(file *os.File) {
+		_ = file.Close()
+	}(file)
+	peFile, err := ReadPE(file)
+	if err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to read PE file: %v", err))
+	}
+	overlayErr := peFile.AddOverlay(dataOrFile, password)
+	if overlayErr != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to add overlay: %v", overlayErr))
+	}
+	message := "added overlay data"
+	if password != "" {
+		message += " (encrypted)"
+	}
+	return common.NewApplied(message, 1)
+}

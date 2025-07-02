@@ -19,6 +19,7 @@ type Configuration struct {
 	Obfuscate bool   // -o: Apply obfuscation techniques
 	Compact   bool   // -c: Apply file size reduction
 	Insert    string // -i: Add section (format: name:filepath[:password])
+	Overlay   string // -l: Add overlay (format: filepath[:password])
 	Regex     string // -r: Strip bytes matching regex pattern
 	Force     bool   // -f: Apply risky operations for -s, -c, -o
 }
@@ -38,6 +39,9 @@ var (
 
 	insertFlag     = flag.String("i", "", "Add hex section (format: name:data_or_file[:password])")
 	insertFlagLong = flag.String("insert", "", "Add hex section (format: name:data_or_file[:password])")
+
+	overlayFlag     = flag.String("l", "", "Add overlay (format: data_or_file[:password])")
+	overlayFlagLong = flag.String("overlay", "", "Add overlay (format: data_or_file[:password])")
 
 	regexFlag     = flag.String("r", "", "StripAll bytes matching regex pattern")
 	regexFlagLong = flag.String("regex", "", "StripAll bytes matching regex pattern")
@@ -107,6 +111,7 @@ func parseArgs() (*Configuration, error) {
 		Force:     *forceFlag || *forceFlagLong,
 		Regex:     firstNonEmpty(*regexFlag, *regexFlagLong),
 		Insert:    firstNonEmpty(*insertFlag, *insertFlagLong),
+		Overlay:   firstNonEmpty(*overlayFlag, *overlayFlagLong),
 	}
 
 	// Validate file existence
@@ -115,7 +120,7 @@ func parseArgs() (*Configuration, error) {
 	}
 
 	// Ensure analyze is used alone
-	if config.Analyze && (config.Strip || config.Obfuscate || config.Compact || config.Regex != "" || config.Insert != "" || config.Force) {
+	if config.Analyze && (config.Strip || config.Obfuscate || config.Compact || config.Regex != "" || config.Insert != "" || config.Overlay != "" || config.Force) {
 		return nil, fmt.Errorf("analyze (-a) must be used alone")
 	}
 
@@ -125,8 +130,8 @@ func parseArgs() (*Configuration, error) {
 	}
 
 	// Ensure at least one operation is specified
-	if !(config.Analyze || config.Strip || config.Obfuscate || config.Compact || config.Regex != "" || config.Insert != "") {
-		return nil, fmt.Errorf("at least one operation required (-s, -o, -c, -i, or -r)")
+	if !(config.Analyze || config.Strip || config.Obfuscate || config.Compact || config.Regex != "" || config.Insert != "" || config.Overlay != "") {
+		return nil, fmt.Errorf("at least one operation required (-s, -o, -c, -i, -l, or -r)")
 	}
 
 	// Validate regex pattern
@@ -199,6 +204,12 @@ func runOperations(config *Configuration) error {
 			return err
 		}
 		operations = append(operations, "insert")
+	}
+	if config.Overlay != "" {
+		if err := runOverlay(config, isPE); err != nil {
+			return err
+		}
+		operations = append(operations, "overlay")
 	}
 	if config.Strip {
 		if err := runStrip(config, isPE); err != nil {
@@ -323,6 +334,34 @@ func runInsert(config *Configuration, isPE bool) error {
 	return nil
 }
 
+func runOverlay(config *Configuration, isPE bool) error {
+	fmt.Println("\n=== Overlay Operations ===")
+	fmt.Printf("Adding overlay: %s\n", config.Overlay)
+
+	parts := strings.Split(config.Overlay, ":")
+	if len(parts) < 1 {
+		return fmt.Errorf("invalid format, expected data_or_file[:password]")
+	}
+
+	dataOrFile := parts[0]
+	password := ""
+	if len(parts) > 1 {
+		password = parts[1]
+	}
+
+	fileType := getFileType(isPE)
+
+	var result *common.OperationResult
+	if isPE {
+		result = perw.OverlayPE(config.FilePath, dataOrFile, password)
+	} else {
+		result = elfrw.OverlayELF(config.FilePath, dataOrFile, password)
+	}
+
+	printOverlayResult(fileType, result)
+	return nil
+}
+
 func printOperationResult(fileType, operation string, result *common.OperationResult) {
 	if result.Applied {
 		fmt.Printf("✅ %s %s: %s\n", fileType, operation, result.Message)
@@ -339,6 +378,14 @@ func printInsertResult(fileType string, result *common.OperationResult) {
 	}
 }
 
+func printOverlayResult(fileType string, result *common.OperationResult) {
+	if result.Applied {
+		fmt.Printf("✅ %s Overlay: %s\n", fileType, result.Message)
+	} else {
+		fmt.Printf("❌ %s Overlay: %s\n", fileType, result.Message)
+	}
+}
+
 func printUsage() {
 	fmt.Printf(`go-super-strip - Advanced Executable Stripping and Obfuscation Tool
 
@@ -347,7 +394,7 @@ USAGE:
 
 DESCRIPTION:
 	Process PE/ELF executables with stripping, obfuscation, and analysis capabilities.
-	Operations are performed in strict order: insert -> strip -> compact -> obfuscate -> regex
+	Operations are performed in strict order: insert/overlay -> strip -> compact -> obfuscate -> regex
 
 OPTIONS:
 	-a, --analyze        Analyze executable file structure and exit
@@ -362,6 +409,11 @@ OPTIONS:
 	                     - name:file.txt:password123 (file with string password)
 	                     - name:HelloWorld:deadbeef (string with hex password)
 	                     Note: PE section names are limited to 8 characters
+	-l, --overlay <spec> Add data as overlay (format: data_or_file[:password])
+	                     - file.txt (file without password)
+	                     - HelloWorld (string without password)  
+	                     - file.txt:password123 (file with string password)
+	                     - HelloWorld:deadbeef (string with hex password)
 	-v                   Enable verbose output
 	-h                   Show this help
 
@@ -377,6 +429,9 @@ EXAMPLES:
 	%s -i 'custom:data.bin' bin 		# Add hex section from file
 	%s -i 'custom:HelloWorld' bin 		# Add hex section from string
 	%s -i 'secret:data.bin:pass123' bin # Add encrypted hex section
+	%s -l 'data.bin' bin 				# Add overlay from file
+	%s -l 'HelloWorld' bin 				# Add overlay from string
+	%s -l 'data.bin:pass123' bin 		# Add encrypted overlay
 
-`, os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0])
+`, os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0])
 }
