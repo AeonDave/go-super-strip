@@ -2,6 +2,7 @@ package elfrw
 
 import (
 	"debug/elf"
+	"encoding/binary"
 	"fmt"
 	"strings"
 )
@@ -238,6 +239,40 @@ func (e *ELFFile) GetFileType() uint16 {
 		return 0
 	}
 	return uint16(e.ELF.GetFileType())
+}
+
+// IsLittleEndian checks if the ELF file uses little-endian byte order.
+func (e *ELFFile) IsLittleEndian() bool {
+	return e.RawData[5] == 0x01 // EI_DATA field, 1 for LSB
+}
+
+// GetEndian returns the binary.ByteOrder for the ELF file.
+func (e *ELFFile) GetEndian() binary.ByteOrder {
+	if e.IsLittleEndian() {
+		return binary.LittleEndian
+	}
+	return binary.BigEndian
+}
+
+func (e *ELFFile) readUint64(pos int) uint64 {
+	if e.RawData[5] == 1 {
+		return binary.LittleEndian.Uint64(e.RawData[pos : pos+8])
+	}
+	return binary.BigEndian.Uint64(e.RawData[pos : pos+8])
+}
+
+func (e *ELFFile) readUint32(pos int) uint32 {
+	if e.RawData[5] == 1 {
+		return binary.LittleEndian.Uint32(e.RawData[pos : pos+4])
+	}
+	return binary.BigEndian.Uint32(e.RawData[pos : pos+4])
+}
+
+func (e *ELFFile) readUint16(pos int) uint16 {
+	if e.RawData[5] == 1 {
+		return binary.LittleEndian.Uint16(e.RawData[pos : pos+2])
+	}
+	return binary.BigEndian.Uint16(e.RawData[pos : pos+2])
 }
 
 func AlignUp(value, alignment uint64) uint64 {

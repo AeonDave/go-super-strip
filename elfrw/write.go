@@ -1,12 +1,36 @@
 package elfrw
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"gosstrip/common"
 	"io"
 	"os"
 )
+
+func (e *ELFFile) writeAtOffset(pos int, value interface{}) error {
+	var size int
+	switch value.(type) {
+	case uint16:
+		size = 2
+	case uint32:
+		size = 4
+	case uint64:
+		size = 8
+	default:
+		size = len(e.RawData) - pos
+	}
+	if pos < 0 || pos+size > len(e.RawData) {
+		return fmt.Errorf("offset out of bounds: %d (size %d)", pos, size)
+	}
+	buf := new(bytes.Buffer)
+	if err := binary.Write(buf, e.GetEndian(), value); err != nil {
+		return fmt.Errorf("failed to write value: %w", err)
+	}
+	copy(e.RawData[pos:], buf.Bytes())
+	return nil
+}
 
 // WriteAtOffset writes a value to rawData at a specific offset with the given endianness.
 func WriteAtOffset(rawData []byte, offset int64, value interface{}, endian binary.ByteOrder) error {

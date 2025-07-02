@@ -38,7 +38,7 @@ func StripELF(filePath string, force bool) *common.OperationResult {
 	}
 
 	result := elfFile.StripAll(force)
-	if result.Applied && elfFile.CommitChanges(uint64(len(elfFile.RawData))) != nil {
+	if result.Applied && elfFile.Save(true, int64(len(elfFile.RawData))) != nil {
 		return common.NewSkipped("Stripping succeeded but failed to save file")
 	}
 
@@ -60,7 +60,7 @@ func CompactELF(filePath string, force bool) *common.OperationResult {
 	}
 
 	result := elfFile.Compact(force)
-	if result.Applied && elfFile.CommitChanges(uint64(len(elfFile.RawData))) != nil {
+	if result.Applied && elfFile.Save(true, int64(len(elfFile.RawData))) != nil {
 		return common.NewSkipped("Compaction succeeded but failed to save file")
 	}
 
@@ -81,9 +81,9 @@ func RegexELF(filePath string, regex string) *common.OperationResult {
 		return common.NewSkipped("Failed to read ELF file: " + err.Error())
 	}
 
-	result := elfFile.StripDebugSections(false) // Use existing method for now
+	result := elfFile.StripSingleRegexRule(regex)
 
-	if result.Applied && elfFile.CommitChanges(uint64(len(elfFile.RawData))) != nil {
+	if result.Applied && elfFile.Save(true, int64(len(elfFile.RawData))) != nil {
 		return common.NewSkipped("Regex stripping succeeded but failed to save file")
 	}
 
@@ -105,7 +105,7 @@ func ObfuscateELF(filePath string, force bool) *common.OperationResult {
 	}
 
 	result := elfFile.ObfuscateAll(force)
-	if result.Applied && elfFile.CommitChanges(uint64(len(elfFile.RawData))) != nil {
+	if result.Applied && elfFile.Save(true, int64(len(elfFile.RawData))) != nil {
 		return common.NewSkipped("Obfuscation succeeded but failed to save file")
 	}
 
@@ -131,7 +131,7 @@ func InsertELF(filePath, sectionName, dataOrFile, password string) *common.Opera
 		return common.NewSkipped(fmt.Sprintf("failed to insert section: %v", insertErr))
 	}
 
-	if err := elfFile.CommitChanges(uint64(len(elfFile.RawData))); err != nil {
+	if err := elfFile.Save(true, int64(len(elfFile.RawData))); err != nil {
 		return common.NewSkipped(fmt.Sprintf("failed to write changes: %v", err))
 	}
 

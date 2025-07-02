@@ -26,7 +26,7 @@ type SectionStripRule struct {
 	PrefixNames []string
 	Description string
 	StripForSO  bool // Shared object (.so)
-	StripForEXE bool // Executable
+	StripForBIN bool // Executable
 	IsRisky     bool
 	Fill        FillMode
 }
@@ -41,11 +41,11 @@ type RegexStripRule struct {
 func GetSectionStripRule() map[SectionType]SectionStripRule {
 	return map[SectionType]SectionStripRule{
 		DebugSections: {
-			ExactNames:  []string{".debug_info", ".debug_abbrev", ".debug_str", ".debug_line", ".debug_frame", ".debug_loc", ".debug_pubnames", ".debug_pubtypes", ".debug_aranges", ".debug_ranges", ".debug_macinfo", ".debug_macro", ".debug_addr", ".debug_line_str", ".debug_loclists", ".debug_rnglists", ".debug_str_offsets", ".debug_types"},
+			ExactNames:  []string{},
 			PrefixNames: []string{".debug", ".zdebug"},
 			Description: "debugging information",
 			StripForSO:  true,
-			StripForEXE: true,
+			StripForBIN: true,
 			IsRisky:     false,
 			Fill:        ZeroFill,
 		},
@@ -54,16 +54,16 @@ func GetSectionStripRule() map[SectionType]SectionStripRule {
 			PrefixNames: []string{},
 			Description: "symbol table information",
 			StripForSO:  false, // Keep for shared objects as they may be needed
-			StripForEXE: true,
+			StripForBIN: true,
 			IsRisky:     false,
 			Fill:        ZeroFill,
 		},
 		RelocationSections: {
-			ExactNames:  []string{".rel.dyn", ".rel.plt", ".rela.dyn", ".rela.plt"},
+			ExactNames:  []string{},
 			PrefixNames: []string{".rel.", ".rela."},
 			Description: "relocation information",
 			StripForSO:  false, // Very risky for shared objects
-			StripForEXE: true,  // Can be risky for executables too
+			StripForBIN: true,  // Can be risky for executables too
 			IsRisky:     true,
 			Fill:        ZeroFill,
 		},
@@ -72,16 +72,16 @@ func GetSectionStripRule() map[SectionType]SectionStripRule {
 			PrefixNames: []string{},
 			Description: "Thread Local Storage sections",
 			StripForSO:  false,
-			StripForEXE: false, // TLS is often essential
+			StripForBIN: false, // TLS is often essential
 			IsRisky:     true,
 			Fill:        ZeroFill,
 		},
 		NonEssentialSections: {
-			ExactNames:  []string{".comment", ".note.GNU-stack", ".note.gnu.build-id", ".note.ABI-tag", ".note.gnu.gold-version", ".gnu_debuglink", ".gnu_debugaltlink"},
+			ExactNames:  []string{".comment", ".gnu_debuglink", ".gnu_debugaltlink"},
 			PrefixNames: []string{".note.", ".gnu.warning."},
 			Description: "non-essential metadata",
 			StripForSO:  true,
-			StripForEXE: true,
+			StripForBIN: true,
 			IsRisky:     false,
 			Fill:        ZeroFill,
 		},
@@ -90,25 +90,25 @@ func GetSectionStripRule() map[SectionType]SectionStripRule {
 			PrefixNames: []string{},
 			Description: "exception handling data",
 			StripForSO:  false, // Exception handling often needed in shared libs
-			StripForEXE: true,  // Can be risky for executables with C++
+			StripForBIN: true,  // Can be risky for executables with C++
 			IsRisky:     true,
 			Fill:        ZeroFill,
 		},
 		BuildInfoSections: {
-			ExactNames:  []string{".go.buildinfo", ".gosymtab", ".gopclntab", ".typelink", ".itablink", ".noptrbss", ".noptrdata"},
+			ExactNames:  []string{".gosymtab", ".gopclntab", ".typelink", ".itablink", ".noptrbss", ".noptrdata"},
 			PrefixNames: []string{".go.", ".gopkg."},
 			Description: "build information and toolchain metadata",
 			StripForSO:  true,
-			StripForEXE: true,
+			StripForBIN: true,
 			IsRisky:     false,
 			Fill:        ZeroFill,
 		},
 		NoteSections: {
-			ExactNames:  []string{".note", ".note.openbsd.ident", ".note.netbsd.ident", ".note.gnu.property"},
+			ExactNames:  []string{".note"},
 			PrefixNames: []string{".note."},
 			Description: "note sections with metadata",
 			StripForSO:  true,
-			StripForEXE: true,
+			StripForBIN: true,
 			IsRisky:     false,
 			Fill:        ZeroFill,
 		},
@@ -117,7 +117,7 @@ func GetSectionStripRule() map[SectionType]SectionStripRule {
 			PrefixNames: []string{".rust.", ".llvm."},
 			Description: "runtime and compiler-specific sections",
 			StripForSO:  true,
-			StripForEXE: true,
+			StripForBIN: true,
 			IsRisky:     false,
 			Fill:        ZeroFill,
 		},
