@@ -25,7 +25,7 @@ var (
 	emailRegex        = regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`)
 	uuidRegex         = regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
 	versionRegex      = regexp.MustCompile(`(?i)\b(?:v|vers|version)\s*\.?\s*([0-9]{1,3}\.){1,2}[0-9]{1,3}(?:-[a-zA-Z0-9]+)?(?:\+[a-zA-Z0-9]+)?\b|go1\.[0-9]{1,2}(?:\.[0-9]{1,2})?\b|GCC: \([^)]+\) [0-9]+\.[0-9]+\.[0-9]+\b`)
-	buildIDRegex      = regexp.MustCompile(`build ID: "[a-zA-Z0-9/_\-=+]{20,}"|build-[a-zA-Z0-9\-]{8,40}|commit-[a-f0-9]{7,40}|[A-Za-z]:\\[\\/](?:Users|home|runner)[\\/][^\s\x00"]+?\.(?:go|c|cpp|h|hpp|rs|cs|vb)`)
+	buildInfoRegex    = regexp.MustCompile(`(?i)(?:Go build ID: "[a-zA-Z0-9/_\-=+]"|build[-\s]?id[:\s]*[a-f0-9]{7,40}|commit[-:\s]*[a-f0-9]{7,40}|revision[-:\s]*[a-f0-9]{7,40}|(?:gcc|clang|rustc|msvc|dotnet|mono|delphi|fpc|dmd)[\s:/\-]+[0-9]+\.[0-9]+(?:\.[0-9]+)?|/build/[^/\s]+/[^/\s]+\.(go|c|cpp|rs|cs|vb)|version\s*[0-9]+\.[0-9]+(?:\.[0-9]+)?)`)
 	hexStringRegex    = regexp.MustCompile(`^[0-9A-Fa-f]{32,}$`)
 	base64Regex       = regexp.MustCompile(`^[A-Za-z0-9+/]{20,}={0,2}$`)
 	urlEncodedRegex   = regexp.MustCompile(`%[0-9A-Fa-f]{2}`)
@@ -175,7 +175,7 @@ func categorizeString(s string, categories map[string][]string) bool {
 	}
 
 	// Check build information
-	if buildIDRegex.MatchString(s) || containsDatePattern(sLower) {
+	if buildInfoRegex.MatchString(s) || containsDatePattern(sLower) {
 		categories["🏗️ Build Information"] = append(categories["🏗️ Build Information"], s)
 		return true
 	}
@@ -365,27 +365,31 @@ func isObfuscatedContent(s string) bool {
 	entropy := CalculateStringEntropy(s)
 	length := len(s)
 
-	// Catch high-entropy strings that don't contain obvious separators
+	// Highly suspicious: very high entropy + very long
+	if entropy > 7.0 && length > 256 && !strings.ContainsAny(s, "-._:/\\") {
+		return true
+	}
+
+	// High entropy, but shorter
 	if entropy > 6.0 && length >= 32 && length <= 128 {
 		if !strings.ContainsAny(s, "-./\\_:") && !strings.ContainsAny(s, "$%@#") {
 			return true
 		}
 	}
 
-	// Base64-encoded strings (standard length is multiple of 4)
+	// Base64-encoded strings
 	if base64Regex.MatchString(s) && length >= 44 && entropy > 5.0 {
-		// Don't flag short or obviously non-sensitive base64
 		if !strings.ContainsAny(s, "%$@#") {
 			return true
 		}
 	}
 
-	// Hex strings with high entropy
+	// Hex strings
 	if hexStringRegex.MatchString(s) && length >= 40 && entropy > 4.0 {
 		return true
 	}
 
-	// Percent-encoded URL strings (e.g., %3F%2F%3A)
+	// URL-encoded blobs
 	if urlEncodedRegex.MatchString(s) && length >= 30 {
 		encodedCount := len(urlEncodedRegex.FindAllString(s, -1))
 		if float64(encodedCount*3)/float64(length) > 0.3 {
