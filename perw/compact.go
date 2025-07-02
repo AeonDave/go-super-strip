@@ -410,7 +410,7 @@ func (p *PEFile) isNullOrZeroSection(section Section) bool {
 		return false
 	}
 	if section.Entropy == 0.0 {
-		section.Entropy = CalculateEntropy(p.RawData[section.Offset:endOffset])
+		section.Entropy = common.CalculateEntropy(p.RawData[section.Offset:endOffset])
 	}
 	return section.Entropy < 0.1
 }

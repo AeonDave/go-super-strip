@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"crypto/sha256"
 	"fmt"
+	"gosstrip/common"
 	"io"
 	"os"
 	"strings"
@@ -22,6 +23,34 @@ func ReadELF(file *os.File) (*ELFFile, error) {
 		return nil, err
 	}
 	return ef, nil
+}
+
+func isLikelyPackedELF(sections []Section) bool {
+	if len(sections) == 0 {
+		return false
+	}
+	var (
+		highEntropyCount int
+		total            int
+		sumEntropy       float64
+	)
+	for _, s := range sections {
+		if s.Size == 0 {
+			continue
+		}
+		total++
+		sumEntropy += s.Entropy
+		if s.Entropy > 7.0 {
+			highEntropyCount++
+		}
+	}
+	if total == 0 {
+		return false
+	}
+	avgEntropy := sumEntropy / float64(total)
+	percentHigh := float64(highEntropyCount) / float64(total)
+
+	return percentHigh > 0.5 || avgEntropy > 6.8
 }
 
 func newELFFileFromDisk(file *os.File) (*ELFFile, error) {
@@ -55,7 +84,7 @@ func newELFFileFromDisk(file *os.File) (*ELFFile, error) {
 			RawData:  rawData,
 		}
 		_ = tempEF.parseBasicSectionsFromRaw()
-		// packed = isLikelyPackedELF(tempEF.Sections) // TODO: implement packing detection
+		packed = isLikelyPackedELF(tempEF.Sections)
 
 		if packed {
 			reason = "File appears to be packed/compressed (high entropy)"
@@ -288,7 +317,7 @@ func (e *ELFFile) parseSections() []Section {
 			section.MD5Hash = fmt.Sprintf("%x", md5.Sum(content))
 			section.SHA1Hash = fmt.Sprintf("%x", sha1.Sum(content))
 			section.SHA256Hash = fmt.Sprintf("%x", sha256.Sum256(content))
-			section.Entropy = CalculateEntropy(content)
+			section.Entropy = common.CalculateEntropy(content)
 		}
 
 		sections = append(sections, section)
@@ -522,26 +551,26 @@ func parseWithFallback(ef *ELFFile) error {
 }
 
 // parseBasicSectionsFromRaw attempts basic section parsing from raw data
-func (ef *ELFFile) parseBasicSectionsFromRaw() error {
-	if len(ef.RawData) < 64 {
+func (e *ELFFile) parseBasicSectionsFromRaw() error {
+	if len(e.RawData) < 64 {
 		return fmt.Errorf("file too small")
 	}
 
 	// This is a simplified parser for the fallback mode
 	// It tries to extract what it can from the raw data
-	ef.Sections = []Section{}
+	e.Sections = []Section{}
 
 	return nil
 }
 
 // parseBasicSegmentsFromRaw attempts basic segment parsing from raw data
-func (ef *ELFFile) parseBasicSegmentsFromRaw() error {
-	if len(ef.RawData) < 64 {
+func (e *ELFFile) parseBasicSegmentsFromRaw() error {
+	if len(e.RawData) < 64 {
 		return fmt.Errorf("file too small")
 	}
 
 	// This is a simplified parser for the fallback mode
-	ef.Segments = []Segment{}
+	e.Segments = []Segment{}
 
 	return nil
 }

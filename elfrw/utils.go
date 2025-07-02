@@ -3,70 +3,22 @@ package elfrw
 import (
 	"debug/elf"
 	"fmt"
-	"math"
 	"strings"
 )
 
-// Utility functions for ELF file analysis and manipulation
-
-// CalculateEntropy calculates the entropy of data bytes
-func CalculateEntropy(data []byte) float64 {
-	if len(data) == 0 {
-		return 0.0
+func ContainsSuspiciousPattern(s string) bool {
+	suspiciousPatterns := []string{
+		"\\x", "0x", "%x", "\\u", "\\U",
+		"[\\", "\\]", "^_", "A\\A", "\\$",
 	}
-
-	freq := make([]int, 256)
-	for _, b := range data {
-		freq[b]++
-	}
-
-	entropy := 0.0
-	length := float64(len(data))
-
-	for _, count := range freq {
-		if count > 0 {
-			p := float64(count) / length
-			entropy -= p * math.Log2(p)
+	for _, pattern := range suspiciousPatterns {
+		if strings.Contains(s, pattern) {
+			return true
 		}
 	}
-
-	return entropy
+	return false
 }
 
-// IsHighEntropyData checks if data has high entropy (potential encryption/compression)
-func IsHighEntropyData(data []byte) bool {
-	entropy := CalculateEntropy(data)
-	return entropy > 7.0 // High entropy threshold for binary data
-}
-
-// ExtractPrintableStrings extracts printable ASCII strings from data
-func ExtractPrintableStrings(data []byte, minLen int) []string {
-	if minLen < 4 {
-		minLen = 4
-	}
-
-	var results []string
-	var current []byte
-
-	for _, b := range data {
-		if b >= 32 && b <= 126 { // Printable ASCII
-			current = append(current, b)
-		} else {
-			if len(current) >= minLen {
-				results = append(results, string(current))
-			}
-			current = nil
-		}
-	}
-
-	if len(current) >= minLen {
-		results = append(results, string(current))
-	}
-
-	return results
-}
-
-// DecodeSectionFlags converts ELF section flags to human-readable string
 func DecodeSectionFlags(flags uint64) string {
 	var flagStrs []string
 
@@ -108,7 +60,6 @@ func DecodeSectionFlags(flags uint64) string {
 	return strings.Join(flagStrs, ", ")
 }
 
-// DecodeSegmentFlags converts ELF segment flags to human-readable string
 func DecodeSegmentFlags(flags uint32) string {
 	var flagStrs []string
 
@@ -129,7 +80,6 @@ func DecodeSegmentFlags(flags uint32) string {
 	return strings.Join(flagStrs, ", ")
 }
 
-// GetSectionTypeName returns human-readable section type name
 func GetSectionTypeName(sectionType uint32) string {
 	switch elf.SectionType(sectionType) {
 	case elf.SHT_NULL:
@@ -177,7 +127,6 @@ func GetSectionTypeName(sectionType uint32) string {
 	}
 }
 
-// GetSegmentTypeName returns human-readable segment type name
 func GetSegmentTypeName(segmentType uint32) string {
 	switch elf.ProgType(segmentType) {
 	case elf.PT_NULL:
@@ -204,9 +153,6 @@ func GetSegmentTypeName(segmentType uint32) string {
 	}
 }
 
-// ELFFile utility methods
-
-// GetSectionByName finds a section by name
 func (e *ELFFile) GetSectionByName(name string) (*Section, error) {
 	for i := range e.Sections {
 		if e.Sections[i].Name == name {
@@ -216,7 +162,6 @@ func (e *ELFFile) GetSectionByName(name string) (*Section, error) {
 	return nil, fmt.Errorf("section '%s' not found", name)
 }
 
-// GetSectionByIndex returns section by index
 func (e *ELFFile) GetSectionByIndex(index int) (*Section, error) {
 	if index < 0 || index >= len(e.Sections) {
 		return nil, fmt.Errorf("section index out of bounds: %d", index)
@@ -224,7 +169,6 @@ func (e *ELFFile) GetSectionByIndex(index int) (*Section, error) {
 	return &e.Sections[index], nil
 }
 
-// GetExecutableSections returns all executable sections
 func (e *ELFFile) GetExecutableSections() []Section {
 	var execSections []Section
 	for _, section := range e.Sections {
@@ -235,7 +179,6 @@ func (e *ELFFile) GetExecutableSections() []Section {
 	return execSections
 }
 
-// GetLoadableSegments returns all loadable segments
 func (e *ELFFile) GetLoadableSegments() []Segment {
 	var loadableSegments []Segment
 	for _, segment := range e.Segments {
@@ -246,22 +189,18 @@ func (e *ELFFile) GetLoadableSegments() []Segment {
 	return loadableSegments
 }
 
-// IsExecutable checks if the ELF file is executable
 func (e *ELFFile) IsExecutable() bool {
 	return e.ELF != nil && e.ELF.GetFileType() == 2 // ET_EXEC
 }
 
-// IsDynamic checks if the ELF file is a dynamic library
 func (e *ELFFile) IsDynamic() bool {
 	return e.ELF != nil && e.ELF.GetFileType() == 3 // ET_DYN
 }
 
-// IsSharedObject checks if the ELF file is a shared object
 func (e *ELFFile) IsSharedObject() bool {
 	return e.IsDynamic()
 }
 
-// GetFileTypeName returns human-readable file type
 func (e *ELFFile) GetFileTypeName() string {
 	if e.ELF == nil {
 		return "Unknown"
@@ -283,7 +222,6 @@ func (e *ELFFile) GetFileTypeName() string {
 	}
 }
 
-// GetMachineName returns human-readable machine type
 func (e *ELFFile) GetMachineName() string {
 	if e.ELF == nil {
 		return "Unknown"
@@ -291,12 +229,10 @@ func (e *ELFFile) GetMachineName() string {
 	return e.machineType
 }
 
-// GetEntryPoint returns the entry point address
 func (e *ELFFile) GetEntryPoint() uint64 {
 	return e.entryPoint
 }
 
-// GetFileType returns the ELF file type
 func (e *ELFFile) GetFileType() uint16 {
 	if e.ELF == nil {
 		return 0
@@ -304,7 +240,6 @@ func (e *ELFFile) GetFileType() uint16 {
 	return uint16(e.ELF.GetFileType())
 }
 
-// AlignUp aligns a value up to the specified alignment
 func AlignUp(value, alignment uint64) uint64 {
 	if alignment == 0 {
 		return value
@@ -312,7 +247,6 @@ func AlignUp(value, alignment uint64) uint64 {
 	return ((value + alignment - 1) / alignment) * alignment
 }
 
-// AlignDown aligns a value down to the specified alignment
 func AlignDown(value, alignment uint64) uint64 {
 	if alignment == 0 {
 		return value

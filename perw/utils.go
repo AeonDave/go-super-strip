@@ -4,26 +4,8 @@ import (
 	"debug/pe"
 	"encoding/binary"
 	"fmt"
-	"math"
 	"strings"
 )
-
-func IsHighEntropyString(s string) bool {
-	if len(s) < 10 {
-		return false
-	}
-	charCount := make(map[rune]int)
-	for _, r := range s {
-		charCount[r]++
-	}
-	entropy := 0.0
-	length := float64(len(s))
-	for _, count := range charCount {
-		p := float64(count) / length
-		entropy -= p * math.Log2(p)
-	}
-	return entropy > 4.5 // High entropy threshold
-}
 
 func ContainsSuspiciousPattern(s string) bool {
 	suspiciousPatterns := []string{
@@ -36,68 +18,6 @@ func ContainsSuspiciousPattern(s string) bool {
 		}
 	}
 	return false
-}
-
-func ExtractSuspiciousStrings(data []byte, unicode bool) []string {
-	var results []string
-	var minLen = 8
-	var current []byte
-	for i := 0; i < len(data); i++ {
-		b := data[i]
-		if unicode {
-			if i+1 < len(data) && data[i+1] == 0 {
-				current = append(current, b)
-				i++
-			} else {
-				if len(current) >= minLen {
-					results = append(results, string(current))
-				}
-				current = nil
-			}
-		} else {
-			if b >= 32 && b <= 126 {
-				current = append(current, b)
-			} else {
-				if len(current) >= minLen {
-					results = append(results, string(current))
-				}
-				current = nil
-			}
-		}
-	}
-	if len(current) >= minLen {
-		results = append(results, string(current))
-	}
-	return results
-}
-
-func CountNonEmptyCategories(categories map[string][]string) int {
-	count := 0
-	for _, items := range categories {
-		if len(items) > 0 {
-			count++
-		}
-	}
-	return count
-}
-
-func CalculateEntropy(data []byte) float64 {
-	if len(data) == 0 {
-		return 0.0
-	}
-	freq := make([]int, 256)
-	for _, b := range data {
-		freq[b]++
-	}
-	entropy := 0.0
-	length := float64(len(data))
-	for _, count := range freq {
-		if count > 0 {
-			p := float64(count) / length
-			entropy -= p * math.Log2(p)
-		}
-	}
-	return entropy
 }
 
 func (p *PEFile) decodeSectionFlags(flags uint32) string {

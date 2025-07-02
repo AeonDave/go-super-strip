@@ -9,7 +9,6 @@ import (
 	"strings"
 )
 
-// Analyze provides detailed analysis of the ELF file similar to PE analysis
 func (e *ELFFile) Analyze() error {
 	e.calculateSectionEntropy()
 	e.IsPacked = e.detectPacking()
@@ -21,7 +20,7 @@ func (e *ELFFile) Analyze() error {
 	e.printSectionHeaders()
 	e.printSectionAnomalies()
 	e.printSymbolAnalysis()
-	e.printSuspiciousContent()
+	common.PrintSuspiciousStrings(e.RawData)
 	e.printPackingAnalysis()
 	return nil
 }
@@ -59,7 +58,7 @@ func (e *ELFFile) calculateSectionEntropy() {
 	for i := range e.Sections {
 		section := &e.Sections[i]
 		if section.Size > 0 && section.Offset+section.Size <= int64(len(e.RawData)) {
-			section.Entropy = CalculateEntropy(e.RawData[section.Offset : section.Offset+section.Size])
+			section.Entropy = common.CalculateEntropy(e.RawData[section.Offset : section.Offset+section.Size])
 		}
 	}
 }
@@ -562,10 +561,9 @@ func (e *ELFFile) printSectionAnomalies() {
 	fmt.Println("🚨 SECTION ANOMALY ANALYSIS")
 	fmt.Println("════════════════════════════")
 
-	anomalies := []string{}
+	var anomalies []string
 
 	for _, section := range e.Sections {
-		// Check for executable and writable sections (RWX)
 		if section.IsExecutable && section.IsWritable {
 			anomalies = append(anomalies, fmt.Sprintf("⚠️  Section '%s' is both executable and writable (RWX)", section.Name))
 		}
@@ -941,7 +939,6 @@ func (e *ELFFile) printImportsAnalysis() {
 	fmt.Println()
 }
 
-// printExportsAnalysis analyzes exported symbols
 func (e *ELFFile) printExportsAnalysis() {
 	fmt.Println("🔍 EXPORTS ANALYSIS")
 	fmt.Println("═══════════════════")
@@ -993,7 +990,7 @@ func (e *ELFFile) printExportsAnalysis() {
 		fmt.Printf("\n📚 EXPORTED FUNCTIONS (%d):\n", len(functions))
 		for i, fn := range functions {
 			if i < 20 { // Limit display
-				fmt.Printf("   • %s (size: %d bytes)\n", fn.Name, fn.Size)
+				fmt.Printf("   • %s (RVA: 0x%08X, size: %d bytes)\n", fn.Name, fn.Value, fn.Size)
 			}
 		}
 		if len(functions) > 20 {
@@ -1005,7 +1002,7 @@ func (e *ELFFile) printExportsAnalysis() {
 		fmt.Printf("\n📦 EXPORTED OBJECTS (%d):\n", len(objects))
 		for i, obj := range objects {
 			if i < 15 { // Limit display
-				fmt.Printf("   • %s (size: %d bytes)\n", obj.Name, obj.Size)
+				fmt.Printf("   • %s (RVA: 0x%08X, size: %d bytes)\n", obj.Name, obj.Value, obj.Size)
 			}
 		}
 		if len(objects) > 15 {
@@ -1017,7 +1014,7 @@ func (e *ELFFile) printExportsAnalysis() {
 		fmt.Printf("\n🔧 OTHER EXPORTS (%d):\n", len(others))
 		for i, other := range others {
 			if i < 10 { // Limit display
-				fmt.Printf("   • %s (type: %d)\n", other.Name, other.Type)
+				fmt.Printf("   • %s (RVA: 0x%08X, type: %d)\n", other.Name, other.Value, other.Type)
 			}
 		}
 		if len(others) > 10 {
@@ -1025,14 +1022,6 @@ func (e *ELFFile) printExportsAnalysis() {
 		}
 	}
 
-	fmt.Println()
-}
-
-// Placeholder function for printSuspiciousContent
-func (e *ELFFile) printSuspiciousContent() {
-	fmt.Println("🔍 SUSPICIOUS STRINGS ANALYSIS")
-	fmt.Println("═══════════════════════════════")
-	fmt.Printf("✅ No suspicious strings detected\n")
 	fmt.Println()
 }
 

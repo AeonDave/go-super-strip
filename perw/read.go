@@ -8,6 +8,7 @@ import (
 	"debug/pe"
 	"encoding/binary"
 	"fmt"
+	"gosstrip/common"
 	"os"
 	"strings"
 	"time"
@@ -201,7 +202,7 @@ func (p *PEFile) fillSectionHashesAndEntropy(section *Section) {
 		section.MD5Hash = fmt.Sprintf("%x", md5Hash)
 		section.SHA1Hash = fmt.Sprintf("%x", sha1Hash)
 		section.SHA256Hash = fmt.Sprintf("%x", sha256Hash)
-		section.Entropy = CalculateEntropy(sectionData)
+		section.Entropy = common.CalculateEntropy(sectionData)
 	} else {
 
 		section.MD5Hash = "N/A (no raw data)"
