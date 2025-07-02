@@ -57,6 +57,8 @@ func (p *PEFile) identifyStripSections(force bool) (removable, keepable []int) {
 		isRemovable := false
 		if p.isCorruptedSection(section) {
 			isRemovable = true
+		} else if force && p.isNullOrZeroSection(section) {
+			isRemovable = true
 		} else {
 			for sectionType, rule := range rules {
 				if rule.IsRisky && !force {
@@ -167,24 +169,6 @@ func (p *PEFile) hasInvalidOffsets(section Section) bool {
 	}
 
 	return false
-}
-
-func (p *PEFile) simpleTruncatePE() *common.OperationResult {
-	originalSize := uint64(len(p.RawData))
-	var maxOffset int64
-	for _, sec := range p.Sections {
-		end := sec.Offset + sec.Size
-		if end > maxOffset {
-			maxOffset = end
-		}
-	}
-	if maxOffset <= 0 || maxOffset > int64(len(p.RawData)) {
-		return common.NewSkipped("no truncation possible")
-	}
-	p.RawData = p.RawData[:maxOffset]
-	newSize := uint64(len(p.RawData))
-	message := fmt.Sprintf("simple truncate: %d -> %d bytes", originalSize, newSize)
-	return common.NewApplied(message, int(originalSize-newSize))
 }
 
 func (p *PEFile) sectionsReferencedByDataDirectories() map[int]struct{} {
@@ -348,25 +332,20 @@ func (p *PEFile) buildNewSectionsWithCorrectVirtualSize(removedIndices []int, re
 
 func (p *PEFile) updateSectionTableWithNewSections(newSections []Section) error {
 	peHeaderOffset := int64(binary.LittleEndian.Uint32(p.RawData[0x3C:0x40]))
-	coffHeaderOffset := peHeaderOffset + 4
-	optionalHeaderOffset := coffHeaderOffset + 20
-	sizeOfOptionalHeader := int64(binary.LittleEndian.Uint16(p.RawData[coffHeaderOffset+16:]))
-	sectionTableOffset := optionalHeaderOffset + sizeOfOptionalHeader
-	originalSectionCount := len(p.Sections)
-	sectionTableSize := originalSectionCount * 40
+	sectionTableOffset := peHeaderOffset + 24 + int64(binary.LittleEndian.Uint16(p.RawData[peHeaderOffset+20:]))
+	sectionTableSize := len(p.Sections) * 40
+	if sectionTableOffset+int64(sectionTableSize) > int64(len(p.RawData)) {
+		sectionTableSize = len(p.RawData) - int(sectionTableOffset)
+	}
 	for i := 0; i < sectionTableSize; i++ {
-		if sectionTableOffset+int64(i) < int64(len(p.RawData)) {
-			p.RawData[sectionTableOffset+int64(i)] = 0
-		}
+		p.RawData[sectionTableOffset+int64(i)] = 0
 	}
 	for i, section := range newSections {
 		hdrOff := sectionTableOffset + int64(i*40)
 		if hdrOff+40 > int64(len(p.RawData)) {
 			break
 		}
-		nameBytes := make([]byte, 8)
-		copy(nameBytes, section.Name)
-		copy(p.RawData[hdrOff:hdrOff+8], nameBytes)
+		copy(p.RawData[hdrOff:hdrOff+8], []byte(section.Name))
 		binary.LittleEndian.PutUint32(p.RawData[hdrOff+8:], section.VirtualSize)
 		binary.LittleEndian.PutUint32(p.RawData[hdrOff+12:], section.VirtualAddress)
 		binary.LittleEndian.PutUint32(p.RawData[hdrOff+16:], uint32(section.Size))
@@ -417,4 +396,21 @@ func (p *PEFile) updateNumberOfSections(newCount int) error {
 	}
 	binary.LittleEndian.PutUint16(p.RawData[numberOfSectionsOffset:], uint16(newCount))
 	return nil
+}
+
+func (p *PEFile) isNullOrZeroSection(section Section) bool {
+	if section.Size <= 0 || section.Offset <= 0 || section.Offset >= int64(len(p.RawData)) {
+		return false
+	}
+	endOffset := section.Offset + section.Size
+	if endOffset > int64(len(p.RawData)) {
+		endOffset = int64(len(p.RawData))
+	}
+	if endOffset-section.Offset < 16 {
+		return false
+	}
+	if section.Entropy == 0.0 {
+		section.Entropy = CalculateEntropy(p.RawData[section.Offset:endOffset])
+	}
+	return section.Entropy < 0.1
 }
