@@ -69,39 +69,25 @@ func main() {
 		printUsage()
 		os.Exit(1)
 	}
-
-	// Set up debug logging
 	if config.Verbose {
-		// TODO: Implement debug logging for ELF
-		// elfrw.SetDebugLogger(func(format string, args ...interface{}) {
-		// 	fmt.Printf("DEBUG: "+format+"\n", args...)
-		// })
+		// TODO: Implement debug logging
 	}
-
-	// Execute operations
 	if err := runOperations(config); err != nil {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-// parseArgs parses command line arguments and returns configuration
 func parseArgs() (*Configuration, error) {
 	flag.Parse()
-
-	// Show help if requested
 	if *helpFlag {
 		printUsage()
 		os.Exit(0)
 	}
-
-	// Ensure exactly one file path is provided
 	args := flag.Args()
 	if len(args) != 1 {
 		return nil, fmt.Errorf("exactly one file path required")
 	}
-
-	// Initialize configuration
 	config := &Configuration{
 		FilePath:  args[0],
 		Verbose:   *verboseFlag,
@@ -110,48 +96,28 @@ func parseArgs() (*Configuration, error) {
 		Obfuscate: *obfuscateFlag || *obfuscateFlagLong,
 		Compact:   *compactFlag || *compactFlagLong,
 		Force:     *forceFlag || *forceFlagLong,
-		Regex:     firstNonEmpty(*regexFlag, *regexFlagLong),
-		Insert:    firstNonEmpty(*insertFlag, *insertFlagLong),
-		Overlay:   firstNonEmpty(*overlayFlag, *overlayFlagLong),
+		Regex:     common.FirstNonEmpty(*regexFlag, *regexFlagLong),
+		Insert:    common.FirstNonEmpty(*insertFlag, *insertFlagLong),
+		Overlay:   common.FirstNonEmpty(*overlayFlag, *overlayFlagLong),
 	}
-
-	// Validate file existence
 	if _, err := os.Stat(config.FilePath); os.IsNotExist(err) {
 		return nil, fmt.Errorf("file does not exist: %s", config.FilePath)
 	}
-
-	// Ensure analyze is used alone
 	if config.Analyze && (config.Strip || config.Obfuscate || config.Compact || config.Regex != "" || config.Insert != "" || config.Overlay != "" || config.Force) {
 		return nil, fmt.Errorf("analyze (-a) must be used alone")
 	}
-
-	// Validate force usage
 	if config.Force && !(config.Strip || config.Compact || config.Obfuscate) {
 		return nil, fmt.Errorf("force (-f) can only be used with strip (-s), compact (-c), or obfuscate (-o)")
 	}
-
-	// Ensure at least one operation is specified
 	if !(config.Analyze || config.Strip || config.Obfuscate || config.Compact || config.Regex != "" || config.Insert != "" || config.Overlay != "") {
 		return nil, fmt.Errorf("at least one operation required (-s, -o, -c, -i, -l, or -r)")
 	}
-
-	// Validate regex pattern
 	if config.Regex != "" {
 		if _, err := regexp.Compile(config.Regex); err != nil {
 			return nil, fmt.Errorf("invalid regex pattern: %v", err)
 		}
 	}
-
 	return config, nil
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 func determineFileType(filePath string) (bool, bool, error) {
@@ -159,7 +125,6 @@ func determineFileType(filePath string) (bool, bool, error) {
 	if err != nil {
 		return false, false, fmt.Errorf("error checking PE file type: %v", err)
 	}
-
 	isELF := false
 	if !isPE {
 		isELF, err = elfrw.IsELFFile(filePath)
@@ -167,11 +132,9 @@ func determineFileType(filePath string) (bool, bool, error) {
 			return false, false, fmt.Errorf("error checking ELF file type: %v", err)
 		}
 	}
-
 	if !isPE && !isELF {
 		return false, false, fmt.Errorf("unsupported file type")
 	}
-
 	return isPE, isELF, nil
 }
 
@@ -199,7 +162,6 @@ func runOperations(config *Configuration) error {
 	}
 
 	var operations []string
-
 	if config.Insert != "" {
 		if err := runInsert(config, isPE); err != nil {
 			return err
@@ -239,7 +201,6 @@ func runOperations(config *Configuration) error {
 	if len(operations) > 0 {
 		fmt.Printf("Completed operations: %s\n", strings.Join(operations, ", "))
 	}
-
 	return nil
 }
 
@@ -293,22 +254,13 @@ func runObfuscate(config *Configuration, isPE bool) error {
 func runRegex(config *Configuration, isPE bool) error {
 	fmt.Println("\n=== Regex Operations ===")
 	fmt.Printf("Applying custom regex pattern: %s\n", config.Regex)
-
+	var result *common.OperationResult
 	if isPE {
-		result := perw.RegexPE(config.FilePath, config.Regex)
-		if result.Applied {
-			fmt.Printf("✅ %s Regex Stripping: %s\n", getFileType(isPE), result.Message)
-		} else {
-			fmt.Printf("❌ %s Regex Stripping: %s\n", getFileType(isPE), result.Message)
-		}
+		result = perw.RegexPE(config.FilePath, config.Regex)
 	} else {
-		result := elfrw.RegexELF(config.FilePath, config.Regex)
-		if result.Applied {
-			fmt.Printf("✅ %s Regex Stripping: %s\n", getFileType(isPE), result.Message)
-		} else {
-			fmt.Printf("❌ %s Regex Stripping: %s\n", getFileType(isPE), result.Message)
-		}
+		result = elfrw.RegexELF(config.FilePath, config.Regex)
 	}
+	printOperationResult(getFileType(isPE), "Obfuscation", result)
 	return nil
 }
 
@@ -327,8 +279,6 @@ func runInsert(config *Configuration, isPE bool) error {
 		password = parts[2]
 	}
 
-	fileType := getFileType(isPE)
-
 	var result *common.OperationResult
 	if isPE {
 		result = perw.InsertPE(config.FilePath, sectionName, dataOrFile, password)
@@ -336,7 +286,7 @@ func runInsert(config *Configuration, isPE bool) error {
 		result = elfrw.InsertELF(config.FilePath, sectionName, dataOrFile, password)
 	}
 
-	printInsertResult(fileType, result)
+	printOperationResult(getFileType(isPE), "Sector insertion", result)
 	return nil
 }
 
@@ -355,8 +305,6 @@ func runOverlay(config *Configuration, isPE bool) error {
 		password = parts[1]
 	}
 
-	fileType := getFileType(isPE)
-
 	var result *common.OperationResult
 	if isPE {
 		result = perw.OverlayPE(config.FilePath, dataOrFile, password)
@@ -364,7 +312,7 @@ func runOverlay(config *Configuration, isPE bool) error {
 		result = elfrw.OverlayELF(config.FilePath, dataOrFile, password)
 	}
 
-	printOverlayResult(fileType, result)
+	printOperationResult(getFileType(isPE), "Overlay insertion", result)
 	return nil
 }
 
@@ -373,22 +321,6 @@ func printOperationResult(fileType, operation string, result *common.OperationRe
 		fmt.Printf("✅ %s %s: %s\n", fileType, operation, result.Message)
 	} else {
 		fmt.Printf("❌ %s %s: %s\n", fileType, operation, result.Message)
-	}
-}
-
-func printInsertResult(fileType string, result *common.OperationResult) {
-	if result.Applied {
-		fmt.Printf("✅ %s Section Insertion: %s\n", fileType, result.Message)
-	} else {
-		fmt.Printf("❌ %s Section Insertion: %s\n", fileType, result.Message)
-	}
-}
-
-func printOverlayResult(fileType string, result *common.OperationResult) {
-	if result.Applied {
-		fmt.Printf("✅ %s Overlay: %s\n", fileType, result.Message)
-	} else {
-		fmt.Printf("❌ %s Overlay: %s\n", fileType, result.Message)
 	}
 }
 
@@ -424,20 +356,20 @@ OPTIONS:
 	-h                   Show this help
 
 EXAMPLES:
-	%s -a bin                		  	# Analyze PE file structure
-	%s -s bin                		  	# StripAll debug sections
-	%s -c bin              				# Compact file (remove sections)
-	%s -o bin              		 		# Apply obfuscation techniques
-	%s -s -c -o bin        		 	   	# StripAll, compact, and obfuscate (full pipeline)
-	%s -s -f bin            		   	# StripAll with risky operations (relocations, etc.)
-	%s -c -f bin               			# Compact with risky operations
-	%s -s -r 'UPX!' bin        			# StripAll built-in rules, then custom regex 'UPX!'
-	%s -i 'custom:data.bin' bin 		# Add hex section from file
-	%s -i 'custom:HelloWorld' bin 		# Add hex section from string
-	%s -i 'secret:data.bin:pass123' bin # Add encrypted hex section
-	%s -l 'data.bin' bin 				# Add overlay from file
-	%s -l 'HelloWorld' bin 				# Add overlay from string
-	%s -l 'data.bin:pass123' bin 		# Add encrypted overlay
+	%s -a bin                		  		# Analyze PE file structure
+	%s -s bin                		  		# StripAll debug sections
+	%s -c bin              					# Compact file (remove sections)
+	%s -o bin              		 			# Apply obfuscation techniques
+	%s -s -c -o bin        		 	   		# StripAll, compact, and obfuscate (full pipeline)
+	%s -s -f bin            		   		# StripAll with risky operations (relocations, etc.)
+	%s -c -f bin               				# Compact with risky operations
+	%s -s -r 'UPX!' bin        				# StripAll built-in rules, then custom regex 'UPX!'
+	%s -i '.custom:data.bin' bin 			# Add hex section from file
+	%s -i '.custom:HelloWorld' bin 			# Add hex section from string
+	%s -i '.secret:data.bin:pass123' bin 	# Add encrypted hex section
+	%s -l 'data.bin' bin 					# Add overlay from file
+	%s -l 'HelloWorld' bin 					# Add overlay from string
+	%s -l 'data.bin:pass123' bin 			# Add encrypted overlay
 
 `, os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0])
 }

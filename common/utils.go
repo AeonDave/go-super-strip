@@ -160,3 +160,12 @@ func RandomFillData(data []byte) error {
 	}
 	return nil
 }
+
+func FirstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}

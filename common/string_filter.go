@@ -221,7 +221,7 @@ func categorizeString(s string, categories map[string][]string) bool {
 
 func isGarbage(s string) bool {
 	n := len(s)
-	if n < 8 || n > 512 {
+	if n < 8 {
 		return true
 	}
 
