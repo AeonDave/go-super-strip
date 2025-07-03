@@ -21,15 +21,17 @@ func (e *ELFFile) Compact(force bool) *common.OperationResult {
 	sort.Sort(sort.Reverse(sort.IntSlice(removable)))
 	removedNames := e.getRemovedSectionNames(removable)
 
-	shstrtabIndex := e.findSectionIndex(".shstrtab")
-	totalRemovedSize := int64(0)
+	shstrIndex := e.findSectionIndex(".shstrtab")
+	totalRemoved := int64(0)
 
-	for _, sectionIdx := range removable {
-		if err := e.removeCompactSection(sectionIdx, &totalRemovedSize); err != nil {
-			return common.NewSkipped(fmt.Sprintf("failed to remove section %d: %v", sectionIdx, err))
+	// 1) Rimuove i blocchi dati delle sezioni
+	for _, idx := range removable {
+		if err := e.removeCompactSection(idx, &totalRemoved); err != nil {
+			return common.NewSkipped(fmt.Sprintf("failed to remove section %d: %v", idx, err))
 		}
 	}
 
+	// 2) Aggiorna le tabelle interne
 	e.updateSections(removable)
 	if err := e.UpdateSectionHeaders(); err != nil {
 		return common.NewSkipped(fmt.Sprintf("failed to update section headers: %v", err))
@@ -37,18 +39,35 @@ func (e *ELFFile) Compact(force bool) *common.OperationResult {
 	if err := e.updateELFHeaderSectionCount(); err != nil {
 		return common.NewSkipped(fmt.Sprintf("failed to update ELF header section count: %v", err))
 	}
-	if shstrtabIndex >= 0 {
-		newShstrtabIndex := e.calculateNewShstrtabIndex(removable, shstrtabIndex)
-		if err := e.updateELFHeaderShstrtabIndex(uint16(newShstrtabIndex)); err != nil {
+	if shstrIndex >= 0 {
+		newIdx := e.calculateNewShstrtabIndex(removable, shstrIndex)
+		if err := e.updateELFHeaderShstrtabIndex(uint16(newIdx)); err != nil {
 			return common.NewSkipped(fmt.Sprintf("failed to update ELF header shstrtab index: %v", err))
 		}
 	}
 
+	// 3) Trancia l’overlay oltre l’ultimo segmento
+	maxEnd := 0
+	for _, seg := range e.Segments {
+		end := int(seg.Offset + seg.FileSize)
+		if end > maxEnd {
+			maxEnd = end
+		}
+	}
+	if len(e.RawData) > maxEnd {
+		removedOverlay := int64(len(e.RawData) - maxEnd)
+		e.RawData = e.RawData[:maxEnd]
+		totalRemoved += removedOverlay
+	}
+
 	newSize := int64(len(e.RawData))
-	percentage := float64(totalRemovedSize) / float64(originalSize) * 100
-	message := fmt.Sprintf("removed %d sections: %s (%d -> %d bytes, %d bytes removed, %.1f%% reduction)",
-		len(removable), strings.Join(removedNames, ", "), originalSize, newSize, totalRemovedSize, percentage)
-	return common.NewApplied(message, len(removable))
+	percent := float64(totalRemoved) / float64(originalSize) * 100
+	msg := fmt.Sprintf(
+		"removed %d sections: %s (%d -> %d bytes, %d bytes removed, %.1f%% reduction)",
+		len(removable), strings.Join(removedNames, ", "),
+		originalSize, newSize, totalRemoved, percent,
+	)
+	return common.NewApplied(msg, len(removable))
 }
 
 func (e *ELFFile) getRemovedSectionNames(removable []int) []string {
