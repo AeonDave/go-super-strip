@@ -95,7 +95,7 @@ func GetSectionStripRule() map[SectionType]SectionStripRule {
 			Fill:        ZeroFill,
 		},
 		BuildInfoSections: {
-			ExactNames:  []string{".buildid", ".gfids", ".giats", ".gljmp", ".textbss", ".go.buildinfo", ".noptrdata", ".typelink", ".itablink", ".gosymtab", ".gopclntab"},
+			ExactNames:  []string{".buildid", ".gfids", ".giats", ".gljmp", ".textbss", ".noptrdata", ".typelink", ".itablink", ".gosymtab", ".gopclntab"},
 			PrefixNames: []string{".go.", ".gopkg."},
 			Description: "build information and toolchain metadata",
 			StripForDLL: true,

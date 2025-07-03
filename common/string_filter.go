@@ -168,10 +168,12 @@ func filterAndCategorize(strs []string, categories map[string][]string) []string
 func categorizeString(s string, categories map[string][]string) bool {
 	sLower := strings.ToLower(s)
 
-	// Check version/compiler first (most specific)
 	if versionRegex.MatchString(s) {
-		categories["🔧 Versions/Compiler"] = append(categories["🔧 Versions/Compiler"], s)
-		return true
+		if len(s) < 100 && !strings.Contains(s, "error") && !strings.Contains(s, "failed") &&
+			!strings.Contains(s, "malformed") && !strings.Contains(s, "invalid") {
+			categories["🔧 Versions/Compiler"] = append(categories["🔧 Versions/Compiler"], s)
+			return true
+		}
 	}
 
 	// Check build information

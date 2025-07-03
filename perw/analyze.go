@@ -583,71 +583,9 @@ func AnalyzeSectionAnomalies(sections []SectionInfo) []string {
 }
 
 func isSuspiciousSectionName(name string) bool {
-	suspiciousNames := []string{
-		"UPX0", "UPX1", "UPX2", "UPX3", "UPX!", ".UPX0", ".UPX1", ".UPX2",
-		".aspack", ".ASPack", "ASPack", ".adata",
-		".petite",
-		"MEW",
-		"FSG!",
-		".themida", ".Themida", "Themida", "WinLicen",
-		".vmp", ".vmp0", ".vmp1", ".vmp2", "VProtect", "VMProtect",
-		".enigma", ".enigma1", ".enigma2",
-		".obsidium",
-		".armadillo",
-		".RLPack",
-		"PEPACK!!",
-		"ProCrypt",
-		".svkp",
-		".shrink1", ".shrink2", ".shrink3",
-		".nsp0", ".nsp1", ".nsp2", "nsp0", "nsp1", "nsp2",
-		".MPRESS1", ".MPRESS2",
-		".neolite", ".neolit",
-		"pebundle", "PEBundle",
-		"PEC2TO", "PECompact2", "PEC2", "pec", "pec1", "pec2", "pec3", "pec4", "pec5", "pec6", "PEC2MO",
-		"PELOCKnt",
-		".perplex",
-		"PESHiELD",
-		".Upack", ".ByDwing",
-		".WWPACK", ".WWP32",
-		".yP", ".y0da",
-		"BitArts",
-		"DAStub",
-		"!EPack",
-		"kkrunchy",
-		".MaskPE",
-		"RCryptor", ".RPCrypt",
-		".seau",
-		".sforce3",
-		"_winzip_",
-
-		// Generic suspicious names
-		".packed", ".compress", ".crypt", ".encode",
-		".stub", ".loader", ".inject", ".shell",
-		".payload", ".hook", ".keylog",
-
-		// Other known suspicious/uncommon names
-		".boom",
-		".ccg",
-		".charmve", ".pinclie", // PIN tool
-		".ecode", ".edata", // EPL
-		".gentee",
-		".imrsiv",
-		"lz32.dll",             // Crinkler
-		".mackt",               // ImpRec
-		".mnbvcx1", ".mnbvcx2", // Firseria PUP
-		".profile", // NightHawk C2
-		".rmnet",   // Ramnit virus
-		".spack",
-		".taz",                 // PESpin
-		".tsuarch", ".tsustub", // TSULoader
-		".winapi", // API Override tool
-
-		// Legacy/generic names that can be suspicious
-		"CODE", "DATA",
-	}
-
-	for _, suspicious := range suspiciousNames {
-		if strings.Contains(name, suspicious) {
+	nameLower := strings.ToLower(name)
+	for _, suspicious := range common.SuspiciousSectionNames {
+		if strings.Contains(nameLower, suspicious) {
 			return true
 		}
 	}
