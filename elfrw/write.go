@@ -181,15 +181,13 @@ func (e *ELFFile) clearNameOffsetCache() {
 }
 
 func (e *ELFFile) ModifyHeaders(newSize uint64) error {
-	shoffPos, shNumPos, shStrNdxPos := e.getHeaderPositions()
-	sectionHeaderOffset := e.getSectionHeaderOffset(shoffPos)
-	if sectionHeaderOffset >= newSize {
-		if err := e.clearSectionHeaders(shoffPos, shNumPos, shStrNdxPos); err != nil {
-			return err
-		}
-	} else if err := e.UpdateSectionHeaders(); err != nil {
+	// Always update section headers, even if they're beyond the new file size
+	// This ensures section names are preserved during compaction
+	if err := e.UpdateSectionHeaders(); err != nil {
 		return err
 	}
+
+	// Update program headers
 	for i := uint16(0); i < uint16(len(e.Segments)); i++ {
 		if err := e.updateProgramHeader(i, newSize); err != nil {
 			return err

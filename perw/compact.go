@@ -277,7 +277,7 @@ func (p *PEFile) removeSingleSection(sectionIdx int, totalRemovedSize *int64, fi
 
 	sectionToRemove := p.Sections[sectionIdx]
 	if sectionToRemove.Offset > 0 && sectionToRemove.Size > 0 {
-		alignedSize := alignUp64(sectionToRemove.Size, int64(fileAlignment))
+		alignedSize := common.AlignUp64(sectionToRemove.Size, int64(fileAlignment))
 		start := int(sectionToRemove.Offset)
 		end := int(sectionToRemove.Offset + alignedSize)
 

@@ -169,3 +169,17 @@ func FirstNonEmpty(values ...string) string {
 	}
 	return ""
 }
+
+func AlignUp(value, alignment uint32) uint32 {
+	if alignment == 0 {
+		return value
+	}
+	return ((value + alignment - 1) / alignment) * alignment
+}
+
+func AlignUp64(value, alignment int64) int64 {
+	if alignment <= 0 {
+		return value
+	}
+	return ((value + alignment - 1) / alignment) * alignment
+}

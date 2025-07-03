@@ -27,8 +27,6 @@ func (p *PEFile) AddHexSection(sectionName string, dataOrFile string, password s
 	return p.addSectionWithContent(sectionName, content, password != "")
 }
 
-// addSectionWithContent adds a new section to the PE file with the specified content
-// This function ensures the PE file remains executable after section insertion
 func (p *PEFile) addSectionWithContent(sectionName string, content []byte, isEncrypted bool) error {
 	if len(content) == 0 {
 		return fmt.Errorf("content cannot be empty")
@@ -143,10 +141,10 @@ func (p *PEFile) calculateNewSectionProperties(name string, content []byte, offs
 	if len(p.Sections) > 0 {
 		// Place after last section
 		lastSection := p.Sections[len(p.Sections)-1]
-		fileOffset = alignUp64(lastSection.Offset+lastSection.Size, int64(fileAlignment))
+		fileOffset = common.AlignUp64(lastSection.Offset+lastSection.Size, int64(fileAlignment))
 	} else {
 		// Place after headers
-		fileOffset = alignUp64(int64(p.sizeOfHeaders), int64(fileAlignment))
+		fileOffset = common.AlignUp64(int64(p.sizeOfHeaders), int64(fileAlignment))
 	}
 
 	// Calculate virtual address (aligned)
@@ -154,15 +152,15 @@ func (p *PEFile) calculateNewSectionProperties(name string, content []byte, offs
 	if len(p.Sections) > 0 {
 		// Place after last section in memory
 		lastSection := p.Sections[len(p.Sections)-1]
-		lastVirtualEnd := lastSection.VirtualAddress + alignUp(lastSection.VirtualSize, sectionAlignment)
-		virtualAddress = alignUp(lastVirtualEnd, sectionAlignment)
+		lastVirtualEnd := lastSection.VirtualAddress + common.AlignUp(lastSection.VirtualSize, sectionAlignment)
+		virtualAddress = common.AlignUp(lastVirtualEnd, sectionAlignment)
 	} else {
 		// Place after headers in memory
-		virtualAddress = alignUp(p.sizeOfHeaders, sectionAlignment)
+		virtualAddress = common.AlignUp(p.sizeOfHeaders, sectionAlignment)
 	}
 
 	// Calculate size (aligned for file)
-	rawSize := alignUp64(int64(len(content)), int64(fileAlignment))
+	rawSize := common.AlignUp64(int64(len(content)), int64(fileAlignment))
 	virtualSize := uint32(len(content))
 
 	// Set section characteristics (readable, writable, contains initialized data)
@@ -270,15 +268,8 @@ func (p *PEFile) updateOptionalHeaderForNewSection(newSection *Section) error {
 	default:
 		return fmt.Errorf("unknown optional header magic: 0x%x", magic)
 	}
-
-	// Calculate new size of image
-	newSizeOfImage := alignUp(newSection.VirtualAddress+newSection.VirtualSize, sectionAlignment)
-
-	// Update SizeOfImage
+	newSizeOfImage := common.AlignUp(newSection.VirtualAddress+newSection.VirtualSize, sectionAlignment)
 	binary.LittleEndian.PutUint32(p.RawData[sizeOfImageOffset:sizeOfImageOffset+4], newSizeOfImage)
-
-	// Update our internal value
 	p.sizeOfImage = newSizeOfImage
-
 	return nil
 }

@@ -7,19 +7,6 @@ import (
 	"strings"
 )
 
-func ContainsSuspiciousPattern(s string) bool {
-	suspiciousPatterns := []string{
-		"\\x", "0x", "%x", "\\u", "\\U",
-		"[\\", "\\]", "^_", "A\\A", "\\$",
-	}
-	for _, pattern := range suspiciousPatterns {
-		if strings.Contains(s, pattern) {
-			return true
-		}
-	}
-	return false
-}
-
 func (p *PEFile) decodeSectionFlags(flags uint32) string {
 	var flagStrs []string
 	if flags&pe.IMAGE_SCN_CNT_CODE != 0 {
@@ -331,18 +318,4 @@ func (p *PEFile) CalculatePhysicalFileSize() (uint64, error) {
 	}
 
 	return maxSize, nil
-}
-
-func alignUp(value, alignment uint32) uint32 {
-	if alignment == 0 {
-		return value
-	}
-	return ((value + alignment - 1) / alignment) * alignment
-}
-
-func alignUp64(value, alignment int64) int64 {
-	if alignment <= 0 {
-		return value
-	}
-	return ((value + alignment - 1) / alignment) * alignment
 }

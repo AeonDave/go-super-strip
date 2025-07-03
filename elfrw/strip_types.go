@@ -78,7 +78,7 @@ func GetSectionStripRule() map[SectionType]SectionStripRule {
 		},
 		NonEssentialSections: {
 			ExactNames:  []string{".comment", ".gnu_debuglink", ".gnu_debugaltlink"},
-			PrefixNames: []string{".note.", ".gnu.warning."},
+			PrefixNames: []string{".note.", ".gnu.warning"},
 			Description: "non-essential metadata",
 			StripForSO:  true,
 			StripForBIN: true,

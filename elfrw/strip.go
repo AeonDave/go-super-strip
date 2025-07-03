@@ -26,19 +26,10 @@ func (e *ELFFile) fillRegion(offset uint64, size int, useRandom bool) error {
 		copy(e.RawData[offset:offset+uint64(size)], fillBytes)
 	} else {
 		// Zero fill
-		for i := uint64(0); i < uint64(size); i++ {
-			e.RawData[offset+i] = 0
-		}
+		zeroBytes := make([]byte, size)
+		copy(e.RawData[offset:offset+uint64(size)], zeroBytes)
 	}
 	return nil
-}
-
-func (e *ELFFile) ZeroFill(offset uint64, size int) error {
-	return e.fillRegion(offset, size, false)
-}
-
-func (e *ELFFile) RandomFill(offset uint64, size int) error {
-	return e.fillRegion(offset, size, true)
 }
 
 func (e *ELFFile) stripSectionData(sectionIndex int, useRandom bool) error {
@@ -107,237 +98,56 @@ func (e *ELFFile) StripSectionsByType(sectionType SectionType, useRandom bool) *
 	return common.NewApplied(message, len(strippedSections))
 }
 
-func (e *ELFFile) StripSectionsByNames(names []string, usePrefix, useRandom bool) error {
-	if err := e.validateELF(); err != nil {
-		return fmt.Errorf("ELF validation failed: %w", err)
-	}
-
-	if len(names) == 0 {
-		return fmt.Errorf("no section names provided for stripping")
-	}
-
-	strippedCount := 0
-	for i, section := range e.Sections {
-		var exactNames, prefixNames []string
-		if usePrefix {
-			prefixNames = names
-		} else {
-			exactNames = names
-		}
-
-		if common.MatchesPattern(section.Name, exactNames, prefixNames) {
-			if err := e.stripSectionData(i, useRandom); err != nil {
-				return err
-			}
-			strippedCount++
-		}
-	}
-
-	return e.UpdateSectionHeaders()
-}
-
 func (e *ELFFile) StripByteRegex(pattern *regexp.Regexp, useRandom bool) (int, error) {
 	if pattern == nil {
 		return 0, fmt.Errorf("regex pattern cannot be nil")
 	}
-
-	// If there are no sections, fallback to raw data stripping
+	totalMatches := 0
+	// Helper to process a match range in the raw data
+	process := func(offset uint64, length int) {
+		if err := e.fillRegion(offset, length, useRandom); err == nil {
+			totalMatches++
+		}
+	}
 	if len(e.Sections) == 0 {
 		// Apply regex to entire file
-		matches := pattern.FindAllIndex(e.RawData, -1)
-		total := 0
-		for _, match := range matches {
+		for _, match := range pattern.FindAllIndex(e.RawData, -1) {
 			start, end := match[0], match[1]
 			if start < 0 || end > len(e.RawData) || start >= end {
 				continue
 			}
-			for k := start; k < end; k++ {
-				if useRandom {
-					b := make([]byte, 1)
-					if _, err := rand.Read(b); err == nil {
-						e.RawData[k] = b[0]
-					} else {
-						e.RawData[k] = 0
-					}
-				} else {
-					e.RawData[k] = 0
-				}
-			}
-			total++
+			process(uint64(start), end-start)
 		}
-		return total, nil
-	}
-
-	totalMatches := 0
-	for _, section := range e.Sections {
-		if section.Offset <= 0 || section.Size <= 0 {
-			continue
-		}
-
-		// Validate and cap section bounds
-		if uint64(section.Offset) >= uint64(len(e.RawData)) {
-			continue
-		}
-
-		readSize := section.Size
-		if uint64(section.Offset)+uint64(readSize) > uint64(len(e.RawData)) {
-			readSize = int64(uint64(len(e.RawData)) - uint64(section.Offset))
-			if readSize == 0 {
+	} else {
+		// Apply regex within each section
+		for _, section := range e.Sections {
+			if section.Offset <= 0 || section.Size <= 0 {
 				continue
 			}
-		}
-
-		sectionData := e.RawData[section.Offset : section.Offset+readSize]
-		matches := pattern.FindAllIndex(sectionData, -1)
-
-		for _, match := range matches {
-			start, end := match[0], match[1]
-			if start < 0 || end > len(sectionData) || start >= end {
+			base := uint64(section.Offset)
+			maxLen := int64(len(e.RawData)) - section.Offset
+			if maxLen <= 0 {
 				continue
 			}
-
-			// Fill matched bytes
-			for k := start; k < end; k++ {
-				if useRandom {
-					b := make([]byte, 1)
-					if _, err := rand.Read(b); err == nil {
-						sectionData[k] = b[0]
-					} else {
-						sectionData[k] = 0 // Fallback to zero on error
-					}
-				} else {
-					sectionData[k] = 0
+			// Extract section data slice
+			secData := e.RawData[base : base+uint64(section.Size)]
+			for _, match := range pattern.FindAllIndex(secData, -1) {
+				start, end := match[0], match[1]
+				if start < 0 || end > len(secData) || start >= end {
+					continue
 				}
+				process(base+uint64(start), end-start)
 			}
-			totalMatches++
 		}
 	}
-
 	return totalMatches, nil
-}
-
-func (e *ELFFile) StripSectionTable() error {
-	shoffPos, shNumPos, shStrNdxPos := e.getHeaderPositions()
-
-	// Zero out section header table references
-	if e.Is64Bit {
-		if err := e.writeAtOffset(shoffPos, uint64(0)); err != nil {
-			return fmt.Errorf("failed to zero e_shoff (64-bit): %w", err)
-		}
-	} else {
-		if err := e.writeAtOffset(shoffPos, uint32(0)); err != nil {
-			return fmt.Errorf("failed to zero e_shoff (32-bit): %w", err)
-		}
-	}
-
-	if err := e.writeAtOffset(shNumPos, uint16(0)); err != nil {
-		return fmt.Errorf("failed to zero e_shnum: %w", err)
-	}
-
-	if err := e.writeAtOffset(shStrNdxPos, uint16(0)); err != nil {
-		return fmt.Errorf("failed to zero e_shstrndx: %w", err)
-	}
-
-	return nil
-}
-
-func (e *ELFFile) FixSectionHeaderIntegrity() error {
-	if err := e.validateELF(); err != nil {
-		return fmt.Errorf("ELF validation failed: %w", err)
-	}
-
-	shoffPos, shNumPos, shStrNdxPos := e.getHeaderPositions()
-	sectionHeaderOffset := e.getSectionHeaderOffset(shoffPos)
-
-	// If section header offset is beyond file bounds or invalid, zero it out
-	if sectionHeaderOffset >= uint64(len(e.RawData)) || sectionHeaderOffset == 0 {
-		return e.clearSectionHeaders(shoffPos, shNumPos, shStrNdxPos)
-	}
-
-	// Calculate expected section header table size
-	shNum := e.readUint16(shNumPos)
-	var entrySize uint64
-	if e.Is64Bit {
-		entrySize = uint64(e.readUint16(58)) // e_shentsize for 64-bit
-	} else {
-		entrySize = uint64(e.readUint16(46)) // e_shentsize for 32-bit
-	}
-
-	expectedTableSize := uint64(shNum) * entrySize
-
-	// If section header table would extend beyond file, zero out the header references
-	if sectionHeaderOffset+expectedTableSize > uint64(len(e.RawData)) {
-		return e.clearSectionHeaders(shoffPos, shNumPos, shStrNdxPos)
-	}
-
-	// Validate that each section header entry is within bounds
-	for i := uint16(0); i < shNum; i++ {
-		headerPos := sectionHeaderOffset + uint64(i)*entrySize
-		if headerPos+entrySize > uint64(len(e.RawData)) {
-			// If any section header is out of bounds, zero the entire table
-			return e.clearSectionHeaders(shoffPos, shNumPos, shStrNdxPos)
-		}
-	}
-
-	return nil
-}
-
-func (e *ELFFile) FixSectionHeaderIntegrityWithSize(newFileSize uint64) error {
-	if err := e.validateELF(); err != nil {
-		return fmt.Errorf("ELF validation failed: %w", err)
-	}
-
-	shoffPos, shNumPos, shStrNdxPos := e.getHeaderPositions()
-	sectionHeaderOffset := e.getSectionHeaderOffset(shoffPos)
-
-	// If section header offset is beyond new file bounds or invalid, zero it out
-	if sectionHeaderOffset >= newFileSize || sectionHeaderOffset == 0 {
-		return e.clearSectionHeaders(shoffPos, shNumPos, shStrNdxPos)
-	}
-
-	// Calculate expected section header table size
-	shNum := e.readUint16(shNumPos)
-	var entrySize uint64
-	if e.Is64Bit {
-		entrySize = uint64(e.readUint16(58)) // e_shentsize for 64-bit
-	} else {
-		entrySize = uint64(e.readUint16(46)) // e_shentsize for 32-bit
-	}
-
-	expectedTableSize := uint64(shNum) * entrySize
-
-	// If section header table would extend beyond new file size, zero out the header references
-	if sectionHeaderOffset+expectedTableSize > newFileSize {
-		return e.clearSectionHeaders(shoffPos, shNumPos, shStrNdxPos)
-	}
-
-	// Validate that each section header entry is within new file bounds
-	for i := uint16(0); i < shNum; i++ {
-		headerPos := sectionHeaderOffset + uint64(i)*entrySize
-		if headerPos+entrySize > newFileSize {
-			// If any section header is out of bounds, zero the entire table
-			return e.clearSectionHeaders(shoffPos, shNumPos, shStrNdxPos)
-		}
-	}
-
-	return nil
-}
-
-func (e *ELFFile) clearSectionHeaders(shoffPos, shNumPos, shStrNdxPos int) error {
-	if err := e.writeAtOffset(shoffPos, uint64(0)); err != nil {
-		return err
-	}
-	if err := e.writeAtOffset(shNumPos, uint16(0)); err != nil {
-		return err
-	}
-	return e.writeAtOffset(shStrNdxPos, uint16(0))
 }
 
 func (e *ELFFile) getHeaderPositions() (int, int, int) {
 	if e.Is64Bit {
 		return 40, 60, 62 // e_shoff, e_shnum, e_shstrndx for 64-bit
 	}
-	return 32, 48, 50 // e_shoff, e_shnum, e_shstrndx for 32-bit
+	return 32, 48, 50
 }
 
 func (e *ELFFile) getSectionHeaderOffset(shoffPos int) uint64 {
@@ -345,108 +155,6 @@ func (e *ELFFile) getSectionHeaderOffset(shoffPos int) uint64 {
 		return e.readUint64(shoffPos)
 	}
 	return uint64(e.readUint32(shoffPos))
-}
-
-func (e *ELFFile) truncateTrailingZeros(size uint64) uint64 {
-	if size == 0 || size > uint64(len(e.RawData)) {
-		return size
-	}
-
-	// Scan backwards from the proposed end to find last non-zero byte
-	for size > 0 && e.RawData[size-1] == 0 {
-		size--
-	}
-
-	// Sanity check - don't truncate to nothing
-	if size == 0 {
-		size = 64 // Minimum ELF header size
-	}
-
-	return size
-}
-
-func (e *ELFFile) modifyHeadersForSize(newSize uint64) error {
-	// If section header table is beyond new size, remove references to it
-	shOffset := e.readSectionHeaderOffset()
-	if shOffset >= newSize {
-		if err := e.StripSectionTable(); err != nil {
-			return fmt.Errorf("failed to strip section table: %w", err)
-		}
-	}
-
-	// Update program headers that extend beyond new file size
-	phdrOffset := e.readProgramHeaderOffset()
-	phdrEntrySize := uint64(56) // 64-bit
-	if !e.Is64Bit {
-		phdrEntrySize = 32 // 32-bit
-	}
-
-	for i, segment := range e.Segments {
-		phdrPos := phdrOffset + uint64(i)*phdrEntrySize
-
-		if segment.Offset >= newSize {
-			// Segment is completely beyond new file size - zero it out
-			e.Segments[i].Offset = newSize
-			e.Segments[i].FileSize = 0
-
-			// Update in raw data
-			err := e.writeProgramHeaderEntry(phdrPos, e.Segments[i])
-			if err != nil {
-				return err
-			}
-		} else if segment.Offset+segment.FileSize > newSize {
-			// Segment extends beyond new file size - truncate it
-			e.Segments[i].FileSize = newSize - segment.Offset
-
-			// Update in raw data
-			err := e.writeProgramHeaderEntry(phdrPos, e.Segments[i])
-			if err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
-}
-
-func (e *ELFFile) writeProgramHeaderEntry(offset uint64, segment Segment) error {
-	if offset+56 > uint64(len(e.RawData)) { // 64-bit header size
-		return fmt.Errorf("program header offset out of bounds")
-	}
-
-	endian := e.GetEndian()
-
-	if e.Is64Bit {
-		// Write p_offset (64-bit)
-		endian.PutUint64(e.RawData[offset+8:], segment.Offset)
-		// Write p_filesz (64-bit)
-		endian.PutUint64(e.RawData[offset+32:], segment.FileSize)
-	} else {
-		// 32-bit program header
-		if offset+32 > uint64(len(e.RawData)) {
-			return fmt.Errorf("32-bit program header offset out of bounds")
-		}
-		// Write p_offset (32-bit)
-		endian.PutUint32(e.RawData[offset+4:], uint32(segment.Offset))
-		// Write p_filesz (32-bit)
-		endian.PutUint32(e.RawData[offset+16:], uint32(segment.FileSize))
-	}
-
-	return nil
-}
-
-func (e *ELFFile) readProgramHeaderOffset() uint64 {
-	if e.Is64Bit {
-		return e.readUint64(32) // e_phoff for 64-bit
-	}
-	return uint64(e.readUint32(28)) // e_phoff for 32-bit
-}
-
-func (e *ELFFile) readSectionHeaderOffset() uint64 {
-	if e.Is64Bit {
-		return e.readUint64(40) // e_shoff for 64-bit
-	}
-	return uint64(e.readUint32(32)) // e_shoff for 32-bit
 }
 
 func (e *ELFFile) StripAllHeaders() *common.OperationResult {
@@ -583,7 +291,6 @@ func (e *ELFFile) StripAllRegexRules(force bool) *common.OperationResult {
 }
 
 func (e *ELFFile) StripAll(force bool) *common.OperationResult {
-	originalSize := uint64(len(e.RawData))
 	var operations []string
 	totalCount := 0
 
@@ -627,16 +334,9 @@ func (e *ELFFile) StripAll(force bool) *common.OperationResult {
 	if totalCount == 0 {
 		return common.NewSkipped("no stripping operations applied")
 	}
-
-	newSize := uint64(len(e.RawData))
-	bytesRemoved := originalSize - newSize
-
-	message := fmt.Sprintf("ELF strip completed: %d bytes processed", originalSize)
-	if bytesRemoved > 0 {
-		message += fmt.Sprintf(" (%d bytes removed)", bytesRemoved)
-	}
+	// Report number of operations applied
+	message := fmt.Sprintf("ELF strip completed: %d operations applied", totalCount)
 	message += "\n" + formatStripOperations(operations)
-
 	return common.NewApplied(message, totalCount)
 }
 
