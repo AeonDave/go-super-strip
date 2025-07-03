@@ -38,3 +38,23 @@ func (e *ELFFile) AddOverlay(dataOrFile string, password string) error {
 
 	return nil
 }
+
+func (e *ELFFile) ExtractOverlay() ([]byte, error) {
+	if !e.HasOverlay {
+		return nil, fmt.Errorf("no overlay found in ELF file")
+	}
+
+	if e.OverlayOffset < 0 || e.OverlayOffset >= int64(len(e.RawData)) {
+		return nil, fmt.Errorf("invalid overlay offset: %d", e.OverlayOffset)
+	}
+
+	overlayEnd := e.OverlayOffset + e.OverlaySize
+	if overlayEnd > int64(len(e.RawData)) {
+		overlayEnd = int64(len(e.RawData))
+	}
+
+	overlayData := make([]byte, overlayEnd-e.OverlayOffset)
+	copy(overlayData, e.RawData[e.OverlayOffset:overlayEnd])
+
+	return overlayData, nil
+}

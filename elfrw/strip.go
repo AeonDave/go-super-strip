@@ -72,15 +72,9 @@ func (e *ELFFile) stripSectionData(sectionIndex int, useRandom bool) error {
 	return nil
 }
 
-func (e *ELFFile) StripSectionsByCategory(categoryName string, useRandom bool) *common.OperationResult {
+func (e *ELFFile) StripSectionsByType(sectionType SectionType, useRandom bool) *common.OperationResult {
 	if err := e.validateELF(); err != nil {
 		return common.NewSkipped(fmt.Sprintf("ELF validation failed: %v", err))
-	}
-
-	// Map category name to section type
-	sectionType, err := getCategoryToSectionType(categoryName)
-	if err != nil {
-		return common.NewSkipped(err.Error())
 	}
 
 	// Get section rules from strip_types.go
@@ -459,12 +453,6 @@ func (e *ELFFile) StripAllHeaders() *common.OperationResult {
 	var operations []string
 	totalCount := 0
 
-	// Strip section table
-	if err := e.StripSectionTable(); err == nil {
-		operations = append(operations, "removed section header table references")
-		totalCount++
-	}
-
 	// Strip ELF header fields
 	if result := e.StripELFHeaderFields(); result != nil && result.Applied {
 		operations = append(operations, result.Message)
@@ -475,12 +463,6 @@ func (e *ELFFile) StripAllHeaders() *common.OperationResult {
 	if result := e.StripProgramHeaderTimestamps(); result != nil && result.Applied {
 		operations = append(operations, result.Message)
 		totalCount += result.Count
-	}
-
-	// Fix section header integrity
-	if err := e.FixSectionHeaderIntegrity(); err == nil {
-		operations = append(operations, "fixed section header integrity")
-		totalCount++
 	}
 
 	if totalCount == 0 {
@@ -618,8 +600,8 @@ func (e *ELFFile) StripAll(force bool) *common.OperationResult {
 			continue
 		}
 
-		// Strip sections by category
-		result := e.StripSectionsByCategory(getSectionCategory(sectionType), rule.Fill == RandomFill)
+		// Strip sections by type
+		result := e.StripSectionsByType(sectionType, rule.Fill == RandomFill)
 		if result != nil && result.Applied {
 			message := result.Message
 			if rule.IsRisky {
@@ -636,7 +618,7 @@ func (e *ELFFile) StripAll(force bool) *common.OperationResult {
 		totalCount += headersResult.Count
 	}
 
-	// 3. Strip regex patterns
+	//3. Strip regex patterns
 	if regexResult := e.StripAllRegexRules(force); regexResult != nil && regexResult.Applied {
 		operations = append(operations, regexResult.Message)
 		totalCount += regexResult.Count
@@ -658,58 +640,6 @@ func (e *ELFFile) StripAll(force bool) *common.OperationResult {
 	return common.NewApplied(message, totalCount)
 }
 
-func getSectionCategory(sectionType SectionType) string {
-	switch sectionType {
-	case DebugSections:
-		return "debug"
-	case SymbolSections:
-		return "symbols"
-	case BuildInfoSections:
-		return "buildinfo"
-	case NonEssentialSections:
-		return "buildinfo" // Map to existing category
-	case ExceptionSections:
-		return "exceptions"
-	case RelocationSections:
-		return "relocations"
-	case TLSSections:
-		return "arch" // Map to existing category
-	case NoteSections:
-		return "buildinfo" // Map to existing category
-	case RuntimeSections:
-		return "buildinfo" // Map to existing category
-	default:
-		return "debug" // Default to debug as a fallback
-	}
-}
-
-func getCategoryToSectionType(categoryName string) (SectionType, error) {
-	switch categoryName {
-	case "debug":
-		return DebugSections, nil
-	case "symbols":
-		return SymbolSections, nil
-	case "strings":
-		return SymbolSections, nil // Map to symbol sections as they're related
-	case "buildinfo":
-		return BuildInfoSections, nil
-	case "profiling":
-		return NonEssentialSections, nil // Map to non-essential sections
-	case "exceptions":
-		return ExceptionSections, nil
-	case "arch":
-		return TLSSections, nil // Map to TLS sections as they're architecture-specific
-	case "relocations":
-		return RelocationSections, nil
-	case "dynamic":
-		return RelocationSections, nil // Map to relocation sections as they're related
-	case "versioning":
-		return BuildInfoSections, nil // Map to build info sections
-	default:
-		return DebugSections, fmt.Errorf("unknown section category: %s", categoryName)
-	}
-}
-
 func formatStripOperations(operations []string) string {
 	if len(operations) == 0 {
 		return "No operations performed"
@@ -722,14 +652,30 @@ func formatStripOperations(operations []string) string {
 		"other":   {},
 	}
 
+	// Use maps to track unique operations
+	uniqueOps := map[string]map[string]bool{
+		"section": make(map[string]bool),
+		"regex":   make(map[string]bool),
+		"other":   make(map[string]bool),
+	}
+
 	for _, op := range operations {
 		switch {
 		case strings.Contains(op, "sections ("):
-			grouped["section"] = append(grouped["section"], op)
+			if !uniqueOps["section"][op] {
+				uniqueOps["section"][op] = true
+				grouped["section"] = append(grouped["section"], op)
+			}
 		case strings.Contains(op, "matches for"):
-			grouped["regex"] = append(grouped["regex"], op)
+			if !uniqueOps["regex"][op] {
+				uniqueOps["regex"][op] = true
+				grouped["regex"] = append(grouped["regex"], op)
+			}
 		default:
-			grouped["other"] = append(grouped["other"], op)
+			if !uniqueOps["other"][op] {
+				uniqueOps["other"][op] = true
+				grouped["other"] = append(grouped["other"], op)
+			}
 		}
 	}
 

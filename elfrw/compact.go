@@ -10,25 +10,41 @@ func (e *ELFFile) Compact(force bool) *common.OperationResult {
 }
 
 func (e *ELFFile) identifyCriticalSections() map[int]struct{} {
+	criticalSectionNames := []string{
+		//  ELF
+		".text", ".code", ".data", ".rodata", ".bss",
+		".init", ".fini", ".plt", ".got", ".got.plt",
+		".dynamic", ".dynsym", ".dynstr", ".hash", ".gnu.hash", ".interp",
+		//  C/C++
+		".ctors", ".dtors", ".eh_frame", ".eh_frame_hdr", ".gcc_except_table",
+		".jcr", ".init_array", ".fini_array",
+		//  Rust
+		".rustc", ".rust_eh_frame", ".rust_eh_personality",
+		//  .NET/C#
+		".text", ".rsrc", ".reloc", ".pdata", ".tls", ".xdata", ".edata",
+		//  Go
+		".go.buildinfo", ".go.func", ".go.typelink", ".go.itablink", ".go.pclntab",
+		".go.string", ".go.rodata", ".go.symtab", ".go.plt", ".go.got",
+	}
 	critical := make(map[int]struct{})
 	for i, sec := range e.Sections {
 		name := strings.ToLower(strings.Trim(sec.Name, "\x00"))
-		switch name {
-		case ".text", ".code",
-			".data", ".rodata", ".bss",
-			".init", ".fini",
-			".plt", ".got", ".got.plt",
-			".dynamic", ".dynsym", ".dynstr",
-			".hash", ".gnu.hash",
-			".interp":
-			critical[i] = struct{}{}
+		for _, crit := range criticalSectionNames {
+			if name == strings.ToLower(crit) {
+				critical[i] = struct{}{}
+				break
+			}
 		}
-		// Go runtime sections that are critical
+		// Sezioni critiche per runtime o linguaggi specifici
 		if strings.Contains(name, ".go.") ||
 			strings.Contains(name, "runtime") ||
 			strings.Contains(name, ".eh_frame") ||
 			strings.Contains(name, ".ctors") ||
-			strings.Contains(name, ".dtors") {
+			strings.Contains(name, ".dtors") ||
+			strings.Contains(name, ".rust") ||
+			strings.Contains(name, ".net") ||
+			strings.Contains(name, ".cxx") ||
+			strings.Contains(name, ".vtable") {
 			critical[i] = struct{}{}
 		}
 	}
@@ -53,7 +69,7 @@ func (e *ELFFile) identifyStripSections(force bool) (removable, keepable []int) 
 		for _, rule := range rules {
 			// Check if this rule applies to our binary type
 			isDynamic := e.isDynamic
-			if !((isDynamic && rule.StripForSO) || (!isDynamic && rule.StripForEXE)) {
+			if !((isDynamic && rule.StripForSO) || (!isDynamic && rule.StripForBIN)) {
 				continue
 			}
 

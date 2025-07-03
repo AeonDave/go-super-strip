@@ -102,6 +102,10 @@ type ParseResult struct {
 	Warnings []string
 }
 
+type ELFFileMode struct {
+	usedFallbackMode bool
+}
+
 // ELF constants
 const (
 	SHT_NULL        = 0
@@ -158,4 +162,34 @@ const (
 	STT_FUNC    = 2
 	STT_SECTION = 3
 	STT_FILE    = 4
+)
+
+const (
+	// Offset per ELF64 header fields
+	elf64E_phoff_offset     = 32
+	elf64E_shoff_offset     = 40
+	elf64E_phentsize_offset = 54
+	elf64E_shentsize_offset = 58
+	elf64E_shnum_offset     = 60
+	elf64E_shstrndx_offset  = 62
+
+	// Offset per ELF32 header fields
+	elf32E_phoff_offset     = 28
+	elf32E_shoff_offset     = 32
+	elf32E_phentsize_offset = 42
+	elf32E_shentsize_offset = 46
+	elf32E_shnum_offset     = 48
+	elf32E_shstrndx_offset  = 50
+
+	// Offsets and sizes for program headers
+	elf64P_offset = 8
+	elf64P_filesz = 32
+	elf32P_offset = 4
+	elf32P_filesz = 16
+
+	// Offsets and sizes for section headers
+	elf64S_offset = 24
+	elf64S_size   = 32
+	elf32S_offset = 16
+	elf32S_size   = 20
 )

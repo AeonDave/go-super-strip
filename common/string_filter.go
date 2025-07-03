@@ -260,6 +260,10 @@ func isGarbage(s string) bool {
 }
 
 func isInternalString(s string) bool {
+	// Skip symbol-like strings containing parentheses (likely internal code symbols)
+	if strings.Contains(s, "(") && strings.Contains(s, ")") {
+		return true
+	}
 	if runtimePrefixes.MatchString(s) || internalSuffixes.MatchString(s) ||
 		lowLevelPatterns.MatchString(s) || typeSystemPatterns.MatchString(s) || goInternalPatterns.MatchString(s) {
 		return true

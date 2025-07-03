@@ -50,7 +50,7 @@ func GetSectionStripRule() map[SectionType]SectionStripRule {
 			Fill:        ZeroFill,
 		},
 		SymbolSections: {
-			ExactNames:  []string{".symtab", ".strtab", ".shstrtab"},
+			ExactNames:  []string{".symtab", ".strtab"},
 			PrefixNames: []string{},
 			Description: "symbol table information",
 			StripForSO:  false, // Keep for shared objects as they may be needed
@@ -95,7 +95,7 @@ func GetSectionStripRule() map[SectionType]SectionStripRule {
 			Fill:        ZeroFill,
 		},
 		BuildInfoSections: {
-			ExactNames:  []string{".gosymtab", ".gopclntab", ".typelink", ".itablink", ".noptrbss", ".noptrdata"},
+			ExactNames:  []string{""},
 			PrefixNames: []string{".go.", ".gopkg."},
 			Description: "build information and toolchain metadata",
 			StripForSO:  true,
