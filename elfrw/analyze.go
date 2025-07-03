@@ -497,9 +497,9 @@ func (e *ELFFile) printSectionHeaders() {
 	fmt.Printf("Loaded Size:      %s\n", common.FormatFileSize(loadedSectionSize))
 	// Section table
 	fmt.Printf("\n📋 SECTION TABLE:\n")
-	fmt.Printf("┌───┬─────────────────────┬─────────────┬─────────────┬─────────────┬─────────────┬──────────┐\n")
-	fmt.Printf("│ # │ Name                │ Type        │ Offset      │ Size        │ Permissions │ Entropy  │\n")
-	fmt.Printf("├───┼─────────────────────┼─────────────┼─────────────┼─────────────┼─────────────┼──────────┤\n")
+	fmt.Printf("┌───┬─────────────────────┬─────────────┬─────────────┬─────────────┬──────┬─────────┐\n")
+	fmt.Printf("│ # │ Name                │ Type        │ Offset      │ Size        │ Flag │ Entropy │\n")
+	fmt.Printf("├───┼─────────────────────┼─────────────┼─────────────┼─────────────┼──────┼─────────┤\n")
 
 	for i, section := range e.Sections {
 		truncatedName := section.Name
@@ -530,20 +530,17 @@ func (e *ELFFile) printSectionHeaders() {
 			perms += "-"
 		}
 
-		// Format entropy with indicator
 		entropyStr := ""
-		if section.Size > 0 {
-			entropyStr = fmt.Sprintf("%.2f", section.Entropy)
-			if section.Entropy > 7.5 {
-				entropyStr += " 🔺"
-			} else if section.Entropy < 1.0 {
-				entropyStr += " 🔸"
-			}
+		entropyStr = fmt.Sprintf("%.2f", section.Entropy)
+		if section.Entropy > 7.5 {
+			entropyStr += "🔺"
+		} else if section.Entropy < 1.0 {
+			entropyStr += "🔻"
 		} else {
-			entropyStr = "─"
+			entropyStr += "🔹"
 		}
 
-		fmt.Printf("│%2d │ %-19s │ %-11s │ 0x%08X  │ %-11s │ %-11s │ %-8s │\n",
+		fmt.Printf("│%2d │ %-19s │ %-11s │ 0x%08X  │ %-11s │ %-4s │ %-6s │\n",
 			i,
 			truncatedName,
 			typeStr,
@@ -552,52 +549,284 @@ func (e *ELFFile) printSectionHeaders() {
 			perms,
 			entropyStr)
 	}
-	fmt.Printf("└───┴─────────────────────┴─────────────┴─────────────┴─────────────┴─────────────┴──────────┘\n")
-
+	fmt.Printf("└───┴─────────────────────┴─────────────┴─────────────┴─────────────┴──────┴─────────┘\n")
 	fmt.Println()
+}
+
+type SectionInfo struct {
+	Name         string
+	FileOffset   int64
+	Size         int64
+	IsExecutable bool
+	IsWritable   bool
+	IsReadable   bool
+	Entropy      float64
 }
 
 func (e *ELFFile) printSectionAnomalies() {
 	fmt.Println("🚨 SECTION ANOMALY ANALYSIS")
 	fmt.Println("════════════════════════════")
 
-	var anomalies []string
-
-	for _, section := range e.Sections {
-		if section.IsExecutable && section.IsWritable {
-			anomalies = append(anomalies, fmt.Sprintf("⚠️  Section '%s' is both executable and writable (RWX)", section.Name))
-		}
-
-		// Check for sections with very high entropy
-		if section.Entropy > 7.8 && section.Size > 1024 {
-			anomalies = append(anomalies, fmt.Sprintf("⚠️  Section '%s' has very high entropy (%.2f) - possible encryption/packing", section.Name, section.Entropy))
-		}
-
-		// Check for unusually large sections
-		if section.Size > e.FileSize/2 {
-			anomalies = append(anomalies, fmt.Sprintf("⚠️  Section '%s' is unusually large (%s)", section.Name, common.FormatFileSize(section.Size)))
-		}
-
-		// Check for sections with suspicious names
-		suspiciousNames := []string{"upx", "pack", "crypt", "obfus", "themida", "vmprotect"}
-		sectionNameLower := strings.ToLower(section.Name)
-		for _, suspicious := range suspiciousNames {
-			if strings.Contains(sectionNameLower, suspicious) {
-				anomalies = append(anomalies, fmt.Sprintf("⚠️  Section '%s' has suspicious name", section.Name))
-				break
-			}
+	infos := make([]SectionInfo, len(e.Sections))
+	for i, s := range e.Sections {
+		infos[i] = SectionInfo{
+			Name:         s.Name,
+			FileOffset:   s.Offset,
+			Size:         s.Size,
+			IsExecutable: s.IsExecutable,
+			IsWritable:   s.IsWritable,
+			IsReadable:   s.IsReadable,
+			Entropy:      s.Entropy,
 		}
 	}
-
-	if len(anomalies) == 0 {
+	issues := AnalyzeSectionAnomalies(infos, e.FileSize)
+	if len(issues) == 0 {
 		fmt.Printf("%s No section anomalies detected\n", "✅")
 	} else {
-		for _, anomaly := range anomalies {
-			fmt.Println(anomaly)
+		for _, issue := range issues {
+			fmt.Println(issue)
 		}
 	}
 
 	fmt.Println()
+}
+
+func AnalyzeSectionAnomalies(sections []SectionInfo, fileSize int64) []string {
+	var issues []string
+
+	// Helper function to check if a section is a debug section
+	isDebugSection := func(name string) bool {
+		debugPrefixes := []string{
+			".debug_",
+			".zdebug_",
+			".gdb_index",
+			".note.",
+			".comment",
+		}
+		for _, prefix := range debugPrefixes {
+			if strings.HasPrefix(name, prefix) {
+				return true
+			}
+		}
+		return false
+	}
+
+	for i, s := range sections {
+		// Skip all checks for debug sections
+		if isDebugSection(s.Name) {
+			continue
+		}
+
+		// Check for zero-sized sections
+		if s.Size == 0 {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' has zero size")
+		}
+
+		// Check for executable and writable sections (RWX)
+		if s.IsExecutable && s.IsWritable {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' is both executable and writable (RWX)")
+		}
+
+		// Check for empty or invalid section names
+		if len(s.Name) == 0 || s.Name == "\x00" {
+			issues = append(issues, common.SymbolWarn+" Section with empty or invalid name")
+		}
+
+		// Check for overlapping sections
+		if i > 0 && s.FileOffset < sections[i-1].FileOffset+sections[i-1].Size {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' overlaps previous section")
+		}
+
+		// Check for suspicious section names
+		if isSuspiciousSectionNameELF(s.Name) {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' has suspicious/unusual name")
+		}
+
+		// Check for abnormally large sections
+		if s.Size > 100*1024*1024 { // > 100MB
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' is unusually large ("+formatSizeELF(s.Size)+")")
+		}
+
+		// Check for sections with very high entropy
+		if s.Entropy > 7.8 && s.Size > 1024 {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' has very high entropy ("+fmt.Sprintf("%.2f", s.Entropy)+") - possible encryption/packing")
+		}
+
+		// Check for unusually large sections relative to file size
+		if s.Size > fileSize/2 {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' is unusually large relative to file size ("+formatSizeELF(s.Size)+")")
+		}
+
+		// Check for negative file offsets
+		if s.FileOffset < 0 {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' has invalid file offset")
+		}
+
+		// Check for non-aligned file offsets
+		if s.FileOffset > 0 && s.FileOffset%0x10 != 0 {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' has non-aligned file offset (0x"+fmt.Sprintf("%X", s.FileOffset)+")")
+		}
+
+		// Check for executable sections with unexpected names
+		if s.IsExecutable && !isExpectedExecutableSectionELF(s.Name) {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' is executable but has unexpected name")
+		}
+
+		// Check for writable sections with unexpected names
+		if s.IsWritable && !isExpectedWritableSectionELF(s.Name) {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' is writable but has unexpected name")
+		}
+
+		// Check for unusual section order
+		if i > 0 && isWrongSectionOrderELF(sections[i-1].Name, s.Name) {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' appears after '"+sections[i-1].Name+"' (unusual order)")
+		}
+
+		// Check for large gaps between sections
+		if i > 0 {
+			prevEnd := sections[i-1].FileOffset + sections[i-1].Size
+			gap := s.FileOffset - prevEnd
+			if gap > 64*1024 { // Gap > 64KB
+				issues = append(issues, common.SymbolWarn+" Large gap ("+formatSizeELF(gap)+") between '"+sections[i-1].Name+"' and '"+s.Name+"'")
+			}
+		}
+
+		// Check for sections with unusual permissions
+		if strings.HasPrefix(s.Name, ".text") && !s.IsExecutable {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' should be executable but isn't")
+		}
+		if strings.HasPrefix(s.Name, ".data") && !s.IsWritable {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' should be writable but isn't")
+		}
+		if strings.HasPrefix(s.Name, ".rodata") && s.IsWritable {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' should be read-only but is writable")
+		}
+	}
+
+	analyzeGlobalSectionAnomaliesELF(sections, &issues)
+	return issues
+}
+
+func isSuspiciousSectionNameELF(name string) bool {
+	nameLower := strings.ToLower(name)
+	for _, suspicious := range common.SuspiciousSectionNames {
+		if strings.Contains(nameLower, suspicious) {
+			return true
+		}
+	}
+	for _, c := range name {
+		if c < 32 || c > 126 {
+			return true
+		}
+	}
+	return false
+}
+
+func isExpectedExecutableSectionELF(name string) bool {
+	executableSections := []string{".text", ".init", ".fini", ".plt", ".got"}
+	name = strings.ToLower(name)
+	for _, expected := range executableSections {
+		if strings.HasPrefix(name, strings.ToLower(expected)) {
+			return true
+		}
+	}
+	return false
+}
+
+func isExpectedWritableSectionELF(name string) bool {
+	writableSections := []string{".data", ".bss", ".got", ".dynamic", ".tdata", ".tbss"}
+	name = strings.ToLower(name)
+	for _, expected := range writableSections {
+		if strings.HasPrefix(name, strings.ToLower(expected)) {
+			return true
+		}
+	}
+	return false
+}
+
+func isWrongSectionOrderELF(prev, current string) bool {
+	// In ELF, .text typically comes before .data, which comes before .bss
+	if strings.HasPrefix(strings.ToLower(prev), ".data") &&
+		strings.HasPrefix(strings.ToLower(current), ".text") {
+		return true
+	}
+	if strings.HasPrefix(strings.ToLower(prev), ".bss") &&
+		(strings.HasPrefix(strings.ToLower(current), ".text") ||
+			strings.HasPrefix(strings.ToLower(current), ".data")) {
+		return true
+	}
+
+	return false
+}
+
+func analyzeGlobalSectionAnomaliesELF(sections []SectionInfo, issues *[]string) {
+	// Helper function to check if a section is a debug section
+	isDebugSection := func(name string) bool {
+		debugPrefixes := []string{
+			".debug_",
+			".zdebug_",
+			".gdb_index",
+			".note.",
+			".comment",
+		}
+		for _, prefix := range debugPrefixes {
+			if strings.HasPrefix(name, prefix) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Filter out debug sections
+	var nonDebugSections []SectionInfo
+	for _, s := range sections {
+		if !isDebugSection(s.Name) {
+			nonDebugSections = append(nonDebugSections, s)
+		}
+	}
+
+	// Check for too few sections
+	if len(nonDebugSections) < 3 {
+		*issues = append(*issues, common.SymbolWarn+" Very few sections ("+fmt.Sprintf("%d", len(nonDebugSections))+") - possible packing")
+	}
+
+	// Check for too many sections
+	if len(nonDebugSections) > 30 {
+		*issues = append(*issues, common.SymbolWarn+" Unusually many sections ("+fmt.Sprintf("%d", len(nonDebugSections))+")")
+	}
+
+	// Check for missing executable sections
+	hasExecutable := false
+	for _, s := range nonDebugSections {
+		if s.IsExecutable {
+			hasExecutable = true
+			break
+		}
+	}
+	if !hasExecutable {
+		*issues = append(*issues, common.SymbolWarn+" No executable sections found")
+	}
+
+	// Check for duplicate section names
+	nameCount := make(map[string]int)
+	for _, s := range nonDebugSections {
+		nameCount[s.Name]++
+	}
+	for name, count := range nameCount {
+		if count > 1 {
+			*issues = append(*issues, common.SymbolWarn+" Duplicate section name '"+name+"' ("+fmt.Sprintf("%d", count)+" times)")
+		}
+	}
+}
+
+func formatSizeELF(size int64) string {
+	if size < 1024 {
+		return fmt.Sprintf("%d B", size)
+	} else if size < 1024*1024 {
+		return fmt.Sprintf("%.1f KB", float64(size)/1024)
+	} else {
+		return fmt.Sprintf("%.1f MB", float64(size)/(1024*1024))
+	}
 }
 
 func (e *ELFFile) printSymbolAnalysis() {
@@ -648,25 +877,6 @@ func (e *ELFFile) printSymbolAnalysis() {
 	fmt.Printf("  Function symbols: %d\n", functionSymbols)
 	fmt.Printf("  Object symbols:   %d\n", objectSymbols)
 	fmt.Printf("  Imported symbols: %d\n", importedSymbols)
-
-	// Show some example symbols
-	if len(symbols) > 0 {
-		fmt.Printf("\nINTERESTING SYMBOLS:\n")
-		count := 0
-		for _, symbol := range symbols {
-			if symbol.Name != "" && count < 15 {
-				fmt.Printf("  • %-30s (Size: %-8s, Value: 0x%08X)\n",
-					symbol.Name,
-					common.FormatFileSize(int64(symbol.Size)),
-					symbol.Value)
-				count++
-			}
-		}
-		if len(symbols) > 15 {
-			fmt.Printf("  ... and %d more symbols\n", len(symbols)-15)
-		}
-	}
-
 	fmt.Println()
 }
 
@@ -799,32 +1009,6 @@ func (e *ELFFile) printDynamicAnalysis() {
 		}
 	}
 
-	// Linking recommendations
-	fmt.Printf("\n💡 RECOMMENDATIONS:\n")
-	var recommendations []string
-
-	if !hasRela {
-		recommendations = append(recommendations, "Enable relocations for better security")
-	}
-	if pieStatus == "❌ NO PIE" {
-		recommendations = append(recommendations, "Compile with -fPIE for ASLR support")
-	}
-	if relroStatus == "❌ NO RELRO" {
-		recommendations = append(recommendations, "Enable RELRO (-Wl,-z,relro,-z,now)")
-	}
-	if hasExecutableStack {
-		recommendations = append(recommendations, "Disable executable stack (-Wl,-z,noexecstack)")
-	}
-
-	if len(recommendations) == 0 {
-		fmt.Printf("Security Status:  ✅ Good security posture\n")
-	} else {
-		fmt.Printf("Security Issues:  ⚠️  %d recommendations\n", len(recommendations))
-		for _, rec := range recommendations {
-			fmt.Printf("  • %s\n", rec)
-		}
-	}
-
 	fmt.Println()
 }
 
@@ -864,7 +1048,7 @@ func (e *ELFFile) printImportsAnalysis() {
 
 		// Group symbols by library (best effort)
 		libFunctions := make(map[string][]string)
-		ungrouped := []string{}
+		var ungrouped []string
 
 		for _, symbol := range dynamicSymbols {
 			if symbol.Name == "" || symbol.Name == "UND" {
@@ -884,13 +1068,8 @@ func (e *ELFFile) printImportsAnalysis() {
 		for lib, functions := range libFunctions {
 			if len(functions) > 0 {
 				fmt.Printf("\n📚 %s (%d functions):\n", lib, len(functions))
-				for i, fn := range functions {
-					if i < 20 { // Limit display
-						fmt.Printf("   • %s\n", fn)
-					}
-				}
-				if len(functions) > 20 {
-					fmt.Printf("   ... and %d more functions\n", len(functions)-20)
+				for _, fn := range functions {
+					fmt.Printf("   • %s\n", fn)
 				}
 			}
 		}
@@ -898,13 +1077,8 @@ func (e *ELFFile) printImportsAnalysis() {
 		// Display uncategorized functions
 		if len(ungrouped) > 0 {
 			fmt.Printf("\n📚 Other/Unknown Library (%d functions):\n", len(ungrouped))
-			for i, fn := range ungrouped {
-				if i < 15 { // Limit display
-					fmt.Printf("   • %s\n", fn)
-				}
-			}
-			if len(ungrouped) > 15 {
-				fmt.Printf("   ... and %d more functions\n", len(ungrouped)-15)
+			for _, fn := range ungrouped {
+				fmt.Printf("   • %s\n", fn)
 			}
 		}
 	}

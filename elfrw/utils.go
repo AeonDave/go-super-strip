@@ -49,7 +49,7 @@ func GetSegmentTypeName(segmentType uint32) string {
 		if segmentType >= uint32(elf.PT_LOPROC) && segmentType <= uint32(elf.PT_HIPROC) {
 			return "PROCESSOR_SPECIFIC"
 		}
-		return fmt.Sprintf("UNKNOWN(0x%x)", segmentType)
+		return fmt.Sprintf("0x%x", segmentType)
 	}
 }
 

@@ -465,10 +465,9 @@ func (e *ELFFile) checkForPacking() {
 	e.IsPacked = false
 
 	// Check for suspicious section names
-	suspiciousNames := []string{"upx", "packed", "compressed"}
 	for _, section := range e.Sections {
 		name := strings.ToLower(section.Name)
-		for _, suspicious := range suspiciousNames {
+		for _, suspicious := range common.SuspiciousSectionNames {
 			if strings.Contains(name, suspicious) {
 				e.IsPacked = true
 				return
