@@ -103,12 +103,24 @@ func (e *ELFFile) parseSections() []Section {
 	count := e.ELF.GetSectionCount()
 	sections := make([]Section, 0, count)
 
+	fmt.Printf("🔍 Parsing %d sections with elf_reader\n", count)
+
 	for i := uint16(0); i < count; i++ {
 		header, err := e.ELF.GetSectionHeader(i)
 		if err != nil {
+			fmt.Printf("⚠️  Failed to get section header %d: %v\n", i, err)
 			continue
 		}
-		name, _ := e.ELF.GetSectionName(i)
+		name, err := e.ELF.GetSectionName(i)
+		if err != nil {
+			fmt.Printf("⚠️  Failed to get section name %d: %v\n", i, err)
+			name = fmt.Sprintf("section_%d", i)
+		}
+		if name == "" {
+			fmt.Printf("⚠️  Empty section name for section %d\n", i)
+			name = fmt.Sprintf("section_%d", i)
+		}
+
 		flags := header.GetFlags()
 
 		section := Section{
@@ -181,8 +193,17 @@ func (e *ELFFile) parseBasicSectionsFromRaw() error {
 			stringTableOffset, stringTableSize := e.parseSectionOffsetAndSize(stringHeaderBase)
 			if stringTableOffset+stringTableSize <= uint64(len(e.RawData)) {
 				stringTableData = e.RawData[stringTableOffset : stringTableOffset+stringTableSize]
+				fmt.Printf("🔍 String table found: offset=0x%X, size=%d bytes\n", stringTableOffset, stringTableSize)
+			} else {
+				fmt.Printf("⚠️  String table bounds check failed: offset=0x%X, size=%d, fileSize=%d\n",
+					stringTableOffset, stringTableSize, len(e.RawData))
 			}
+		} else {
+			fmt.Printf("⚠️  String table header bounds check failed: headerBase=0x%X, entrySize=%d, fileSize=%d\n",
+				stringHeaderBase, shEntSize, len(e.RawData))
 		}
+	} else {
+		fmt.Printf("⚠️  Invalid string table index: shstrndx=%d, shNum=%d\n", shstrndx, shNum)
 	}
 
 	sections := make([]Section, 0, shNum)
@@ -241,6 +262,11 @@ func (e *ELFFile) parseSectionHeader(base uint64, index uint16, stringTableData 
 		if end > nameOffset {
 			name = string(stringTableData[nameOffset:end])
 		}
+	} else if stringTableData == nil {
+		fmt.Printf("⚠️  No string table data available for section %d\n", index)
+	} else if nameOffset >= uint64(len(stringTableData)) {
+		fmt.Printf("⚠️  Name offset %d out of bounds for section %d (string table size: %d)\n",
+			nameOffset, index, len(stringTableData))
 	}
 	section := Section{
 		Name:         name,

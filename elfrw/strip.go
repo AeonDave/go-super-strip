@@ -150,11 +150,27 @@ func (e *ELFFile) getHeaderPositions() (int, int, int) {
 	return 32, 48, 50
 }
 
-func (e *ELFFile) getSectionHeaderOffset(shoffPos int) uint64 {
+func (e *ELFFile) getSectionHeaderOffset(shoffPos int) (uint64, error) {
+	// Ensure we have enough data to read the header
 	if e.Is64Bit {
-		return e.readUint64(shoffPos)
+		if shoffPos < 0 || shoffPos+8 > len(e.RawData) {
+			return 0, fmt.Errorf("invalid section header offset position: %d", shoffPos)
+		}
+		offset := e.readUint64(shoffPos)
+		if offset >= uint64(len(e.RawData)) {
+			return 0, fmt.Errorf("section header offset out of range: %d", offset)
+		}
+		return offset, nil
 	}
-	return uint64(e.readUint32(shoffPos))
+
+	if shoffPos < 0 || shoffPos+4 > len(e.RawData) {
+		return 0, fmt.Errorf("invalid section header offset position: %d", shoffPos)
+	}
+	offset := uint64(e.readUint32(shoffPos))
+	if offset >= uint64(len(e.RawData)) {
+		return 0, fmt.Errorf("section header offset out of range: %d", offset)
+	}
+	return offset, nil
 }
 
 func (e *ELFFile) StripAllHeaders() *common.OperationResult {

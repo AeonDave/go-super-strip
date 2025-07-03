@@ -20,33 +20,20 @@ func (e *ELFFile) Compact(force bool) *common.OperationResult {
 
 	sort.Sort(sort.Reverse(sort.IntSlice(removable)))
 	removedNames := e.getRemovedSectionNames(removable)
-
-	shstrIndex := e.findSectionIndex(".shstrtab")
 	totalRemoved := int64(0)
 
-	// 1) Rimuove i blocchi dati delle sezioni
+	// Rimuove le sezioni dal file e aggiorna gli offset
 	for _, idx := range removable {
 		if err := e.removeCompactSection(idx, &totalRemoved); err != nil {
-			return common.NewSkipped(fmt.Sprintf("failed to remove section %d: %v", idx, err))
+			// Non è un errore fatale, continuiamo
+			fmt.Printf("⚠️  Warning: Failed to remove section %d (%s): %v\n", idx, e.Sections[idx].Name, err)
 		}
 	}
 
-	// 2) Aggiorna le tabelle interne
+	// Aggiorna la lista delle sezioni in memoria
 	e.updateSections(removable)
-	if err := e.UpdateSectionHeaders(); err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to update section headers: %v", err))
-	}
-	if err := e.updateELFHeaderSectionCount(); err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to update ELF header section count: %v", err))
-	}
-	if shstrIndex >= 0 {
-		newIdx := e.calculateNewShstrtabIndex(removable, shstrIndex)
-		if err := e.updateELFHeaderShstrtabIndex(uint16(newIdx)); err != nil {
-			return common.NewSkipped(fmt.Sprintf("failed to update ELF header shstrtab index: %v", err))
-		}
-	}
 
-	// 3) Trancia l’overlay oltre l’ultimo segmento
+	// Tronca l'overlay se presente
 	maxEnd := 0
 	for _, seg := range e.Segments {
 		end := int(seg.Offset + seg.FileSize)
@@ -58,6 +45,16 @@ func (e *ELFFile) Compact(force bool) *common.OperationResult {
 		removedOverlay := int64(len(e.RawData) - maxEnd)
 		e.RawData = e.RawData[:maxEnd]
 		totalRemoved += removedOverlay
+	}
+
+	// Ricostruisce la tabella delle sezioni e la .shstrtab
+	if err := e.rebuildSectionHeaderTable(); err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to rebuild section header table: %v", err))
+	}
+
+	// Aggiorna il conteggio delle sezioni nell'header ELF
+	if err := e.updateELFHeaderSectionCount(); err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to update ELF header section count: %v", err))
 	}
 
 	newSize := int64(len(e.RawData))
@@ -123,7 +120,10 @@ func (e *ELFFile) identifyCompactableSections(force bool) []int {
 		if _, ok := critical[i]; ok && section.Size > 0 {
 			continue
 		}
-		if section.Name == ".shstrtab" || section.Type == 8 {
+		if section.Name == ".shstrtab" ||
+			section.Name == ".strtab" ||
+			section.Name == ".dynstr" ||
+			section.Type == SHT_NOBITS {
 			continue
 		}
 
@@ -155,6 +155,8 @@ func (e *ELFFile) removeCompactSection(sectionIdx int, totalRemovedSize *int64) 
 	}
 
 	section := e.Sections[sectionIdx]
+
+	// Sezione senza dati nel file, nulla da rimuovere
 	if section.Offset <= 0 || section.Size <= 0 {
 		return nil
 	}
@@ -162,22 +164,33 @@ func (e *ELFFile) removeCompactSection(sectionIdx int, totalRemovedSize *int64) 
 	fileAlignment := e.getFileAlignment()
 	alignedSize := common.AlignUp64(section.Size, fileAlignment)
 	start, end := int(section.Offset), int(section.Offset+alignedSize)
+
+	// Controllo dei limiti del file
+	if start > len(e.RawData) {
+		return fmt.Errorf("section offset beyond file size: %d > %d", start, len(e.RawData))
+	}
 	if end > len(e.RawData) {
 		end = len(e.RawData)
 	}
-
-	if end > start {
-		e.RawData = append(e.RawData[:start], e.RawData[end:]...)
-		removedSize := int64(end - start)
-		*totalRemovedSize += removedSize
-
-		for i := range e.Sections {
-			if i != sectionIdx && e.Sections[i].Offset > section.Offset {
-				e.Sections[i].Offset -= removedSize
-			}
-		}
-		e.updateProgramHeaderOffsets(section.Offset, removedSize)
+	if end <= start {
+		return nil
 	}
+	removedSize := int64(end - start)
+	e.RawData = append(e.RawData[:start], e.RawData[end:]...)
+	*totalRemovedSize += removedSize
+
+	for i := range e.Sections {
+		if i == sectionIdx {
+			continue
+		}
+		if e.Sections[i].Offset > section.Offset {
+			e.Sections[i].Offset -= removedSize
+		}
+	}
+
+	// Aggiornamento program header e section header table
+	e.updateProgramHeaderOffsets(section.Offset, removedSize)
+	_ = e.updateSectionHeaderTableOffset(section.Offset, removedSize)
 
 	return nil
 }
@@ -284,4 +297,213 @@ func (e *ELFFile) identifyCriticalSections() map[int]struct{} {
 	}
 
 	return critical
+}
+
+func (e *ELFFile) updateSectionHeaderTableOffset(removedOffset int64, removedSize int64) error {
+	shoffPos, _, _ := e.getHeaderPositions()
+
+	if shoffPos < 0 {
+		return nil
+	}
+
+	// Get current section header table offset
+	currentOffset, err := e.getSectionHeaderOffset(shoffPos)
+	if err != nil || currentOffset == 0 {
+		return nil
+	}
+
+	// If section header table is after the removed section, update its offset
+	if int64(currentOffset) > removedOffset {
+		newOffset := int64(currentOffset) - removedSize
+		if newOffset < 0 {
+			newOffset = 0
+		}
+
+		// Write the new offset back to the ELF header
+		if e.Is64Bit {
+			if shoffPos+8 <= len(e.RawData) {
+				e.GetEndian().PutUint64(e.RawData[shoffPos:shoffPos+8], uint64(newOffset))
+				fmt.Printf("🔧 Updated section header table offset: 0x%X -> 0x%X\n", currentOffset, newOffset)
+			}
+		} else {
+			if shoffPos+4 <= len(e.RawData) {
+				e.GetEndian().PutUint32(e.RawData[shoffPos:shoffPos+4], uint32(newOffset))
+				fmt.Printf("🔧 Updated section header table offset: 0x%X -> 0x%X\n", currentOffset, newOffset)
+			}
+		}
+	}
+
+	return nil
+}
+
+func (e *ELFFile) rebuildSectionHeaderTable() error {
+	if len(e.Sections) == 0 {
+		// Se non ci sono sezioni, azzera l'offset e il numero di sezioni nell'header
+		shoffPos, shnumPos, _ := e.getHeaderPositions()
+		if shoffPos > 0 {
+			if e.Is64Bit {
+				e.GetEndian().PutUint64(e.RawData[shoffPos:shoffPos+8], 0)
+			} else {
+				e.GetEndian().PutUint32(e.RawData[shoffPos:shoffPos+4], 0)
+			}
+		}
+		if shnumPos > 0 {
+			if e.Is64Bit {
+				e.GetEndian().PutUint16(e.RawData[shnumPos:shnumPos+2], 0)
+			} else {
+				e.GetEndian().PutUint16(e.RawData[shnumPos:shnumPos+2], 0)
+			}
+		}
+		return nil
+	}
+
+	// 1. Ricostruisci la section header string table (.shstrtab)
+	shstrtabData := []byte{0} // Inizia con un byte nullo
+	nameOffsets := make(map[int]uint32)
+	for i, section := range e.Sections {
+		if section.Name == "" {
+			nameOffsets[i] = 0
+			continue
+		}
+		nameOffsets[i] = uint32(len(shstrtabData))
+		shstrtabData = append(shstrtabData, []byte(section.Name)...)
+		shstrtabData = append(shstrtabData, 0) // Termina con un byte nullo
+	}
+
+	// Trova o crea la sezione .shstrtab
+	shstrtabIndex := -1
+	for i, section := range e.Sections {
+		if section.Name == ".shstrtab" {
+			shstrtabIndex = i
+			break
+		}
+	}
+	if shstrtabIndex == -1 {
+		// Se non esiste, la aggiungiamo (questo caso è improbabile per file validi)
+		shstrtabIndex = len(e.Sections)
+		e.Sections = append(e.Sections, Section{
+			Name: ".shstrtab",
+			Type: SHT_STRTAB,
+			Size: int64(len(shstrtabData)),
+		})
+		// Aggiorna il conteggio delle sezioni nell'header
+		if err := e.updateELFHeaderSectionCount(); err != nil {
+			return fmt.Errorf("failed to update section count for new shstrtab: %w", err)
+		}
+	}
+
+	// Aggiorna la sezione .shstrtab
+	shstrtabSection := &e.Sections[shstrtabIndex]
+	shstrtabSection.Size = int64(len(shstrtabData))
+	shstrtabSection.Type = SHT_STRTAB
+	shstrtabSection.Flags = 0
+	shstrtabSection.Address = 0
+	shstrtabSection.Link = 0
+	shstrtabSection.Info = 0
+	shstrtabSection.Alignment = 1
+
+	// Aggiorna l'indice della shstrtab nell'header ELF
+	if err := e.updateELFHeaderShstrtabIndex(uint16(shstrtabIndex)); err != nil {
+		return fmt.Errorf("failed to update shstrtab index: %w", err)
+	}
+
+	// Calcola la dimensione di ogni entry della tabella delle sezioni
+	entrySize := int64(40) // Dimensione per ELF32
+	if e.Is64Bit {
+		entrySize = 64 // Dimensione per ELF64
+	}
+	totalHeaderTableSize := int64(len(e.Sections)) * entrySize
+
+	// Trova la fine corrente dei dati delle sezioni (allineata)
+	// Escludiamo la vecchia tabella delle sezioni e la vecchia shstrtab
+	maxOffset := int64(0)
+	for i, sec := range e.Sections {
+		if i != shstrtabIndex && sec.Type != SHT_NOBITS {
+			endOffset := sec.Offset + sec.Size
+			if endOffset > maxOffset {
+				maxOffset = endOffset
+			}
+		}
+	}
+
+	alignment := e.getFileAlignment()
+	// Allinea l'offset per la nuova .shstrtab
+	shstrtabSection.Offset = (maxOffset + alignment - 1) &^ (alignment - 1)
+
+	// Allinea l'offset per la nuova tabella delle intestazioni di sezione
+	newSHTOffset := (shstrtabSection.Offset + shstrtabSection.Size + alignment - 1) &^ (alignment - 1)
+
+	// Prepara i dati della tabella delle intestazioni
+	headerTableData := make([]byte, totalHeaderTableSize)
+	pos := 0
+	for i, section := range e.Sections {
+		nameOffset := nameOffsets[i]
+		entsize := uint64(0)
+
+		// Per la sezione .shstrtab, assicurati che i campi siano corretti
+		if i == shstrtabIndex {
+			section = *shstrtabSection
+		}
+
+		if e.Is64Bit {
+			e.GetEndian().PutUint32(headerTableData[pos:], nameOffset)
+			e.GetEndian().PutUint32(headerTableData[pos+4:], section.Type)
+			e.GetEndian().PutUint64(headerTableData[pos+8:], section.Flags)
+			e.GetEndian().PutUint64(headerTableData[pos+16:], section.Address)
+			e.GetEndian().PutUint64(headerTableData[pos+24:], uint64(section.Offset))
+			e.GetEndian().PutUint64(headerTableData[pos+32:], uint64(section.Size))
+			e.GetEndian().PutUint32(headerTableData[pos+40:], section.Link)
+			e.GetEndian().PutUint32(headerTableData[pos+44:], section.Info)
+			e.GetEndian().PutUint64(headerTableData[pos+48:], section.Alignment)
+			e.GetEndian().PutUint64(headerTableData[pos+56:], entsize)
+			pos += 64
+		} else {
+			e.GetEndian().PutUint32(headerTableData[pos:], nameOffset)
+			e.GetEndian().PutUint32(headerTableData[pos+4:], section.Type)
+			e.GetEndian().PutUint32(headerTableData[pos+8:], uint32(section.Flags))
+			e.GetEndian().PutUint32(headerTableData[pos+12:], uint32(section.Address))
+			e.GetEndian().PutUint32(headerTableData[pos+16:], uint32(section.Offset))
+			e.GetEndian().PutUint32(headerTableData[pos+20:], uint32(section.Size))
+			e.GetEndian().PutUint32(headerTableData[pos+24:], section.Link)
+			e.GetEndian().PutUint32(headerTableData[pos+28:], section.Info)
+			e.GetEndian().PutUint32(headerTableData[pos+32:], uint32(section.Alignment))
+			e.GetEndian().PutUint32(headerTableData[pos+36:], uint32(entsize))
+			pos += 40
+		}
+	}
+
+	// Rimuovi la vecchia tabella delle intestazioni e la vecchia shstrtab
+	// e tronca il file alla fine dei dati delle sezioni.
+	e.RawData = e.RawData[:maxOffset]
+
+	// Aggiungi padding per l'allineamento della .shstrtab
+	paddingSize := shstrtabSection.Offset - int64(len(e.RawData))
+	if paddingSize > 0 {
+		e.RawData = append(e.RawData, make([]byte, paddingSize)...)
+	}
+
+	// Aggiungi la nuova .shstrtab
+	e.RawData = append(e.RawData, shstrtabData...)
+
+	// Aggiungi padding per l'allineamento della SHT
+	paddingSize = newSHTOffset - int64(len(e.RawData))
+	if paddingSize > 0 {
+		e.RawData = append(e.RawData, make([]byte, paddingSize)...)
+	}
+
+	// Aggiungi la nuova tabella delle intestazioni
+	e.RawData = append(e.RawData, headerTableData...)
+
+	// Aggiorna l'offset della tabella nell'header ELF
+	shoffPos, _, _ := e.getHeaderPositions()
+	if shoffPos >= 0 {
+		if e.Is64Bit {
+			e.GetEndian().PutUint64(e.RawData[shoffPos:shoffPos+8], uint64(newSHTOffset))
+		} else {
+			e.GetEndian().PutUint32(e.RawData[shoffPos:shoffPos+4], uint32(newSHTOffset))
+		}
+		fmt.Printf("🔧 Rebuilt section header table at offset 0x%X (size: %d bytes)\n", newSHTOffset, totalHeaderTableSize)
+	}
+
+	return nil
 }

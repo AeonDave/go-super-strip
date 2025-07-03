@@ -105,8 +105,21 @@ func ObfuscateELF(filePath string, force bool) *common.OperationResult {
 	}
 
 	result := elfFile.ObfuscateAll(force)
-	if result.Applied && elfFile.Save(true, int64(len(elfFile.RawData))) != nil {
-		return common.NewSkipped("Obfuscation succeeded but failed to save file")
+	if result.Applied {
+		// First try to save with updating headers
+		saveErr := elfFile.Save(true, int64(len(elfFile.RawData)))
+		if saveErr != nil {
+			fmt.Printf("⚠️ Warning: Failed to save with headers: %v\n", saveErr)
+
+			// Try to save without updating headers
+			saveErr = elfFile.Save(false, int64(len(elfFile.RawData)))
+			if saveErr != nil {
+				fmt.Printf("⚠️ Warning: Failed to save without headers: %v\n", saveErr)
+
+				// If both attempts fail, return the error
+				return common.NewSkipped("Obfuscation succeeded but failed to save file")
+			}
+		}
 	}
 
 	return result

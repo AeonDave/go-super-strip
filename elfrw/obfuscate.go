@@ -48,14 +48,25 @@ func (e *ELFFile) getELFOffsets() elfOffsets {
 
 // readValue reads a value from the ELF file at the given offset
 func (e *ELFFile) readValue(offset int, is64bit bool) uint64 {
+	// Add bounds checking to prevent panics
+	if offset < 0 {
+		return 0
+	}
+
 	endian := e.GetEndian()
 	if is64bit {
+		if offset+8 > len(e.RawData) {
+			return 0
+		}
 		if endian == binary.LittleEndian {
 			return binary.LittleEndian.Uint64(e.RawData[offset : offset+8])
 		}
 		return binary.BigEndian.Uint64(e.RawData[offset : offset+8])
 	}
 
+	if offset+4 > len(e.RawData) {
+		return 0
+	}
 	if endian == binary.LittleEndian {
 		return uint64(binary.LittleEndian.Uint32(e.RawData[offset : offset+4]))
 	}
@@ -64,6 +75,11 @@ func (e *ELFFile) readValue(offset int, is64bit bool) uint64 {
 
 // readValue16 reads a 16-bit value from the ELF file
 func (e *ELFFile) readValue16(offset int) uint16 {
+	// Add bounds checking to prevent panics
+	if offset < 0 || offset+2 > len(e.RawData) {
+		return 0
+	}
+
 	endian := e.GetEndian()
 	if endian == binary.LittleEndian {
 		return binary.LittleEndian.Uint16(e.RawData[offset : offset+2])
@@ -352,8 +368,20 @@ func getPAddrOffset(is64bit bool) uint64 {
 
 // writeValue writes a value to the ELF file
 func (e *ELFFile) writeValue(offset, value uint64, is64bit bool) error {
+	// Add bounds checking to prevent panics
+	if offset >= uint64(len(e.RawData)) {
+		return fmt.Errorf("offset out of range: %d", offset)
+	}
+
 	if is64bit {
+		if offset+8 > uint64(len(e.RawData)) {
+			return fmt.Errorf("offset+size out of range: %d+8", offset)
+		}
 		return WriteAtOffset(e.RawData, int64(offset), value, e.GetEndian())
+	}
+
+	if offset+4 > uint64(len(e.RawData)) {
+		return fmt.Errorf("offset+size out of range: %d+4", offset)
 	}
 	return WriteAtOffset(e.RawData, int64(offset), uint32(value), e.GetEndian())
 }
@@ -562,9 +590,6 @@ func (e *ELFFile) ObfuscateAll(force bool) *common.OperationResult {
 		return common.NewSkipped(fmt.Sprintf("ELF validation failed: %v", err))
 	}
 
-	// Check if this is a Go binary BEFORE any obfuscation
-	isGoBinary := e.isGoBinary()
-
 	if result := e.ObfuscateSectionNames(); result != nil && result.Applied {
 		operations = append(operations, result.Message)
 		totalCount += result.Count
@@ -585,17 +610,13 @@ func (e *ELFFile) ObfuscateAll(force bool) *common.OperationResult {
 		totalCount += result.Count
 	}
 
-	if force {
-		if isGoBinary {
-			operations = append(operations, "⚠️ skipping base address randomization for Go binary (would break runtime)")
-		} else {
-			if result := e.ObfuscateBaseAddresses(); result != nil && result.Applied {
-				message := fmt.Sprintf("⚠️ %s (risky)", result.Message)
-				operations = append(operations, message)
-				totalCount += result.Count
-			}
-		}
-	}
+	//if force {
+	//	if result := e.ObfuscateBaseAddresses(); result != nil && result.Applied {
+	//		message := fmt.Sprintf("⚠️ %s (risky)", result.Message)
+	//		operations = append(operations, message)
+	//		totalCount += result.Count
+	//	}
+	//}
 
 	if len(operations) == 0 {
 		return common.NewSkipped("no obfuscation operations applied")
