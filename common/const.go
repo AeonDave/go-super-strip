@@ -1,0 +1,71 @@
+package common
+
+var SuspiciousSectionNames = []string{
+	// UPX packer related
+	"upx0", "upx1", "upx2", "upx3", "upx!",
+
+	// Generic packing/compression terms
+	"packed", "packer", "aspack", "adata",
+	"compressed",
+	"encrypt", "encoded",
+	"obfus",
+
+	// Known packers and protectors
+	"petite",
+	"mew",
+	"fsg!",
+	"themida", "winlicen",
+	"vprotect", "vmprotect",
+	"enigma1", "enigma2",
+	"obsidium",
+	"armadillo",
+	"rlpack",
+	"pepack",
+	"procrypt",
+	"svkp",
+	"shrink1", "shrink2", "shrink3",
+	"nsp0", "nsp1", "nsp2",
+	"mpress1", "mpress2",
+	"neolite", "neolit",
+	"pebundle", "pec2to", "pecompact2", "pec1", "pec3", "pec4", "pec5", "pec6", "pec2mo",
+	"pelocknt",
+	"perplex",
+	"peshield",
+	"upack", "bydwing",
+	"wwpack", "wwp32",
+	"yp", "y0da",
+	"bitarts",
+	"dastub",
+	"epack", "!epack",
+	"kkrunchy",
+	"maskpe",
+	"rcryptor", "rpcrypt",
+	"seau",
+	"sforce3",
+	"_winzip_",
+
+	// Generic suspicious names
+	"stub",
+	"loader",
+	"inject",
+	"shell",
+	"payload",
+	"hook",
+	"keylog",
+
+	// Other known suspicious/uncommon names
+	"boom",
+	"ccg",
+	"charmve", "pinclie",
+	"ecode", "edata",
+	"gentee",
+	"imrsiv",
+	"lz32.dll",
+	"mackt",
+	"mnbvcx1", "mnbvcx2",
+	"profile",
+	"rmnet",
+	"spack",
+	"taz",
+	"tsuarch", "tsustub",
+}

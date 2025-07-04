@@ -4,12 +4,49 @@ import (
 	"crypto/rand"
 	"fmt"
 	"math"
-	"regexp"
+	"os"
 	"strings"
-	"unicode"
 )
 
-// CalculateStringEntropy calcola l'entropia di Shannon di una stringa
+const (
+	ColorRed    = "\033[91m"
+	ColorYellow = "\033[93m"
+	ColorGreen  = "\033[92m"
+	ColorReset  = "\033[0m"
+
+	SymbolCheck = "✅"
+	SymbolCross = "❌"
+	SymbolWarn  = "⚠️"
+	SymbolInfo  = "ℹ️"
+)
+
+func OpenFile(filePath string, flags int) (*os.File, error) {
+	file, err := os.OpenFile(filePath, flags, 0755)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open file: %w", err)
+	}
+	return file, nil
+}
+
+func CalculateEntropy(data []byte) float64 {
+	if len(data) == 0 {
+		return 0.0
+	}
+	freq := make([]int, 256)
+	for _, b := range data {
+		freq[b]++
+	}
+	entropy := 0.0
+	length := float64(len(data))
+	for _, count := range freq {
+		if count > 0 {
+			p := float64(count) / length
+			entropy -= p * math.Log2(p)
+		}
+	}
+	return entropy
+}
+
 func CalculateStringEntropy(s string) float64 {
 	if len(s) == 0 {
 		return 0.0
@@ -27,71 +64,6 @@ func CalculateStringEntropy(s string) float64 {
 	return entropy
 }
 
-// IsPureNumeric controlla se una stringa è composta principalmente da numeri
-func IsPureNumeric(s string) bool {
-	if len(s) == 0 {
-		return false
-	}
-	digitCount := 0
-	for _, r := range s {
-		if unicode.IsDigit(r) {
-			digitCount++
-		}
-	}
-	return float64(digitCount)/float64(len(s)) > 0.8
-}
-
-// IsRepetitivePattern rileva pattern ripetitivi in una stringa
-func IsRepetitivePattern(s string) bool {
-	if len(s) < 8 {
-		return false
-	}
-	// Check for repeated substrings
-	for i := 1; i <= len(s)/3; i++ {
-		substr := s[:i]
-		repeated := true
-		for j := i; j+i <= len(s); j += i {
-			if s[j:j+i] != substr {
-				repeated = false
-				break
-			}
-		}
-		if repeated {
-			return true
-		}
-	}
-	// Check for single character repetition
-	charCounts := make(map[rune]int)
-	for _, r := range s {
-		charCounts[r]++
-	}
-	for _, count := range charCounts {
-		if count > len(s)/2 {
-			return true
-		}
-	}
-	return false
-}
-
-// IsBase64Like verifica se una stringa sembra base64 (ma non decodifica)
-func IsBase64Like(s string) bool {
-	if len(s)%4 != 0 {
-		return false
-	}
-	base64Pattern := regexp.MustCompile(`^[A-Za-z0-9+/]*={0,2}$`)
-	return base64Pattern.MatchString(s)
-}
-
-// IsHexStringStrict verifica se una stringa è una sequenza esadecimale (versione aggiornata, usata per analisi stringhe)
-func IsHexStringStrict(s string) bool {
-	if len(s)%2 != 0 {
-		return false
-	}
-	hexPattern := regexp.MustCompile(`^[0-9A-Fa-f]+$`)
-	return hexPattern.MatchString(s)
-}
-
-// FormatFileAge converte giorni in formato leggibile (anni, mesi, giorni)
 func FormatFileAge(totalDays float64) string {
 	years := int(totalDays) / 365
 	months := (int(totalDays) % 365) / 30
@@ -112,7 +84,6 @@ func FormatFileAge(totalDays float64) string {
 	return strings.Join(parts[:len(parts)-1], ", ") + " and " + parts[len(parts)-1]
 }
 
-// GenerateRandomBytes generates a slice of random bytes of the specified size
 func GenerateRandomBytes(size int) ([]byte, error) {
 	b := make([]byte, size)
 	_, err := rand.Read(b)
@@ -122,7 +93,6 @@ func GenerateRandomBytes(size int) ([]byte, error) {
 	return b, nil
 }
 
-// MatchesPattern checks if a string matches any of the given exact names or prefixes
 func MatchesPattern(target string, exactNames, prefixNames []string) bool {
 	// Check exact matches
 	for _, name := range exactNames {
@@ -140,20 +110,6 @@ func MatchesPattern(target string, exactNames, prefixNames []string) bool {
 	return false
 }
 
-// Color and symbol constants (shared)
-const (
-	ColorRed    = "\033[91m"
-	ColorYellow = "\033[93m"
-	ColorGreen  = "\033[92m"
-	ColorReset  = "\033[0m"
-
-	SymbolCheck = "✅"
-	SymbolCross = "❌"
-	SymbolWarn  = "⚠️"
-	SymbolInfo  = "ℹ️"
-)
-
-// FormatFileSize returns a human-readable file size string
 func FormatFileSize(size int64) string {
 	if size < 1024 {
 		return fmt.Sprintf("%d B", size)
@@ -164,7 +120,6 @@ func FormatFileSize(size int64) string {
 	}
 }
 
-// FormatPermissions returns a string representing section permissions
 func FormatPermissions(exec, read, write bool) string {
 	perm := ""
 	if read {
@@ -185,7 +140,6 @@ func FormatPermissions(exec, read, write bool) string {
 	return perm
 }
 
-// GetEntropyColor returns a color code based on entropy value
 func GetEntropyColor(entropy float64) string {
 	if entropy > 7.5 {
 		return ColorRed // Red
@@ -196,10 +150,45 @@ func GetEntropyColor(entropy float64) string {
 	}
 }
 
-// TruncateString truncates a string to maxLen, adding ... if needed
 func TruncateString(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
 	}
 	return s[:maxLen-3] + "..."
+}
+
+func ZeroFillData(data []byte) {
+	for i := range data {
+		data[i] = 0
+	}
+}
+
+func RandomFillData(data []byte) error {
+	if _, err := rand.Read(data); err != nil {
+		return err
+	}
+	return nil
+}
+
+func FirstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func AlignUp(value, alignment uint32) uint32 {
+	if alignment == 0 {
+		return value
+	}
+	return ((value + alignment - 1) / alignment) * alignment
+}
+
+func AlignUp64(value, alignment int64) int64 {
+	if alignment <= 0 {
+		return value
+	}
+	return ((value + alignment - 1) / alignment) * alignment
 }

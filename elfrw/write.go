@@ -3,667 +3,304 @@ package elfrw
 import (
 	"encoding/binary"
 	"fmt"
-	"gosstrip/common"
 	"io"
-	"os"
 )
 
-func (e *ELFFile) ModifyHeaders(newSize uint64) error {
-	shoffPos, shNumPos, shStrNdxPos := e.getHeaderPositions()
-	sectionHeaderOffset := e.getSectionHeaderOffset(shoffPos)
-
-	if sectionHeaderOffset >= newSize {
-		if err := e.clearSectionHeaders(shoffPos, shNumPos, shStrNdxPos); err != nil {
-			return err
-		}
-	} else if err := e.UpdateSectionHeaders(); err != nil {
-		return err
+func WriteAtOffset(rawData []byte, offset int64, value interface{}, endian binary.ByteOrder) error {
+	if offset < 0 {
+		return fmt.Errorf("offset out of range: %d", offset)
 	}
-
-	for i := uint16(0); i < e.ELF.GetSegmentCount(); i++ {
-		if err := e.updateProgramHeader(i, newSize); err != nil {
-			return err
+	var size int
+	switch v := value.(type) {
+	case int64:
+		size = 8
+		if int(offset)+size > len(rawData) {
+			return fmt.Errorf("offset out of range: %d", offset)
 		}
+		endian.PutUint64(rawData[int(offset):int(offset)+size], uint64(v))
+	case uint16:
+		size = 2
+		if int(offset)+size > len(rawData) {
+			return fmt.Errorf("offset out of range: %d", offset)
+		}
+		endian.PutUint16(rawData[int(offset):int(offset)+size], v)
+	case uint32:
+		size = 4
+		if int(offset)+size > len(rawData) {
+			return fmt.Errorf("offset out of range: %d", offset)
+		}
+		endian.PutUint32(rawData[int(offset):int(offset)+size], v)
+	case uint64:
+		size = 8
+		if int(offset)+size > len(rawData) {
+			return fmt.Errorf("offset out of range: %d", offset)
+		}
+		endian.PutUint64(rawData[int(offset):int(offset)+size], v)
+	case uint8:
+		size = 1
+		if int(offset)+size > len(rawData) {
+			return fmt.Errorf("offset out of range: %d", offset)
+		}
+		rawData[int(offset)] = v
+	case []byte:
+		size = len(v)
+		if int(offset)+size > len(rawData) {
+			return fmt.Errorf("offset out of range: %d", offset)
+		}
+		copy(rawData[int(offset):int(offset)+size], v)
+	default:
+		return fmt.Errorf("unsupported type: %T", value)
 	}
 	return nil
 }
 
-func (e *ELFFile) UpdateRawData() error {
-	if err := e.UpdateSectionHeaders(); err != nil {
+func (e *ELFFile) Save(updateHeaders bool, newSize int64) error {
+	if e.File == nil {
+		return fmt.Errorf("invalid file reference")
+	}
+	if newSize > 0 && int64(len(e.RawData)) > newSize {
+		e.RawData = e.RawData[:newSize]
+	}
+	if e.usedFallbackMode {
+		if _, err := e.File.Seek(0, io.SeekStart); err != nil {
+			return fmt.Errorf("failed to reposition file: %w", err)
+		}
+		if _, err := e.File.Write(e.RawData); err != nil {
+			return fmt.Errorf("failed to write changes to disk: %w", err)
+		}
+		return nil
+	}
+	if updateHeaders {
+		if err := e.modifyHeaders(uint64(len(e.RawData))); err != nil {
+			fmt.Printf("⚠️ Warning: Failed to update headers: %v\n", err)
+		}
+	}
+	if err := e.writeRawData(); err != nil {
 		return err
 	}
-	return e.UpdateProgramHeaders()
+	if err := e.truncateFile(); err != nil {
+		fmt.Printf("⚠️ Warning: Failed to truncate file: %v\n", err)
+	}
+	return nil
 }
 
-func (e *ELFFile) CommitChanges(newSize uint64) error {
-	if err := e.ModifyHeaders(newSize); err != nil {
-		return fmt.Errorf("failed to modify headers: %w", err)
+func (e *ELFFile) getProgramHeaderPosition(index uint16) (uint64, error) {
+	// Ensure we have enough data to read the header
+	minSize := elf64E_phentsize_offset + 2
+	if len(e.RawData) < minSize {
+		return 0, fmt.Errorf("file too small to read program header info")
 	}
+
+	if e.Is64Bit {
+		// Check if we have enough data to read a 64-bit offset
+		if len(e.RawData) < elf64E_phoff_offset+8 {
+			return 0, fmt.Errorf("file too small to read 64-bit program header offset")
+		}
+		phOffset := e.readUint64(elf64E_phoff_offset)
+
+		// Validate the program header offset
+		if phOffset == 0 || phOffset >= uint64(len(e.RawData)) {
+			return 0, fmt.Errorf("invalid program header offset: %d", phOffset)
+		}
+
+		entrySize := uint64(e.readUint16(elf64E_phentsize_offset))
+		if entrySize == 0 {
+			return 0, fmt.Errorf("invalid program header entry size: 0")
+		}
+
+		// Check for potential overflow
+		if phOffset > uint64(len(e.RawData)) || uint64(index) > (uint64(len(e.RawData))-phOffset)/entrySize {
+			return 0, fmt.Errorf("program header index out of range: %d", index)
+		}
+
+		return phOffset + uint64(index)*entrySize, nil
+	}
+
+	// 32-bit ELF
+	if len(e.RawData) < elf32E_phoff_offset+4 {
+		return 0, fmt.Errorf("file too small to read 32-bit program header offset")
+	}
+
+	offset := uint64(e.readUint32(elf32E_phoff_offset))
+	if offset == 0 || offset >= uint64(len(e.RawData)) {
+		return 0, fmt.Errorf("invalid program header offset: %d", offset)
+	}
+
+	entrySize := uint64(e.readUint16(elf32E_phentsize_offset))
+	if entrySize == 0 {
+		return 0, fmt.Errorf("invalid program header entry size: 0")
+	}
+
+	// Check for potential overflow
+	if offset > uint64(len(e.RawData)) || uint64(index) > (uint64(len(e.RawData))-offset)/entrySize {
+		return 0, fmt.Errorf("program header index out of range: %d", index)
+	}
+
+	return offset + uint64(index)*entrySize, nil
+}
+
+func (e *ELFFile) writeAtOffset(pos int, value interface{}) error {
+	return WriteAtOffset(e.RawData, int64(pos), value, e.getEndian())
+}
+
+func (e *ELFFile) writeValue(offset, value uint64, is64bit bool) error {
+	// Add bounds checking to prevent panics
+	if offset >= uint64(len(e.RawData)) {
+		return fmt.Errorf("offset out of range: %d", offset)
+	}
+
+	if is64bit {
+		if offset+8 > uint64(len(e.RawData)) {
+			return fmt.Errorf("offset+size out of range: %d+8", offset)
+		}
+		return WriteAtOffset(e.RawData, int64(offset), value, e.getEndian())
+	}
+
+	if offset+4 > uint64(len(e.RawData)) {
+		return fmt.Errorf("offset+size out of range: %d+4", offset)
+	}
+	return WriteAtOffset(e.RawData, int64(offset), uint32(value), e.getEndian())
+}
+
+func (e *ELFFile) writeRawData() error {
 	if _, err := e.File.Seek(0, io.SeekStart); err != nil {
 		return fmt.Errorf("failed to reposition file: %w", err)
 	}
-	if _, err := e.File.Write(e.RawData[:newSize]); err != nil {
-		return fmt.Errorf("failed to write to file: %w", err)
+	if _, err := e.File.Write(e.RawData); err != nil {
+		return fmt.Errorf("failed to write changes to disk: %w", err)
 	}
-	if err := e.File.Truncate(int64(newSize)); err != nil {
+	return nil
+}
+
+func (e *ELFFile) writeProgramHeaderOffsets(pos, offset, size uint64) error {
+	if e.Is64Bit {
+		if err := e.writeAtOffset(int(pos+elf64P_offset), offset); err != nil {
+			return err
+		}
+		return e.writeAtOffset(int(pos+elf64P_filesz), size)
+	}
+	// 32-bit
+	if err := e.writeAtOffset(int(pos+elf32P_offset), uint32(offset)); err != nil {
+		return err
+	}
+	return e.writeAtOffset(int(pos+elf32P_filesz), uint32(size))
+}
+
+func (e *ELFFile) truncateFile() error {
+	if err := e.File.Truncate(int64(len(e.RawData))); err != nil {
 		return fmt.Errorf("failed to resize file: %w", err)
 	}
 	return nil
 }
 
 func (e *ELFFile) updateProgramHeader(index uint16, newSize uint64) error {
-	phdr, err := e.ELF.GetProgramHeader(index)
+	header, err := e.ELF.GetProgramHeader(index)
 	if err != nil {
 		return fmt.Errorf("failed to read program header %d: %w", index, err)
 	}
+	headerOffset, headerSize := header.GetFileOffset(), header.GetFileSize()
 
-	phdrOffset, phdrFileSize := phdr.GetFileOffset(), phdr.GetFileSize()
-	phdrPos := e.getProgramHeaderPosition(index)
+	pos, err := e.getProgramHeaderPosition(index)
+	if err != nil {
+		// If we can't get the position, just skip this header
+		return nil
+	}
 
-	if phdrOffset >= newSize {
-		return e.writeProgramHeaderOffsets(phdrPos, newSize, 0)
-	} else if phdrOffset+phdrFileSize > newSize {
-		newFileSize := newSize - phdrOffset
-		return e.writeProgramHeaderOffsets(phdrPos, phdrOffset, newFileSize)
+	if headerOffset >= newSize {
+		return e.writeProgramHeaderOffsets(pos, newSize, 0)
+	} else if headerOffset+headerSize > newSize {
+		newFileSize := newSize - headerOffset
+		return e.writeProgramHeaderOffsets(pos, headerOffset, newFileSize)
 	}
 	return nil
 }
 
-func (e *ELFFile) getProgramHeaderPosition(index uint16) uint64 {
-	if e.Is64Bit {
-		phoff := e.readUint64(32)
-		entsize := uint64(e.readUint16(54))
-		return phoff + uint64(index)*entsize
-	}
-	// 32-bit ELF
-	phoff32 := uint64(e.readUint32(28))
-	entsize32 := uint64(e.readUint16(42))
-	return phoff32 + uint64(index)*entsize32
-}
+func (e *ELFFile) updateSectionHeaders() error {
+	shoffPos, _, _ := e.getHeaderPositions()
 
-func (e *ELFFile) writeProgramHeaderOffsets(pos, offset, size uint64) error {
-	if e.Is64Bit {
-		if err := e.writeAtOffset(int(pos+8), offset); err != nil {
-			return err
-		}
-		return e.writeAtOffset(int(pos+32), size)
+	// Ensure we have enough data to read the section header offset
+	if shoffPos < 0 || (e.Is64Bit && shoffPos+8 > len(e.RawData)) || (!e.Is64Bit && shoffPos+4 > len(e.RawData)) {
+		// If we can't read the section header offset, just skip updating section headers
+		return nil
 	}
-	// 32-bit: p_offset at +4, p_filesz at +16
-	if err := e.writeAtOffset(int(pos+4), uint32(offset)); err != nil {
-		return err
-	}
-	return e.writeAtOffset(int(pos+16), uint32(size))
-}
 
-func (e *ELFFile) UpdateSectionHeaders() error {
-	shoffPos, _, _ := e.getHeaderPositions() // Extract only the first value
-	sectionHeaderOffset := e.getSectionHeaderOffset(shoffPos)
+	sectionHeaderOffset, err := e.getSectionHeaderOffset(shoffPos)
+	if err != nil {
+		// If we can't get the section header offset, just skip updating section headers
+		return nil
+	}
+
 	if sectionHeaderOffset == 0 {
 		return nil
 	}
 
-	var entrySize uint64
+	// Ensure we have enough data to read the section header entry size
+	entrySize := uint64(0)
 	if e.Is64Bit {
-		entrySize = uint64(e.readUint16(58))
+		if elf64E_shentsize_offset+2 > len(e.RawData) {
+			return nil
+		}
+		entrySize = uint64(e.readUint16(elf64E_shentsize_offset))
 	} else {
-		entrySize = uint64(e.readUint16(46))
+		if elf32E_shentsize_offset+2 > len(e.RawData) {
+			return nil
+		}
+		entrySize = uint64(e.readUint16(elf32E_shentsize_offset))
 	}
+
+	if entrySize == 0 {
+		return nil
+	}
+
 	for i, section := range e.Sections {
 		pos := sectionHeaderOffset + uint64(i)*entrySize
-		if err := e.writeAtOffset(int(pos+24), section.Offset); err != nil {
-			return err
-		}
-		if err := e.writeAtOffset(int(pos+32), section.Size); err != nil {
-			return err
-		}
-	}
-	return nil
-}
 
-func (e *ELFFile) UpdateProgramHeaders() error {
-	var phoff, entsize uint64
-	if e.Is64Bit {
-		phoff = e.readUint64(32)
-		entsize = uint64(e.readUint16(54))
-	} else {
-		phoff = uint64(e.readUint32(28))
-		entsize = uint64(e.readUint16(42))
-	}
-	for i, segment := range e.Segments {
-		pos := phoff + uint64(i)*entsize
-		if e.Is64Bit {
-			if err := e.writeAtOffset(int(pos+8), segment.Offset); err != nil {
-				return err
-			}
-			if err := e.writeAtOffset(int(pos+32), segment.Size); err != nil {
-				return err
-			}
-		} else {
-			if err := e.writeAtOffset(int(pos+4), uint32(segment.Offset)); err != nil {
-				return err
-			}
-			if err := e.writeAtOffset(int(pos+16), uint32(segment.Size)); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-// WriteAtOffset writes a value to RawData at a specific offset with the given endianness.
-func WriteAtOffset(rawData []byte, offset uint64, endian binary.ByteOrder, value any) error {
-	var size int
-	switch value.(type) {
-	case uint16:
-		size = 2
-	case uint32:
-		size = 4
-	case uint64:
-		size = 8
-	default:
-		return fmt.Errorf("unsupported type: %T", value)
-	}
-
-	// Check for integer overflow in the offset calculation
-	if offset > uint64(len(rawData)) {
-		return fmt.Errorf("offset too large: %d (file size: %d)", offset, len(rawData))
-	}
-
-	// Check if we have enough space to write
-	if int(offset)+size > len(rawData) {
-		return fmt.Errorf("write would exceed buffer limits: offset %d + size %d > length %d",
-			offset, size, len(rawData))
-	}
-
-	buf := make([]byte, size)
-	switch v := value.(type) {
-	case uint16:
-		endian.PutUint16(buf, v)
-	case uint32:
-		endian.PutUint32(buf, v)
-	case uint64:
-		endian.PutUint64(buf, v)
-	}
-	copy(rawData[offset:offset+uint64(size)], buf)
-	return nil
-}
-
-// AddSection adds a new section to the ELF file with content from the specified file
-func (e *ELFFile) AddSection(sectionName string, contentFilePath string) error {
-	// Read content from file
-	content, err := os.ReadFile(contentFilePath)
-	if err != nil {
-		return fmt.Errorf("failed to read content file: %w", err)
-	}
-
-	// Validate that we can add sections
-	if err := e.validateForSectionAddition(); err != nil {
-		return fmt.Errorf("cannot add section: %w", err)
-	}
-
-	// Calculate alignment (typically 16 bytes for data sections)
-	alignment := uint64(16)
-	contentSize := uint64(len(content))
-	alignedSize := (contentSize + alignment - 1) &^ (alignment - 1)
-
-	// Find appropriate location for new section data
-	newDataOffset := e.findSectionDataLocation()
-
-	// Pad content to alignment
-	paddedContent := make([]byte, alignedSize)
-	copy(paddedContent, content)
-
-	// Create new section metadata
-	newSection := Section{
-		Name:   sectionName,
-		Offset: newDataOffset,
-		Size:   contentSize,
-		Type:   1, // SHT_PROGBITS
-		Flags:  2, // SHF_ALLOC
-		Index:  uint16(len(e.Sections)),
-	}
-
-	// Update string table with new section name
-	if err := e.addSectionNameToStringTable(sectionName); err != nil {
-		return fmt.Errorf("failed to update string table: %w", err)
-	}
-
-	// Add section to list
-	e.Sections = append(e.Sections, newSection)
-
-	// Expand file to accommodate new data
-	if newDataOffset+alignedSize > uint64(len(e.RawData)) {
-		newSize := newDataOffset + alignedSize
-		expandedData := make([]byte, newSize)
-		copy(expandedData, e.RawData)
-		e.RawData = expandedData
-	}
-
-	// Write section content
-	copy(e.RawData[newDataOffset:newDataOffset+contentSize], content)
-	// Update section headers in the file
-	if err := e.rebuildSectionHeaders(); err != nil {
-		return fmt.Errorf("failed to rebuild section headers: %w", err)
-	}
-
-	// Clear the name offsets cache
-	e.clearNameOffsetCache()
-
-	return nil
-}
-
-// validateForSectionAddition checks if we can safely add a section
-func (e *ELFFile) validateForSectionAddition() error {
-	if len(e.RawData) < 64 {
-		return fmt.Errorf("file too small to be valid ELF")
-	}
-
-	// Check if we have section headers
-	offsets := e.getELFOffsets()
-	shoff := e.readValue(offsets.shOff, e.Is64Bit)
-	shnum := e.readValue16(offsets.shNum)
-
-	if shoff == 0 || shnum == 0 {
-		return fmt.Errorf("file has no section headers - cannot add sections")
-	}
-
-	// Check if section header string table exists
-	shstrndx := e.readValue16(offsets.shStrNdx)
-	if shstrndx >= shnum {
-		return fmt.Errorf("invalid section header string table index")
-	}
-
-	return nil
-}
-
-// findSectionDataLocation finds appropriate location for new section data
-func (e *ELFFile) findSectionDataLocation() uint64 {
-	// Find the end of the last section data
-	maxEnd := uint64(0)
-	for _, section := range e.Sections {
-		if section.Type != 8 { // Skip SHT_NOBITS sections
-			sectionEnd := section.Offset + section.Size
-			if sectionEnd > maxEnd {
-				maxEnd = sectionEnd
-			}
-		}
-	}
-
-	// Align to 16-byte boundary
-	alignment := uint64(16)
-	return (maxEnd + alignment - 1) &^ (alignment - 1)
-}
-
-// addSectionNameToStringTable adds a section name to .shstrtab
-func (e *ELFFile) addSectionNameToStringTable(sectionName string) error {
-	offsets := e.getELFOffsets()
-	shstrndx := e.readValue16(offsets.shStrNdx)
-
-	if int(shstrndx) >= len(e.Sections) {
-		return fmt.Errorf("invalid section header string table index")
-	}
-
-	strtabSection := &e.Sections[shstrndx]
-	if strtabSection.Offset == 0 {
-		return fmt.Errorf("section header string table is empty")
-	}
-
-	// Check if section name already exists in current string table
-	if strtabSection.Size > 0 {
-		_, err := e.findStringInTable(sectionName, strtabSection)
-		if err == nil {
-			return nil // Already exists, no need to add
-		}
-	}
-
-	// Rebuild the entire string table with all section names including the new one
-	return e.rebuildStringTableWithNewName(sectionName, shstrndx)
-}
-
-// findStringInTable searches for a string in the given string table section
-func (e *ELFFile) findStringInTable(searchName string, strtabSection *Section) (uint32, error) {
-	if strtabSection.Size == 0 {
-		return 0, fmt.Errorf("string table is empty")
-	}
-
-	// Handle empty string specially - it should always be at offset 0
-	if searchName == "" {
-		return 0, nil
-	}
-
-	stringTable := e.RawData[strtabSection.Offset : strtabSection.Offset+strtabSection.Size]
-	nameBytes := []byte(searchName)
-
-	for i := uint32(0); i < uint32(len(stringTable)); i++ {
-		// Check if we have enough space for the string at this position
-		if i+uint32(len(nameBytes)) > uint32(len(stringTable)) {
+		// Ensure the position is within the file
+		if pos >= uint64(len(e.RawData)) {
 			continue
 		}
 
-		// Check if the string matches at this position
-		if string(stringTable[i:i+uint32(len(nameBytes))]) == searchName {
-			// Check if this is a proper string termination
-			endPos := i + uint32(len(nameBytes))
-			if endPos == uint32(len(stringTable)) || stringTable[endPos] == 0 {
-				return i, nil
+		if e.Is64Bit {
+			// Ensure we have enough data to write the offset and size
+			if int(pos+elf64S_offset+8) > len(e.RawData) || int(pos+elf64S_size+8) > len(e.RawData) {
+				continue
+			}
+
+			if err := e.writeAtOffset(int(pos+elf64S_offset), section.Offset); err != nil {
+				continue
+			}
+			if err := e.writeAtOffset(int(pos+elf64S_size), section.Size); err != nil {
+				continue
+			}
+		} else {
+			// Ensure we have enough data to write the offset and size
+			if int(pos+elf32S_offset+4) > len(e.RawData) || int(pos+elf32S_size+4) > len(e.RawData) {
+				continue
+			}
+
+			if err := e.writeAtOffset(int(pos+elf32S_offset), uint32(section.Offset)); err != nil {
+				continue
+			}
+			if err := e.writeAtOffset(int(pos+elf32S_size), uint32(section.Size)); err != nil {
+				continue
 			}
 		}
 	}
-
-	return 0, fmt.Errorf("string not found in table")
-}
-
-// rebuildStringTableWithNewName rebuilds the entire string table with all existing names plus a new one
-func (e *ELFFile) rebuildStringTableWithNewName(newName string, shstrndx uint16) error {
-	// Collect all existing section names
-	nameSet := make(map[string]bool)
-	for _, section := range e.Sections {
-		if section.Name != "" {
-			nameSet[section.Name] = true
-		}
-	}
-
-	// Add the new section name
-	nameSet[newName] = true
-
-	// Build new string table
-	var newTable []byte
-	newTable = append(newTable, 0) // Start with null byte for empty names
-
-	nameOffsets := make(map[string]uint32)
-	nameOffsets[""] = 0 // Empty name at offset 0
-
-	// Add all unique names to the string table
-	for name := range nameSet {
-		nameOffsets[name] = uint32(len(newTable))
-		newTable = append(newTable, []byte(name)...)
-		newTable = append(newTable, 0) // null terminator
-	}
-
-	// Find location for new string table at end of file
-	newOffset := e.findSectionDataLocation()
-	newTableSize := uint64(len(newTable))
-
-	// Expand file if necessary
-	if newOffset+newTableSize > uint64(len(e.RawData)) {
-		newSize := newOffset + newTableSize
-		expandedData := make([]byte, newSize)
-		copy(expandedData, e.RawData)
-		e.RawData = expandedData
-	}
-
-	// Write new string table
-	copy(e.RawData[newOffset:newOffset+newTableSize], newTable)
-
-	// Update string table section metadata
-	strtabSection := &e.Sections[shstrndx]
-	strtabSection.Offset = newOffset
-	strtabSection.Size = newTableSize
-
-	// Store the name offset mapping for quick lookup during section header writing
-	e.nameOffsets = nameOffsets
-
 	return nil
 }
 
-// rebuildSectionHeaders rebuilds the section header table
-func (e *ELFFile) rebuildSectionHeaders() error {
-	// Calculate section header entry size
-	var shentsize uint64
-	if e.Is64Bit {
-		shentsize = 64 // 64-bit section header size
-	} else {
-		shentsize = 40 // 32-bit section header size
-	}
-
-	// Calculate total size needed for section headers
-	totalHeaderSize := uint64(len(e.Sections)) * shentsize
-
-	// Find location for section headers (at end of file)
-	headerOffset := e.findSectionHeaderLocation()
-
-	// Expand file if necessary
-	if headerOffset+totalHeaderSize > uint64(len(e.RawData)) {
-		newSize := headerOffset + totalHeaderSize
-		expandedData := make([]byte, newSize)
-		copy(expandedData, e.RawData)
-		e.RawData = expandedData
-	}
-
-	// Write section headers
-	for i, section := range e.Sections {
-		headerPos := headerOffset + uint64(i)*shentsize
-		if err := e.writeSectionHeader(section, headerPos); err != nil {
-			return fmt.Errorf("failed to write section header %d: %w", i, err)
-		}
-	}
-
-	// Update ELF header with new section info
-	if err := e.updateELFHeaderSectionInfo(headerOffset, uint16(len(e.Sections))); err != nil {
-		return fmt.Errorf("failed to update ELF header: %w", err)
-	}
-
-	return nil
-}
-
-// findSectionHeaderLocation finds appropriate location for section headers
-func (e *ELFFile) findSectionHeaderLocation() uint64 {
-	// Place section headers at the end of file, aligned to 8 bytes
-	alignment := uint64(8)
-	fileEnd := uint64(len(e.RawData))
-	return (fileEnd + alignment - 1) &^ (alignment - 1)
-}
-
-// writeSectionHeader writes a single section header
-func (e *ELFFile) writeSectionHeader(section Section, offset uint64) error {
-	// Get string table offset for section name
-	nameOffset, err := e.getSectionNameOffset(section.Name)
-	if err != nil {
-		return fmt.Errorf("failed to get name offset: %w", err)
-	}
-
-	endian := e.GetEndian()
-
-	if e.Is64Bit {
-		// 64-bit section header
-		if offset+64 > uint64(len(e.RawData)) {
-			return fmt.Errorf("section header would exceed file bounds")
-		}
-
-		endian.PutUint32(e.RawData[offset:offset+4], nameOffset)         // sh_name
-		endian.PutUint32(e.RawData[offset+4:offset+8], section.Type)     // sh_type
-		endian.PutUint64(e.RawData[offset+8:offset+16], section.Flags)   // sh_flags
-		endian.PutUint64(e.RawData[offset+16:offset+24], 0)              // sh_addr
-		endian.PutUint64(e.RawData[offset+24:offset+32], section.Offset) // sh_offset
-		endian.PutUint64(e.RawData[offset+32:offset+40], section.Size)   // sh_size
-		endian.PutUint32(e.RawData[offset+40:offset+44], 0)              // sh_link
-		endian.PutUint32(e.RawData[offset+44:offset+48], 0)              // sh_info
-		endian.PutUint64(e.RawData[offset+48:offset+56], 1)              // sh_addralign
-		endian.PutUint64(e.RawData[offset+56:offset+64], 0)              // sh_entsize
-	} else {
-		// 32-bit section header
-		if offset+40 > uint64(len(e.RawData)) {
-			return fmt.Errorf("section header would exceed file bounds")
-		}
-
-		endian.PutUint32(e.RawData[offset:offset+4], nameOffset)                 // sh_name
-		endian.PutUint32(e.RawData[offset+4:offset+8], section.Type)             // sh_type
-		endian.PutUint32(e.RawData[offset+8:offset+12], uint32(section.Flags))   // sh_flags
-		endian.PutUint32(e.RawData[offset+12:offset+16], 0)                      // sh_addr
-		endian.PutUint32(e.RawData[offset+16:offset+20], uint32(section.Offset)) // sh_offset
-		endian.PutUint32(e.RawData[offset+20:offset+24], uint32(section.Size))   // sh_size
-		endian.PutUint32(e.RawData[offset+24:offset+28], 0)                      // sh_link
-		endian.PutUint32(e.RawData[offset+28:offset+32], 0)                      // sh_info
-		endian.PutUint32(e.RawData[offset+32:offset+36], 1)                      // sh_addralign
-		endian.PutUint32(e.RawData[offset+36:offset+40], 0)                      // sh_entsize
-	}
-
-	return nil
-}
-
-// getSectionNameOffset finds the offset of a section name in .shstrtab
-func (e *ELFFile) getSectionNameOffset(sectionName string) (uint32, error) {
-	// Use cached name offsets if available (set during string table rebuilding)
-	if e.nameOffsets != nil {
-		if offset, exists := e.nameOffsets[sectionName]; exists {
-			return offset, nil
-		}
-	}
-
-	// Fallback to searching in the current string table
-	offsets := e.getELFOffsets()
-	shstrndx := e.readValue16(offsets.shStrNdx)
-
-	if int(shstrndx) >= len(e.Sections) {
-		return 0, fmt.Errorf("invalid string table index")
-	}
-
-	strtabSection := e.Sections[shstrndx]
-	return e.findStringInTable(sectionName, &strtabSection)
-}
-
-// updateELFHeaderSectionInfo updates section-related fields in ELF header
-func (e *ELFFile) updateELFHeaderSectionInfo(shoff uint64, shnum uint16) error {
-	offsets := e.getELFOffsets()
-
-	// Update e_shoff
-	if err := e.writeValueAtOffset(offsets.shOff, shoff, e.Is64Bit); err != nil {
-		return fmt.Errorf("failed to update e_shoff: %w", err)
-	}
-
-	// Update e_shnum
-	if err := e.writeValue16AtOffset(offsets.shNum, shnum); err != nil {
-		return fmt.Errorf("failed to update e_shnum: %w", err)
-	}
-
-	return nil
-}
-
-// Helper functions for writing values
-func (e *ELFFile) writeValueAtOffset(offset int, value uint64, is64bit bool) error {
-	endian := e.GetEndian()
-	if is64bit {
-		if offset+8 > len(e.RawData) {
-			return fmt.Errorf("write would exceed file bounds")
-		}
-		endian.PutUint64(e.RawData[offset:offset+8], value)
-	} else {
-		if offset+4 > len(e.RawData) {
-			return fmt.Errorf("write would exceed file bounds")
-		}
-		endian.PutUint32(e.RawData[offset:offset+4], uint32(value))
-	}
-	return nil
-}
-
-func (e *ELFFile) writeValue16AtOffset(offset int, value uint16) error {
-	if offset+2 > len(e.RawData) {
-		return fmt.Errorf("write would exceed file bounds")
-	}
-	endian := e.GetEndian()
-	endian.PutUint16(e.RawData[offset:offset+2], value)
-	return nil
-}
-
-// clearNameOffsetCache clears the cached string table offsets
 func (e *ELFFile) clearNameOffsetCache() {
 	e.nameOffsets = nil
 }
 
-// AnalyzeELF provides detailed analysis of ELF file structure
-
-// AddHexSection adds a new section to the ELF file with hex-encoded content from the specified file
-// If password is provided, the hex data is encrypted with AES-256-GCM before storage
-func (e *ELFFile) AddHexSection(sectionName string, contentFilePath string, password string) error {
-	var finalContent []byte
-	var encrypted bool
-	var err error
-
-	if password != "" {
-		// Use common crypto functions for processing with password
-		finalContent, err = common.ProcessFileForInsertion(contentFilePath, password)
-		if err != nil {
-			return fmt.Errorf("failed to process file with encryption: %w", err)
+func (e *ELFFile) modifyHeaders(newSize uint64) error {
+	if err := e.updateSectionHeaders(); err != nil {
+		return err
+	}
+	for i := uint16(0); i < uint16(len(e.Segments)); i++ {
+		if err := e.updateProgramHeader(i, newSize); err != nil {
+			return err
 		}
-		encrypted = true
-	} else {
-		// No password - just convert to hex
-		finalContent, err = common.FileToHex(contentFilePath)
-		if err != nil {
-			return fmt.Errorf("failed to convert file to hex: %w", err)
-		}
-		encrypted = false
 	}
-
-	// Now proceed with the normal section addition logic using finalContent
-	return e.addSectionWithContent(sectionName, finalContent, encrypted)
-}
-
-// addSectionWithContent adds a section with the provided raw content
-func (e *ELFFile) addSectionWithContent(sectionName string, content []byte, encrypted bool) error {
-	// Validate that we can add sections
-	if err := e.validateForSectionAddition(); err != nil {
-		return fmt.Errorf("cannot add section: %w", err)
-	}
-
-	// Calculate alignment (typically 16 bytes for data sections)
-	alignment := uint64(16)
-	contentSize := uint64(len(content))
-	alignedSize := (contentSize + alignment - 1) &^ (alignment - 1)
-
-	// Find appropriate location for new section data
-	newDataOffset := e.findSectionDataLocation()
-
-	// Pad content to alignment
-	paddedContent := make([]byte, alignedSize)
-	copy(paddedContent, content)
-
-	// Create new section metadata
-	newSection := Section{
-		Name:   sectionName,
-		Offset: newDataOffset,
-		Size:   contentSize,
-		Type:   1, // SHT_PROGBITS
-		Flags:  2, // SHF_ALLOC
-		Index:  uint16(len(e.Sections)),
-	}
-
-	// Update string table with new section name
-	if err := e.addSectionNameToStringTable(sectionName); err != nil {
-		return fmt.Errorf("failed to update string table: %w", err)
-	}
-
-	// Add section to list
-	e.Sections = append(e.Sections, newSection)
-
-	// Rebuild section headers
-	if err := e.rebuildSectionHeaders(); err != nil {
-		return fmt.Errorf("failed to rebuild section headers: %w", err)
-	}
-
-	// Clear the name offsets cache
-	e.clearNameOffsetCache()
-
-	// Extend raw data if necessary and write new section data
-	requiredSize := newDataOffset + alignedSize
-	if requiredSize > uint64(len(e.RawData)) {
-		newRawData := make([]byte, requiredSize)
-		copy(newRawData, e.RawData)
-		e.RawData = newRawData
-	}
-
-	// Write section content
-	copy(e.RawData[newDataOffset:newDataOffset+contentSize], content)
-
-	// Zero-fill padding
-	for i := newDataOffset + contentSize; i < newDataOffset+alignedSize; i++ {
-		e.RawData[i] = 0
-	}
-
-	fmt.Printf("Hex section '%s' added successfully", sectionName)
-	if encrypted {
-		fmt.Printf(" (encrypted)")
-	}
-	fmt.Printf("\n")
 	return nil
 }

@@ -6,48 +6,39 @@ import (
 	"io"
 )
 
-// WriteAtOffset writes a value to rawData at a specific offset, ensuring bounds and endianness.
-// WriteAtOffset: scrive un valore in rawData a un offset specifico (endianness little)
 func WriteAtOffset(rawData []byte, offset int64, value interface{}) error {
-	size := 0
 	switch v := value.(type) {
 	case uint32:
-		size = 4
-		if int(offset)+size > len(rawData) {
+		if int(offset)+4 > len(rawData) {
 			return fmt.Errorf("offset out of range: %d", offset)
 		}
-		binary.LittleEndian.PutUint32(rawData[int(offset):int(offset)+size], v)
+		binary.LittleEndian.PutUint32(rawData[int(offset):int(offset)+4], v)
 	case uint64:
-		size = 8
-		if int(offset)+size > len(rawData) {
+		if int(offset)+8 > len(rawData) {
 			return fmt.Errorf("offset out of range: %d", offset)
 		}
-		binary.LittleEndian.PutUint64(rawData[int(offset):int(offset)+size], v)
+		binary.LittleEndian.PutUint64(rawData[int(offset):int(offset)+8], v)
 	case uint16:
-		size = 2
-		if int(offset)+size > len(rawData) {
+		if int(offset)+2 > len(rawData) {
 			return fmt.Errorf("offset out of range: %d", offset)
 		}
-		binary.LittleEndian.PutUint16(rawData[int(offset):int(offset)+size], v)
+		binary.LittleEndian.PutUint16(rawData[int(offset):int(offset)+2], v)
 	case uint8:
 		if int(offset) >= len(rawData) {
 			return fmt.Errorf("offset out of range: %d", offset)
 		}
 		rawData[int(offset)] = v
 	case []byte:
-		size = len(v)
-		if int(offset)+size > len(rawData) {
+		if int(offset)+len(v) > len(rawData) {
 			return fmt.Errorf("offset out of range: %d", offset)
 		}
-		copy(rawData[int(offset):int(offset)+size], v)
+		copy(rawData[int(offset):int(offset)+len(v)], v)
 	default:
 		return fmt.Errorf("unsupported type: %T", value)
 	}
 	return nil
 }
 
-// Save writes RawData to the file with optional header updates and truncation
-// Save: salva RawData su file, aggiorna header e tronca se richiesto
 func (p *PEFile) Save(updateHeaders bool, newSize int64) error {
 	if p.File == nil {
 		return fmt.Errorf("invalid file reference")
@@ -57,97 +48,67 @@ func (p *PEFile) Save(updateHeaders bool, newSize int64) error {
 		p.RawData = p.RawData[:newSize]
 	}
 
-	if updateHeaders {
-		if err := p.updateHeadersAtomic(); err != nil {
-			return err
-		}
+	if updateHeaders && p.updateHeadersAtomic() != nil {
+		return fmt.Errorf("failed to update headers")
 	}
 
-	// For fallback mode (corrupted files), data was already written directly to file
-	// Skip all file operations to avoid corrupting the file
-	if p.usedFallbackMode {
-		return nil // Data was already appended directly, no further action needed
-	}
-
-	// Normal save process for regular files
-	if err := p.writeRawDataAtomic(); err != nil {
+	if err := p.writeRawData(); err != nil {
 		return err
 	}
-	if err := p.truncateFileAtomic(); err != nil {
-		return err
-	}
-	return nil
+	return p.truncateFile()
 }
 
-// updateHeadersAtomic updates all headers needed before saving
-// updateHeadersAtomic: aggiorna tutti gli header necessari prima del salvataggio
 func (p *PEFile) updateHeadersAtomic() error {
 	if err := p.UpdateCOFFHeader(); err != nil {
 		return fmt.Errorf("failed to update COFF header: %w", err)
 	}
-	// UpdateOptionalHeader intentionally skipped (see comment in Save)
 	return nil
 }
-
-// writeRawDataAtomic writes RawData to the file from the start
-// writeRawDataAtomic: scrive RawData su file dall'inizio
-func (p *PEFile) writeRawDataAtomic() error {
+func (p *PEFile) writeRawData() error {
 	if _, err := p.File.Seek(0, io.SeekStart); err != nil {
-		return fmt.Errorf("failed to reposition file: %w", err)
+		return fmt.Errorf("repositioning file failed: %w", err)
 	}
 	if _, err := p.File.Write(p.RawData); err != nil {
-		return fmt.Errorf("failed to write changes to disk: %w", err)
+		return fmt.Errorf("writing to disk failed: %w", err)
 	}
 	return nil
 }
 
-// truncateFileAtomic truncates the file to the length of RawData
-// truncateFileAtomic: tronca il file alla lunghezza di RawData
-func (p *PEFile) truncateFileAtomic() error {
+func (p *PEFile) truncateFile() error {
 	if err := p.File.Truncate(int64(len(p.RawData))); err != nil {
 		return fmt.Errorf("failed to resize file: %w", err)
 	}
 	return nil
 }
 
-// saveWithAppendOnly appends new data to the end of the file without rewriting the entire file
-// This is used for corrupted/packed files to avoid damaging their structure
 func (p *PEFile) saveWithAppendOnly() error {
-	// Read the current file to get its original size
 	currentInfo, err := p.File.Stat()
 	if err != nil {
 		return fmt.Errorf("failed to get file info: %w", err)
 	}
+
 	originalSize := currentInfo.Size()
+	if int64(len(p.RawData)) <= originalSize {
+		return nil
+	}
 
-	// Only append the new data that was added beyond the original file size
-	if int64(len(p.RawData)) > originalSize {
-		newData := p.RawData[originalSize:]
+	newData := p.RawData[originalSize:]
+	if _, err := p.File.Seek(0, io.SeekEnd); err != nil {
+		return fmt.Errorf("failed to seek to end of file: %w", err)
+	}
 
-		// Seek to the end of the file
-		if _, err := p.File.Seek(0, io.SeekEnd); err != nil {
-			return fmt.Errorf("failed to seek to end of file: %w", err)
-		}
-
-		// Append only the new data
-		if _, err := p.File.Write(newData); err != nil {
-			return fmt.Errorf("failed to append new data: %w", err)
-		}
+	if _, err := p.File.Write(newData); err != nil {
+		return fmt.Errorf("failed to append new data: %w", err)
 	}
 
 	return nil
 }
 
-// UpdateCOFFHeader updates the COFF header fields in RawData.
-// UpdateCOFFHeader: aggiorna il numero di sezioni nel COFF header
 func (p *PEFile) UpdateCOFFHeader() error {
 	if len(p.RawData) < 64 {
 		return fmt.Errorf("file too small for PE structure")
 	}
 
-	peHeaderOffset := int64(binary.LittleEndian.Uint32(p.RawData[60:64]))
-	coffHeaderOffset := peHeaderOffset + 4
-
-	numberOfSections := uint16(len(p.Sections))
-	return WriteAtOffset(p.RawData, coffHeaderOffset+2, numberOfSections)
+	coffHeaderOffset := int64(binary.LittleEndian.Uint32(p.RawData[60:64])) + 4
+	return WriteAtOffset(p.RawData, coffHeaderOffset+2, uint16(len(p.Sections)))
 }

@@ -6,291 +6,71 @@ import (
 	"os"
 )
 
+func readPe(filePath string, flags int) (*PEFile, error) {
+	file, err := common.OpenFile(filePath, flags)
+	if err != nil {
+		return nil, err
+	}
+	return ReadPE(file)
+}
+
+func processPE(filePath string, flags int, operation func(*PEFile) *common.OperationResult) *common.OperationResult {
+	peFile, err := readPe(filePath, flags)
+	if err != nil {
+		return common.NewSkipped(fmt.Sprintf("Failed to read PE file: %v", err))
+	}
+	defer func(peFile *PEFile) {
+		_ = peFile.Close()
+	}(peFile)
+
+	result := operation(peFile)
+	if result.Applied && peFile.Save(true, int64(len(peFile.RawData))) != nil {
+		return common.NewSkipped("Operation succeeded but failed to save file")
+	}
+
+	return result
+}
+
 func AnalyzePE(filePath string) error {
-	file, err := os.Open(filePath)
+	peFile, err := readPe(filePath, os.O_RDONLY)
 	if err != nil {
 		return err
 	}
-	defer func(file *os.File) {
-		_ = file.Close()
-	}(file)
-
-	peFile, err := ReadPE(file)
-	if err != nil {
-		return err
-	}
-
 	return peFile.Analyze()
 }
 
 func StripPE(filePath string, force bool) *common.OperationResult {
-	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
-	if err != nil {
-		return &common.OperationResult{
-			Applied: false,
-			Message: "Failed to open file: " + err.Error(),
-		}
-	}
-	defer func(file *os.File) {
-		_ = file.Close()
-	}(file)
-
-	peFile, err := ReadPE(file)
-	if err != nil {
-		return &common.OperationResult{
-			Applied: false,
-			Message: "Failed to read PE file: " + err.Error(),
-		}
-	}
-
-	result := peFile.AdvancedStripPEDetailed(force)
-
-	if result.Applied {
-		if err := peFile.Save(true, 0); err != nil {
-			return &common.OperationResult{
-				Applied: false,
-				Message: "Stripping succeeded but failed to save file: " + err.Error(),
-			}
-		}
-	}
-
-	return result
+	return processPE(filePath, os.O_RDWR, func(peFile *PEFile) *common.OperationResult {
+		return peFile.StripAll(force)
+	})
 }
 
-func CompactPE(filePath string) *common.OperationResult {
-	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
-	if err != nil {
-		return &common.OperationResult{
-			Applied: false,
-			Message: "Failed to open file: " + err.Error(),
-		}
-	}
-	defer func(file *os.File) {
-		_ = file.Close()
-	}(file)
-
-	peFile, err := ReadPE(file)
-	if err != nil {
-		return &common.OperationResult{
-			Applied: false,
-			Message: "Failed to read PE file: " + err.Error(),
-		}
-	}
-
-	result, _ := peFile.CompactPE()
-
-	if result.Applied {
-		if err := peFile.Save(true, 0); err != nil {
-			return &common.OperationResult{
-				Applied: false,
-				Message: "Compaction succeeded but failed to save file: " + err.Error(),
-			}
-		}
-	}
-
-	return result
+func CompactPE(filePath string, force bool) *common.OperationResult {
+	return processPE(filePath, os.O_RDWR, func(peFile *PEFile) *common.OperationResult {
+		return peFile.Compact(force)
+	})
 }
 
-func ObfuscateSectionNames(filePath string) *common.OperationResult {
-	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
-	if err != nil {
-		return &common.OperationResult{
-			Applied: false,
-			Message: "Failed to open file: " + err.Error(),
-		}
-	}
-	defer func(file *os.File) {
-		_ = file.Close()
-	}(file)
-
-	peFile, err := ReadPE(file)
-	if err != nil {
-		return &common.OperationResult{
-			Applied: false,
-			Message: "Failed to read PE file: " + err.Error(),
-		}
-	}
-
-	result := peFile.RandomizeSectionNames()
-
-	if result.Applied {
-		if err := peFile.Save(true, 0); err != nil {
-			return &common.OperationResult{
-				Applied: false,
-				Message: "Obfuscation succeeded but failed to save file: " + err.Error(),
-			}
-		}
-	}
-
-	return result
+func RegexPE(filePath string, regex string) *common.OperationResult {
+	return processPE(filePath, os.O_RDWR, func(peFile *PEFile) *common.OperationResult {
+		return peFile.StripSingleRegexRule(regex)
+	})
 }
 
-func ObfuscateBaseAddresses(filePath string) *common.OperationResult {
-	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
-	if err != nil {
-		return &common.OperationResult{
-			Applied: false,
-			Message: "Failed to open file: " + err.Error(),
-		}
-	}
-	defer func(file *os.File) {
-		_ = file.Close()
-	}(file)
-
-	peFile, err := ReadPE(file)
-	if err != nil {
-		return &common.OperationResult{
-			Applied: false,
-			Message: "Failed to read PE file: " + err.Error(),
-		}
-	}
-
-	result := peFile.ObfuscateBaseAddresses()
-
-	if result.Applied {
-		if err := peFile.Save(true, 0); err != nil {
-			return &common.OperationResult{
-				Applied: false,
-				Message: "Obfuscation succeeded but failed to save file: " + err.Error(),
-			}
-		}
-	}
-
-	return result
+func ObfuscatePE(filePath string, force bool) *common.OperationResult {
+	return processPE(filePath, os.O_RDWR, func(peFile *PEFile) *common.OperationResult {
+		return peFile.ObfuscateAll(force)
+	})
 }
 
-func ObfuscateRuntimeStrings(filePath string) *common.OperationResult {
-	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
-	if err != nil {
-		return &common.OperationResult{
-			Applied: false,
-			Message: "Failed to open file: " + err.Error(),
-		}
-	}
-	defer func(file *os.File) {
-		_ = file.Close()
-	}(file)
-
-	peFile, err := ReadPE(file)
-	if err != nil {
-		return &common.OperationResult{
-			Applied: false,
-			Message: "Failed to read PE file: " + err.Error(),
-		}
-	}
-
-	result := peFile.ObfuscateRuntimeStrings()
-
-	if result.Applied {
-		if err := peFile.Save(true, 0); err != nil {
-			return &common.OperationResult{
-				Applied: false,
-				Message: "Obfuscation succeeded but failed to save file: " + err.Error(),
-			}
-		}
-	}
-
-	return result
+func InsertPE(filePath, sectionName, dataOrFile, password string) *common.OperationResult {
+	return processPE(filePath, os.O_RDWR, func(peFile *PEFile) *common.OperationResult {
+		return peFile.AddHexSection(sectionName, dataOrFile, password)
+	})
 }
 
-func StripAllRegexRules(filePath string, force bool) *common.OperationResult {
-	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
-	if err != nil {
-		return &common.OperationResult{
-			Applied: false,
-			Message: "Failed to open file: " + err.Error(),
-		}
-	}
-	defer func(file *os.File) {
-		_ = file.Close()
-	}(file)
-
-	peFile, err := ReadPE(file)
-	if err != nil {
-		return &common.OperationResult{
-			Applied: false,
-			Message: "Failed to read PE file: " + err.Error(),
-		}
-	}
-
-	result := peFile.StripAllRegexRules(force)
-
-	if result.Applied {
-		if err := peFile.Save(true, 0); err != nil {
-			return &common.OperationResult{
-				Applied: false,
-				Message: "Regex stripping succeeded but failed to save file: " + err.Error(),
-			}
-		}
-	}
-
-	return result
-}
-
-func AddHexSection(filePath, sectionName, sourceFile, password string) *common.OperationResult {
-	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
-	}
-	defer func(file *os.File) {
-		_ = file.Close()
-	}(file)
-
-	peFile, err := ReadPE(file)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to read PE file: %v", err))
-	}
-
-	if err := peFile.AddHexSection(sectionName, sourceFile, password); err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to add hex section: %v", err))
-	}
-
-	// For fallback mode (corrupted files), data was already written directly to file
-	// Skip Save() to avoid any potential corruption
-	if !peFile.usedFallbackMode {
-		updateHeaders := true
-		if err := peFile.Save(updateHeaders, int64(len(peFile.RawData))); err != nil {
-			return common.NewSkipped(fmt.Sprintf("failed to write changes: %v", err))
-		}
-	}
-
-	message := fmt.Sprintf("added hex section '%s'", sectionName)
-	if password != "" {
-		message += " (encrypted)"
-	}
-	return common.NewApplied(message, 1)
-}
-
-func AddHexSectionFromString(filePath, sectionName, data, password string) *common.OperationResult {
-	file, err := os.OpenFile(filePath, os.O_RDWR, 0755)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to open file: %v", err))
-	}
-	defer func(file *os.File) {
-		_ = file.Close()
-	}(file)
-
-	peFile, err := ReadPE(file)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to read PE file: %v", err))
-	}
-
-	if err := peFile.AddHexSectionFromString(sectionName, data, password); err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to add hex section from string: %v", err))
-	}
-
-	// For fallback mode (corrupted files), data was already written directly to file
-	// Skip Save() to avoid any potential corruption
-	if !peFile.usedFallbackMode {
-		updateHeaders := true
-		if err := peFile.Save(updateHeaders, int64(len(peFile.RawData))); err != nil {
-			return common.NewSkipped(fmt.Sprintf("failed to write changes: %v", err))
-		}
-	}
-
-	message := fmt.Sprintf("added hex section '%s' from string data", sectionName)
-	if password != "" {
-		message += " (encrypted)"
-	}
-	return common.NewApplied(message, 1)
+func OverlayPE(filePath, dataOrFile, password string) *common.OperationResult {
+	return processPE(filePath, os.O_RDWR, func(peFile *PEFile) *common.OperationResult {
+		return peFile.AddOverlay(dataOrFile, password)
+	})
 }

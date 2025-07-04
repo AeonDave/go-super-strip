@@ -4,103 +4,9 @@ import (
 	"debug/pe"
 	"encoding/binary"
 	"fmt"
-	"math"
 	"strings"
 )
 
-func IsHighEntropyString(s string) bool {
-	if len(s) < 10 {
-		return false
-	}
-	charCount := make(map[rune]int)
-	for _, r := range s {
-		charCount[r]++
-	}
-	entropy := 0.0
-	length := float64(len(s))
-	for _, count := range charCount {
-		p := float64(count) / length
-		entropy -= p * math.Log2(p)
-	}
-	return entropy > 4.5 // High entropy threshold
-}
-
-func ContainsSuspiciousPattern(s string) bool {
-	suspiciousPatterns := []string{
-		"\\x", "0x", "%x", "\\u", "\\U",
-		"[\\", "\\]", "^_", "A\\A", "\\$",
-	}
-	for _, pattern := range suspiciousPatterns {
-		if strings.Contains(s, pattern) {
-			return true
-		}
-	}
-	return false
-}
-
-func ExtractSuspiciousStrings(data []byte, unicode bool) []string {
-	var results []string
-	var minLen = 8
-	var current []byte
-	for i := 0; i < len(data); i++ {
-		b := data[i]
-		if unicode {
-			if i+1 < len(data) && data[i+1] == 0 {
-				current = append(current, b)
-				i++
-			} else {
-				if len(current) >= minLen {
-					results = append(results, string(current))
-				}
-				current = nil
-			}
-		} else {
-			if b >= 32 && b <= 126 {
-				current = append(current, b)
-			} else {
-				if len(current) >= minLen {
-					results = append(results, string(current))
-				}
-				current = nil
-			}
-		}
-	}
-	if len(current) >= minLen {
-		results = append(results, string(current))
-	}
-	return results
-}
-
-func CountNonEmptyCategories(categories map[string][]string) int {
-	count := 0
-	for _, items := range categories {
-		if len(items) > 0 {
-			count++
-		}
-	}
-	return count
-}
-
-func CalculateEntropy(data []byte) float64 {
-	if len(data) == 0 {
-		return 0.0
-	}
-	freq := make([]int, 256)
-	for _, b := range data {
-		freq[b]++
-	}
-	entropy := 0.0
-	length := float64(len(data))
-	for _, count := range freq {
-		if count > 0 {
-			p := float64(count) / length
-			entropy -= p * math.Log2(p)
-		}
-	}
-	return entropy
-}
-
-// decodeSectionFlags returns human-readable section flags
 func (p *PEFile) decodeSectionFlags(flags uint32) string {
 	var flagStrs []string
 	if flags&pe.IMAGE_SCN_CNT_CODE != 0 {
@@ -218,14 +124,6 @@ func getSubsystemName(subsystem uint16) string {
 	default:
 		return "Unknown"
 	}
-}
-
-type PEOffsets struct {
-	ELfanew          int64
-	OptionalHeader   int64
-	FirstSectionHdr  int64
-	NumberOfSections int
-	OptionalHdrSize  int
 }
 
 func (p *PEFile) calculateOffsets() (*PEOffsets, error) {
@@ -379,7 +277,6 @@ func (p *PEFile) checkSectionFlag(index int, flag uint32) (bool, error) {
 	return flags&flag != 0, nil
 }
 
-// GetExecutableSections returns all executable sections
 func (p *PEFile) GetExecutableSections() []Section {
 	var execSections []Section
 	for _, section := range p.Sections {
@@ -410,7 +307,7 @@ func (p *PEFile) CalculatePhysicalFileSize() (uint64, error) {
 		return 0, fmt.Errorf("PE file not initialized")
 	}
 
-	maxSize := uint64(p.SizeOfHeaders())
+	maxSize := uint64(p.sizeOfHeaders)
 	for _, s := range p.Sections {
 		if s.Size > 0 {
 			end := uint64(s.Offset) + uint64(s.Size)
@@ -421,4 +318,25 @@ func (p *PEFile) CalculatePhysicalFileSize() (uint64, error) {
 	}
 
 	return maxSize, nil
+}
+
+func utf16le(s string) []byte {
+	u := make([]byte, len(s)*2)
+	for i, r := range s {
+		u[i*2] = byte(r)
+		u[i*2+1] = 0
+	}
+	return u
+}
+
+func readUtf16String(b []byte) string {
+	var runes []rune
+	for i := 0; i+1 < len(b); i += 2 {
+		r := rune(b[i]) | (rune(b[i+1]) << 8)
+		if r == 0 {
+			break
+		}
+		runes = append(runes, r)
+	}
+	return string(runes)
 }
