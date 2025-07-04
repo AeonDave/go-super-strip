@@ -106,7 +106,6 @@ type ELFFileMode struct {
 	usedFallbackMode bool
 }
 
-// ELF constants
 const (
 	SHT_NULL        = 0
 	SHT_PROGBITS    = 1
@@ -151,17 +150,8 @@ const (
 )
 
 const (
-	STB_LOCAL  = 0
-	STB_GLOBAL = 1
-	STB_WEAK   = 2
-)
-
-const (
-	STT_NOTYPE  = 0
-	STT_OBJECT  = 1
-	STT_FUNC    = 2
-	STT_SECTION = 3
-	STT_FILE    = 4
+	elf32ShdrSize = 40
+	elf64ShdrSize = 64
 )
 
 const (

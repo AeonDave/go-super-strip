@@ -100,7 +100,7 @@ func (e *ELFFile) IsLittleEndian() bool {
 	return e.RawData[5] == 0x01 // EI_DATA field, 1 for LSB
 }
 
-func (e *ELFFile) GetEndian() binary.ByteOrder {
+func (e *ELFFile) getEndian() binary.ByteOrder {
 	if e.IsLittleEndian() {
 		return binary.LittleEndian
 	}

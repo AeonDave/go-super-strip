@@ -305,7 +305,7 @@ func (e *ELFFile) writeSectionHeader(section Section, offset uint64) error {
 		return fmt.Errorf("failed to get name offset: %w", err)
 	}
 
-	endian := e.GetEndian()
+	endian := e.getEndian()
 
 	if e.Is64Bit {
 		// 64-bit section header
@@ -384,7 +384,7 @@ func (e *ELFFile) updateELFHeaderSectionInfo(shoff uint64, shnum uint16) error {
 
 // Helper functions for writing values
 func (e *ELFFile) writeValueAtOffset(offset int, value uint64, is64bit bool) error {
-	endian := e.GetEndian()
+	endian := e.getEndian()
 	if is64bit {
 		if offset+8 > len(e.RawData) {
 			return fmt.Errorf("write would exceed file bounds")
@@ -403,7 +403,7 @@ func (e *ELFFile) writeValue16AtOffset(offset int, value uint16) error {
 	if offset+2 > len(e.RawData) {
 		return fmt.Errorf("write would exceed file bounds")
 	}
-	endian := e.GetEndian()
+	endian := e.getEndian()
 	endian.PutUint16(e.RawData[offset:offset+2], value)
 	return nil
 }

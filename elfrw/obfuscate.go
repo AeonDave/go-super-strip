@@ -53,7 +53,7 @@ func (e *ELFFile) readValue(offset int, is64bit bool) uint64 {
 		return 0
 	}
 
-	endian := e.GetEndian()
+	endian := e.getEndian()
 	if is64bit {
 		if offset+8 > len(e.RawData) {
 			return 0
@@ -80,7 +80,7 @@ func (e *ELFFile) readValue16(offset int) uint16 {
 		return 0
 	}
 
-	endian := e.GetEndian()
+	endian := e.getEndian()
 	if endian == binary.LittleEndian {
 		return binary.LittleEndian.Uint16(e.RawData[offset : offset+2])
 	}
@@ -275,7 +275,7 @@ func (e *ELFFile) ObfuscateSectionNames() *common.OperationResult {
 		}
 
 		if newOffset, ok := nameOffsets[oldName]; ok {
-			if err := WriteAtOffset(e.RawData, int64(shdrOffset), newOffset, e.GetEndian()); err != nil {
+			if err := WriteAtOffset(e.RawData, int64(shdrOffset), newOffset, e.getEndian()); err != nil {
 				return common.NewSkipped(fmt.Sprintf("failed to write name offset: %v", err))
 			}
 		}
@@ -377,13 +377,13 @@ func (e *ELFFile) writeValue(offset, value uint64, is64bit bool) error {
 		if offset+8 > uint64(len(e.RawData)) {
 			return fmt.Errorf("offset+size out of range: %d+8", offset)
 		}
-		return WriteAtOffset(e.RawData, int64(offset), value, e.GetEndian())
+		return WriteAtOffset(e.RawData, int64(offset), value, e.getEndian())
 	}
 
 	if offset+4 > uint64(len(e.RawData)) {
 		return fmt.Errorf("offset+size out of range: %d+4", offset)
 	}
-	return WriteAtOffset(e.RawData, int64(offset), uint32(value), e.GetEndian())
+	return WriteAtOffset(e.RawData, int64(offset), uint32(value), e.getEndian())
 }
 
 // ObfuscateSectionPadding randomizes padding between sections

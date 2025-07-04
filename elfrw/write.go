@@ -55,7 +55,7 @@ func WriteAtOffset(rawData []byte, offset int64, value interface{}, endian binar
 }
 
 func (e *ELFFile) writeAtOffset(pos int, value interface{}) error {
-	return WriteAtOffset(e.RawData, int64(pos), value, e.GetEndian())
+	return WriteAtOffset(e.RawData, int64(pos), value, e.getEndian())
 }
 
 func (e *ELFFile) Save(updateHeaders bool, newSize int64) error {

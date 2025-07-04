@@ -163,10 +163,10 @@ func (e *ELFFile) parseBasicSectionsFromRaw() error {
 		if len(e.RawData) < shNumPos+2 {
 			return fmt.Errorf("file too small for 64-bit ELF header")
 		}
-		shOffset = e.GetEndian().Uint64(e.RawData[shOffPos : shOffPos+8])
-		shNum = e.GetEndian().Uint16(e.RawData[shNumPos : shNumPos+2])
-		shEntSize = e.GetEndian().Uint16(e.RawData[shEntSizePos : shEntSizePos+2])
-		shstrndx = e.GetEndian().Uint16(e.RawData[shstrndxPos : shstrndxPos+2])
+		shOffset = e.getEndian().Uint64(e.RawData[shOffPos : shOffPos+8])
+		shNum = e.getEndian().Uint16(e.RawData[shNumPos : shNumPos+2])
+		shEntSize = e.getEndian().Uint16(e.RawData[shEntSizePos : shEntSizePos+2])
+		shstrndx = e.getEndian().Uint16(e.RawData[shstrndxPos : shstrndxPos+2])
 	} else {
 		shOffPos = elf32E_shoff_offset
 		shNumPos = elf32E_shnum_offset
@@ -175,10 +175,10 @@ func (e *ELFFile) parseBasicSectionsFromRaw() error {
 		if len(e.RawData) < shNumPos+2 {
 			return fmt.Errorf("file too small for 32-bit ELF header")
 		}
-		shOffset = uint64(e.GetEndian().Uint32(e.RawData[shOffPos : shOffPos+4]))
-		shNum = e.GetEndian().Uint16(e.RawData[shNumPos : shNumPos+2])
-		shEntSize = e.GetEndian().Uint16(e.RawData[shEntSizePos : shEntSizePos+2])
-		shstrndx = e.GetEndian().Uint16(e.RawData[shstrndxPos : shstrndxPos+2])
+		shOffset = uint64(e.getEndian().Uint32(e.RawData[shOffPos : shOffPos+4]))
+		shNum = e.getEndian().Uint16(e.RawData[shNumPos : shNumPos+2])
+		shEntSize = e.getEndian().Uint16(e.RawData[shEntSizePos : shEntSizePos+2])
+		shstrndx = e.getEndian().Uint16(e.RawData[shstrndxPos : shstrndxPos+2])
 	}
 
 	if shNum == 0 || shEntSize == 0 {
@@ -221,37 +221,37 @@ func (e *ELFFile) parseBasicSectionsFromRaw() error {
 
 func (e *ELFFile) parseSectionOffsetAndSize(base uint64) (uint64, uint64) {
 	if e.Is64Bit {
-		off := e.GetEndian().Uint64(e.RawData[base+elf64S_offset : base+elf64S_offset+8])
-		sz := e.GetEndian().Uint64(e.RawData[base+elf64S_size : base+elf64S_size+8])
+		off := e.getEndian().Uint64(e.RawData[base+elf64S_offset : base+elf64S_offset+8])
+		sz := e.getEndian().Uint64(e.RawData[base+elf64S_size : base+elf64S_size+8])
 		return off, sz
 	}
-	off := uint64(e.GetEndian().Uint32(e.RawData[base+elf32S_offset : base+elf32S_offset+4]))
-	sz := uint64(e.GetEndian().Uint32(e.RawData[base+elf32S_size : base+elf32S_size+4]))
+	off := uint64(e.getEndian().Uint32(e.RawData[base+elf32S_offset : base+elf32S_offset+4]))
+	sz := uint64(e.getEndian().Uint32(e.RawData[base+elf32S_size : base+elf32S_size+4]))
 	return off, sz
 }
 
 func (e *ELFFile) parseSectionHeader(base uint64, index uint16, stringTableData []byte) Section {
-	nameOffset := uint64(e.GetEndian().Uint32(e.RawData[base : base+4]))
-	sectionType := e.GetEndian().Uint32(e.RawData[base+4 : base+8])
+	nameOffset := uint64(e.getEndian().Uint32(e.RawData[base : base+4]))
+	sectionType := e.getEndian().Uint32(e.RawData[base+4 : base+8])
 
 	var flags, address uint64
 	if e.Is64Bit {
-		flags = e.GetEndian().Uint64(e.RawData[base+8 : base+16])
-		address = e.GetEndian().Uint64(e.RawData[base+16 : base+24])
+		flags = e.getEndian().Uint64(e.RawData[base+8 : base+16])
+		address = e.getEndian().Uint64(e.RawData[base+16 : base+24])
 	} else {
-		flags = uint64(e.GetEndian().Uint32(e.RawData[base+8 : base+12]))
-		address = uint64(e.GetEndian().Uint32(e.RawData[base+12 : base+16]))
+		flags = uint64(e.getEndian().Uint32(e.RawData[base+8 : base+12]))
+		address = uint64(e.getEndian().Uint32(e.RawData[base+12 : base+16]))
 	}
 	offset, size := e.parseSectionOffsetAndSize(base)
 	var link, info, alignment uint64
 	if e.Is64Bit {
-		link = uint64(e.GetEndian().Uint32(e.RawData[base+40 : base+44]))
-		info = uint64(e.GetEndian().Uint32(e.RawData[base+44 : base+48]))
-		alignment = e.GetEndian().Uint64(e.RawData[base+48 : base+56])
+		link = uint64(e.getEndian().Uint32(e.RawData[base+40 : base+44]))
+		info = uint64(e.getEndian().Uint32(e.RawData[base+44 : base+48]))
+		alignment = e.getEndian().Uint64(e.RawData[base+48 : base+56])
 	} else {
-		link = uint64(e.GetEndian().Uint32(e.RawData[base+24 : base+28]))
-		info = uint64(e.GetEndian().Uint32(e.RawData[base+28 : base+32]))
-		alignment = uint64(e.GetEndian().Uint32(e.RawData[base+32 : base+36]))
+		link = uint64(e.getEndian().Uint32(e.RawData[base+24 : base+28]))
+		info = uint64(e.getEndian().Uint32(e.RawData[base+28 : base+32]))
+		alignment = uint64(e.getEndian().Uint32(e.RawData[base+32 : base+36]))
 	}
 	name := fmt.Sprintf("raw_section_%d", index)
 	if stringTableData != nil && nameOffset < uint64(len(stringTableData)) {
@@ -427,7 +427,7 @@ func (e *ELFFile) getMachineType() string {
 	if len(e.RawData) < 20 {
 		return "Unknown"
 	}
-	endian := e.GetEndian()
+	endian := e.getEndian()
 	machine := endian.Uint16(e.RawData[18:20])
 	switch machine {
 	case 0x3E:
