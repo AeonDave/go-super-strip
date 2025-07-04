@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"gosstrip/common"
+	"sort"
 	"strings"
 )
 
@@ -37,58 +38,59 @@ func getPAddrOffset(is64bit bool) uint64 {
 
 func (e *ELFFile) ObfuscateAll(force bool) *common.OperationResult {
 	originalSize := uint64(len(e.RawData))
-	var operations []string
 	totalCount := 0
+
+	// Create result object
+	result := common.NewApplied(fmt.Sprintf("%d bytes processed", originalSize), 0)
 
 	if err := e.validateELF(); err != nil {
 		return common.NewSkipped(fmt.Sprintf("ELF validation failed: %v", err))
 	}
 
-	if result := e.obfuscateSectionNames(); result != nil && result.Applied {
-		operations = append(operations, result.Message)
-		totalCount += result.Count
+	if sectionResult := e.obfuscateSectionNames(); sectionResult != nil && sectionResult.Applied {
+		// Add all details from the section result
+		for _, detail := range sectionResult.Details {
+			result.AddDetail(detail.Message, detail.Count, detail.IsRisky)
+		}
+		totalCount += sectionResult.Count
 	}
 
-	if result := e.obfuscateSectionPadding(); result != nil && result.Applied {
-		operations = append(operations, result.Message)
-		totalCount += result.Count
+	if paddingResult := e.obfuscateSectionPadding(); paddingResult != nil && paddingResult.Applied {
+		result.AddDetail(paddingResult.Message, paddingResult.Count, false)
+		totalCount += paddingResult.Count
 	}
 
-	if result := e.obfuscateRuntimeStrings(); result != nil && result.Applied {
-		operations = append(operations, result.Message)
-		totalCount += result.Count
+	if stringsResult := e.obfuscateRuntimeStrings(); stringsResult != nil && stringsResult.Applied {
+		result.AddDetail(stringsResult.Message, stringsResult.Count, false)
+		totalCount += stringsResult.Count
 	}
 
-	if result := e.obfuscateReservedHeaderFields(); result != nil && result.Applied {
-		operations = append(operations, result.Message)
-		totalCount += result.Count
+	if headerResult := e.obfuscateReservedHeaderFields(); headerResult != nil && headerResult.Applied {
+		result.AddDetail(headerResult.Message, headerResult.Count, false)
+		totalCount += headerResult.Count
 	}
 
 	//if force {
-	//	if result := e.obfuscateBaseAddresses(); result != nil && result.Applied {
-	//		message := fmt.Sprintf("⚠️ %s (risky)", result.Message)
-	//		operations = append(operations, message)
-	//		totalCount += result.Count
+	//	if baseResult := e.obfuscateBaseAddresses(); baseResult != nil && baseResult.Applied {
+	//		result.AddDetail(baseResult.Message, baseResult.Count, true)
+	//		totalCount += baseResult.Count
 	//	}
 	//}
 
-	if len(operations) == 0 {
+	if totalCount == 0 {
 		return common.NewSkipped("no obfuscation operations applied")
 	}
 
-	message := fmt.Sprintf("ELF obfuscation completed: %d bytes processed\n%s",
-		originalSize, e.formatObfuscationOperations(operations))
-
-	result := common.NewApplied(message, totalCount)
+	// Update the count and message
+	result.Count = totalCount
+	result.Message = fmt.Sprintf("%d operations applied", totalCount)
 
 	// Save the file with the changes
-	if result.Applied {
-		if saveErr := e.Save(true, int64(len(e.RawData))); saveErr != nil {
-			fmt.Printf("⚠️ Warning: Failed to save with headers: %v\n", saveErr)
-			if saveErr = e.Save(false, int64(len(e.RawData))); saveErr != nil {
-				fmt.Printf("⚠️ Warning: Failed to save without headers: %v\n", saveErr)
-				return common.NewSkipped("Obfuscation succeeded but failed to save file")
-			}
+	if saveErr := e.Save(true, int64(len(e.RawData))); saveErr != nil {
+		result.AddDetail(fmt.Sprintf("Failed to save with headers: %v", saveErr), 0, true)
+		if saveErr = e.Save(false, int64(len(e.RawData))); saveErr != nil {
+			result.AddDetail(fmt.Sprintf("Failed to save without headers: %v", saveErr), 0, true)
+			return common.NewSkipped("Obfuscation succeeded but failed to save file")
 		}
 	}
 
@@ -125,28 +127,12 @@ func (e *ELFFile) obfuscateSectionNames() *common.OperationResult {
 		return common.NewSkipped(fmt.Sprintf("ELF validation failed: %v", err))
 	}
 
-	offsets := e.getELFOffsets()
-
-	// Check if file has sections (UPX-packed files have e_shnum = 0)
-	shCount := e.readValue16(offsets.shNum)
-	if shCount == 0 || len(e.Sections) == 0 {
+	if len(e.Sections) == 0 {
 		return common.NewSkipped("no sections found to obfuscate")
 	}
 
-	shstrtabIndex := e.readValue16(offsets.shStrNdx)
-
-	shstrtabContent, err := e.ELF.GetSectionContent(shstrtabIndex)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to read string table: %v", err))
-	}
-
-	shstrtabHeader, err := e.ELF.GetSectionHeader(shstrtabIndex)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to read string table header: %v", err))
-	}
-
 	realisticNames := []string{
-		".text", ".data", ".rodata", ".bss", ".shstrtab", ".symtab",
+		".text", ".data", ".rodata", ".bss", ".tls", ".shstrtab", ".symtab",
 		".strtab", ".rela.text", ".rela.data", ".rela.rodata", ".rela.eh_frame",
 		".init", ".fini", ".eh_frame", ".note.ABI-tag", ".note.gnu.build-id",
 		".gnu.hash", ".dynsym", ".dynstr", ".gnu.version", ".gnu.version_r",
@@ -155,33 +141,27 @@ func (e *ELFFile) obfuscateSectionNames() *common.OperationResult {
 		".debug_abbrev", ".debug_line", ".debug_str", ".debug_loc", ".debug_ranges",
 		".tbss", ".tdata", ".ctors", ".dtors", ".preinit_array", ".gnu_debuglink",
 		".gnu.version_d", ".gnu.prelink_undo", ".gnu.conflict", ".gnu.liblist",
-		".gnu.attributes", ".gnu.lto_legacy", ".gnu.lto_legacy1", ".gnu.lto_legacy2",
-		".SUNW_sort", ".SUNW_signature", ".SUNW_cap", ".SUNW_move", ".SUNW_syminfo",
-		".SUNW_ldynsym", ".SUNW_dynsymsort", ".SUNW_dyntlssort", ".SUNW_dynstr",
-		".SUNW_bss", ".SUNW_COM", ".SUNW_versym", ".SUNW_verdef", ".SUNW_verneed",
-		".debug_frame", ".debug_pubnames", ".debug_pubtypes", ".debug_aranges",
-		".debug_macinfo", ".debug_line_str", ".debug_addr", ".debug_cu_index",
-		".debug_tu_index", ".debug_sup", ".debug_types", ".debug_macro",
+		".gnu.attributes", ".SUNW_signature", ".debug_frame", ".debug_pubnames",
+		".debug_pubtypes", ".debug_cu_index", ".debug_types",
 	}
 
-	// Build new string table
-	newShstrtab := []byte{0} // Start with null terminator
-	nameOffsets := make(map[string]uint32)
-	renamedSections := []string{}
+	var renamedSectionsLog []string
 	usedNames := make(map[string]bool)
 
 	for i := range e.Sections {
-		if e.Sections[i].Name == "" {
+		if e.Sections[i].Index == SHT_NULL {
 			continue
 		}
-
+		oldName := e.Sections[i].Name
+		if oldName == "" {
+			continue
+		}
 		var newName string
-		for attempts := 0; attempts < 10; attempts++ {
+		for attempts := 0; attempts < len(realisticNames); attempts++ {
 			randBytes, err := common.GenerateRandomBytes(1)
 			if err != nil {
 				return common.NewSkipped(fmt.Sprintf("failed to generate random index for section %d: %v", i, err))
 			}
-
 			candidateName := realisticNames[randBytes[0]%byte(len(realisticNames))]
 			if !usedNames[candidateName] {
 				newName = candidateName
@@ -189,8 +169,6 @@ func (e *ELFFile) obfuscateSectionNames() *common.OperationResult {
 				break
 			}
 		}
-
-		// If all realistic names are used, create a fallback name
 		if newName == "" {
 			randBytes, err := common.GenerateRandomBytes(5)
 			if err != nil {
@@ -199,56 +177,25 @@ func (e *ELFFile) obfuscateSectionNames() *common.OperationResult {
 			for j := range randBytes {
 				randBytes[j] = 'a' + (randBytes[j] % 26)
 			}
-			newName = "." + string(randBytes[:4+int(randBytes[4]%4)])
+			newName = "." + string(randBytes)
 		}
-
-		nameOffsets[e.Sections[i].Name] = uint32(len(newShstrtab))
-		newShstrtab = append(newShstrtab, []byte(newName)...)
-		newShstrtab = append(newShstrtab, 0)
-
-		renamedSections = append(renamedSections, fmt.Sprintf("%s→%s", e.Sections[i].Name, newName))
 		e.Sections[i].Name = newName
+		renamedSectionsLog = append(renamedSectionsLog, fmt.Sprintf("%s→%s", oldName, newName))
 	}
 
-	if len(renamedSections) == 0 {
-		return common.NewSkipped("no section names to obfuscate")
+	if len(renamedSectionsLog) == 0 {
+		return common.NewSkipped("no section names were changed")
 	}
-
-	// Update string table in file
-	shstrtabOffset := shstrtabHeader.GetFileOffset()
-	copy(e.RawData[shstrtabOffset:shstrtabOffset+uint64(len(newShstrtab))], newShstrtab)
-
-	// Zero remaining bytes if new table is smaller
-	if len(newShstrtab) < len(shstrtabContent) {
-		for i := len(newShstrtab); i < len(shstrtabContent); i++ {
-			e.RawData[shstrtabOffset+uint64(i)] = 0
-		}
+	if err := e.rebuildSectionHeaderTable(); err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to rebuild section header table after renaming: %v", err))
 	}
-
-	// Update section header name offsets
-	shOffset := e.readValue(offsets.shOff, e.Is64Bit)
-	shEntSize := e.readValue16(offsets.shEntSize)
-
-	for i := uint16(0); i < e.ELF.GetSectionCount(); i++ {
-		oldName, err := e.ELF.GetSectionName(i)
-		if err != nil {
-			continue
-		}
-
-		shdrOffset := shOffset + uint64(i)*uint64(shEntSize)
-		if shdrOffset >= uint64(len(e.RawData)) {
-			continue
-		}
-
-		if newOffset, ok := nameOffsets[oldName]; ok {
-			if err := WriteAtOffset(e.RawData, int64(shdrOffset), newOffset, e.getEndian()); err != nil {
-				return common.NewSkipped(fmt.Sprintf("failed to write name offset: %v", err))
-			}
-		}
+	e.clearNameOffsetCache()
+	result := common.NewApplied(fmt.Sprintf("renamed %d sections", len(renamedSectionsLog)), len(renamedSectionsLog))
+	result.SetCategory("SECTIONS")
+	for _, renamed := range renamedSectionsLog {
+		result.AddDetail(fmt.Sprintf("renamed section: %s", renamed), 1, false)
 	}
-
-	message := fmt.Sprintf("renamed %d sections: %s", len(renamedSections), strings.Join(renamedSections, ", "))
-	return common.NewApplied(message, len(renamedSections))
+	return result
 }
 
 func (e *ELFFile) obfuscateBaseAddresses() *common.OperationResult {
@@ -265,7 +212,7 @@ func (e *ELFFile) obfuscateBaseAddresses() *common.OperationResult {
 	phdrTableOffset := e.readValue(offsets.phOff, e.Is64Bit)
 	phdrEntrySize := e.readValue16(offsets.phEntSize)
 
-	modifiedSegments := []string{}
+	var modifiedSegments []string
 
 	// Update loadable segments
 	for i, segment := range e.Segments {
@@ -313,23 +260,49 @@ func (e *ELFFile) obfuscateBaseAddresses() *common.OperationResult {
 	}
 
 	message := fmt.Sprintf("randomized base addresses: %s", strings.Join(modifiedSegments, ", "))
-	return common.NewApplied(message, len(modifiedSegments))
+	result := common.NewApplied(message, len(modifiedSegments))
+	result.SetCategory("OTHER")
+	return result
 }
 
 func (e *ELFFile) obfuscateSectionPadding() *common.OperationResult {
 	paddingCount := 0
 
-	for i := 0; i < len(e.Sections)-1; i++ {
-		end := e.Sections[i].Offset + e.Sections[i].Size
-		next := e.Sections[i+1].Offset
+	// Sort sections by file offset to ensure correct gap identification
+	sections := make([]Section, len(e.Sections))
+	copy(sections, e.Sections)
+	sort.Slice(sections, func(i, j int) bool { return sections[i].Offset < sections[j].Offset })
 
-		if end < next && next-end < 0x10000 && end > 0 {
-			paddingSize := int(next - end)
+	for i := 0; i < len(sections)-1; i++ {
+		endOffset := sections[i].Offset + sections[i].Size
+		nextOffset := sections[i+1].Offset
+
+		if endOffset < nextOffset && nextOffset-endOffset < 0x10000 && endOffset > 0 {
+			// Skip gaps that overlap loadable segments
+			skip := false
+			for _, seg := range e.Segments {
+				if seg.Loadable {
+					segStart := int64(seg.Offset)
+					segEnd := segStart + int64(seg.FileSize)
+					if endOffset < segEnd && nextOffset > segStart {
+						skip = true
+						break
+					}
+				}
+			}
+			if skip {
+				continue
+			}
+
+			paddingSize := int(nextOffset - endOffset)
 			randomPadding, err := common.GenerateRandomBytes(paddingSize)
 			if err != nil {
 				return common.NewSkipped(fmt.Sprintf("failed to generate padding for section %d: %v", i, err))
 			}
-			copy(e.RawData[end:next], randomPadding)
+			// use int indices to slice RawData correctly
+			startIdx := int(endOffset)
+			endIdx := int(nextOffset)
+			copy(e.RawData[startIdx:endIdx], randomPadding)
 			paddingCount++
 		}
 	}
@@ -338,7 +311,9 @@ func (e *ELFFile) obfuscateSectionPadding() *common.OperationResult {
 		return common.NewSkipped("no section padding found to obfuscate")
 	}
 
-	return common.NewApplied(fmt.Sprintf("randomized padding in %d section gaps", paddingCount), paddingCount)
+	result := common.NewApplied(fmt.Sprintf("randomized padding in %d section gaps", paddingCount), paddingCount)
+	result.SetCategory("SECTIONS")
+	return result
 }
 
 func (e *ELFFile) obfuscateReservedHeaderFields() *common.OperationResult {
@@ -368,7 +343,9 @@ func (e *ELFFile) obfuscateReservedHeaderFields() *common.OperationResult {
 	}
 
 	message := fmt.Sprintf("obfuscated reserved header fields: %s", strings.Join(modifiedFields, ", "))
-	return common.NewApplied(message, len(modifiedFields))
+	result := common.NewApplied(message, len(modifiedFields))
+	result.SetCategory("OTHER")
+	return result
 }
 
 func (e *ELFFile) obfuscateRuntimeStrings() *common.OperationResult {
@@ -444,64 +421,9 @@ func (e *ELFFile) obfuscateRuntimeStrings() *common.OperationResult {
 	}
 
 	message := fmt.Sprintf("obfuscated %d string patterns in sections: %s", modifications, strings.Join(modifiedSections, ", "))
-	return common.NewApplied(message, modifications)
+	result := common.NewApplied(message, modifications)
+	result.SetCategory("PATTERNS")
+	return result
 }
 
-func (e *ELFFile) formatObfuscationOperations(operations []string) string {
-	if len(operations) == 0 {
-		return "No operations performed"
-	}
-
-	var result strings.Builder
-	grouped := map[string][]string{
-		"section": {},
-		"string":  {},
-		"other":   {},
-	}
-
-	for _, op := range operations {
-		switch {
-		case strings.Contains(op, "renamed") && strings.Contains(op, "sections"):
-			grouped["section"] = append(grouped["section"], op)
-		case strings.Contains(op, "obfuscated") && strings.Contains(op, "string"):
-			grouped["string"] = append(grouped["string"], op)
-		default:
-			grouped["other"] = append(grouped["other"], op)
-		}
-	}
-
-	if len(grouped["section"]) > 0 {
-		result.WriteString("📦 SECTION OBFUSCATION:\n")
-		for _, op := range grouped["section"] {
-			prefix := "   ✓ "
-			if strings.HasPrefix(op, "⚠️") {
-				prefix = "   "
-			}
-			result.WriteString(prefix + op + "\n")
-		}
-	}
-
-	if len(grouped["string"]) > 0 {
-		result.WriteString("🔤 STRING OBFUSCATION:\n")
-		for _, op := range grouped["string"] {
-			prefix := "   ✓ "
-			if strings.HasPrefix(op, "⚠️") {
-				prefix = "   "
-			}
-			result.WriteString(prefix + op + "\n")
-		}
-	}
-
-	if len(grouped["other"]) > 0 {
-		result.WriteString("🛠️  OTHER OBFUSCATION:\n")
-		for _, op := range grouped["other"] {
-			prefix := "   ✓ "
-			if strings.HasPrefix(op, "⚠️") {
-				prefix = "   "
-			}
-			result.WriteString(prefix + op + "\n")
-		}
-	}
-
-	return strings.TrimSuffix(result.String(), "\n")
-}
+// This function has been replaced by common.FormatOperationResult

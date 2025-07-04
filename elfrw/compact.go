@@ -23,9 +23,17 @@ func (e *ELFFile) Compact(force bool) *common.OperationResult {
 	removedNames := e.getRemovedSectionNames(removable)
 	totalRemoved := int64(0)
 
+	// Create result object
+	result := common.NewApplied("ELF Compaction", len(removable))
+	result.SetCategory("SECTIONS")
+
+	// Track warnings
+	var warnings []string
+
 	for _, idx := range removable {
 		if err := e.removeCompactSection(idx, &totalRemoved); err != nil {
-			fmt.Printf("⚠️  Warning: Failed to remove section %d (%s): %v\n", idx, e.Sections[idx].Name, err)
+			warning := fmt.Sprintf("Failed to remove section %d (%s): %v", idx, e.Sections[idx].Name, err)
+			warnings = append(warnings, warning)
 		}
 	}
 	e.updateSections(removable)
@@ -53,12 +61,23 @@ func (e *ELFFile) Compact(force bool) *common.OperationResult {
 
 	newSize := int64(len(e.RawData))
 	percent := float64(totalRemoved) / float64(originalSize) * 100
-	msg := fmt.Sprintf(
-		"removed %d sections: %s (%d -> %d bytes, %d bytes removed, %.1f%% reduction)",
-		len(removable), strings.Join(removedNames, ", "),
-		originalSize, newSize, totalRemoved, percent,
-	)
-	return common.NewApplied(msg, len(removable))
+
+	// Add details to result
+	for _, name := range removedNames {
+		result.AddDetail(fmt.Sprintf("removed section: %s", name), 1, false)
+	}
+	result.AddDetail(fmt.Sprintf("size reduced: %d -> %d bytes (%d bytes removed, %.1f%% reduction)",
+		originalSize, newSize, totalRemoved, percent), 1, false)
+
+	// Add any warnings
+	for _, warning := range warnings {
+		result.AddDetail(warning, 0, true)
+	}
+
+	// Update the main message
+	result.Message = fmt.Sprintf("removed %d sections", len(removable))
+
+	return result
 }
 
 func (e *ELFFile) getRemovedSectionNames(removable []int) []string {

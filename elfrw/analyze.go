@@ -50,7 +50,7 @@ func analyzeSectionAnomalies(sections []SectionInfo, fileSize int64) []string {
 		}
 
 		// Check for zero-sized sections
-		if s.Size == 0 {
+		if s.Size == 0 && i != SHT_NULL {
 			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' has zero size")
 		}
 
@@ -60,7 +60,7 @@ func analyzeSectionAnomalies(sections []SectionInfo, fileSize int64) []string {
 		}
 
 		// Check for empty or invalid section names
-		if len(s.Name) == 0 || s.Name == "\x00" {
+		if i != SHT_NULL && (len(s.Name) == 0 || s.Name == "\x00") {
 			issues = append(issues, common.SymbolWarn+" Section with empty or invalid name")
 		}
 

@@ -9,8 +9,8 @@ import (
 )
 
 func (e *ELFFile) StripAll(force bool) *common.OperationResult {
-	var operations []string
 	totalCount := 0
+	result := common.NewApplied(fmt.Sprintf("ELF strip completed: %d operations applied", 0), 0)
 
 	sectionRules := getSectionStripRule()
 	for sectionType, rule := range sectionRules {
@@ -21,30 +21,36 @@ func (e *ELFFile) StripAll(force bool) *common.OperationResult {
 		if (isSharedObject && !rule.StripForSO) || (!isSharedObject && !rule.StripForBIN) {
 			continue
 		}
-		result := e.stripSectionsByType(sectionType, rule.Fill == RandomFill)
-		if result != nil && result.Applied {
-			message := result.Message
-			if rule.IsRisky {
-				message = fmt.Sprintf("⚠️  %s (risky)", message)
-			}
-			operations = append(operations, message)
-			totalCount += result.Count
+		sectionResult := e.stripSectionsByType(sectionType, rule.Fill == RandomFill)
+		if sectionResult != nil && sectionResult.Applied {
+			result.AddDetail(sectionResult.Message, sectionResult.Count, rule.IsRisky)
+			totalCount += sectionResult.Count
 		}
 	}
+
 	if headersResult := e.stripAllHeaders(); headersResult != nil && headersResult.Applied {
-		operations = append(operations, headersResult.Message)
+		for _, detail := range headersResult.Details {
+			result.AddDetail(detail.Message, detail.Count, detail.IsRisky)
+		}
 		totalCount += headersResult.Count
 	}
+
 	if regexResult := e.stripAllRegexRules(force); regexResult != nil && regexResult.Applied {
-		operations = append(operations, regexResult.Message)
+		for _, detail := range regexResult.Details {
+			result.AddDetail(detail.Message, detail.Count, detail.IsRisky)
+		}
 		totalCount += regexResult.Count
 	}
+
 	if totalCount == 0 {
 		return common.NewSkipped("no stripping operations applied")
 	}
-	message := fmt.Sprintf("ELF strip completed: %d operations applied", totalCount)
-	message += "\n" + formatStripOperations(operations)
-	return common.NewApplied(message, totalCount)
+
+	// Update the message with the actual count
+	result.Message = fmt.Sprintf("%d operations applied", totalCount)
+	result.Count = totalCount
+
+	return result
 }
 
 func (e *ELFFile) fillRegion(offset uint64, size int, useRandom bool) error {
@@ -134,7 +140,9 @@ func (e *ELFFile) stripSectionsByType(sectionType SectionType, useRandom bool) *
 	}
 
 	message := fmt.Sprintf("stripped %s sections: %s", rule.Description, strings.Join(strippedSections, ", "))
-	return common.NewApplied(message, len(strippedSections))
+	result := common.NewApplied(message, len(strippedSections))
+	result.SetCategory("SECTIONS")
+	return result
 }
 
 func (e *ELFFile) StripByteRegex(pattern *regexp.Regexp, useRandom bool) (int, error) {
@@ -213,35 +221,36 @@ func (e *ELFFile) getSectionHeaderOffset(shoffPos int) (uint64, error) {
 }
 
 func (e *ELFFile) stripAllHeaders() *common.OperationResult {
-	var operations []string
 	totalCount := 0
+	result := common.NewApplied("Header strip completed", 0)
+	result.SetCategory("OTHER")
 
-	if result := e.stripELFHeaderFields(); result != nil && result.Applied {
-		operations = append(operations, result.Message)
-		totalCount += result.Count
+	if headerResult := e.stripELFHeaderFields(); headerResult != nil && headerResult.Applied {
+		result.AddDetail(headerResult.Message, headerResult.Count, false)
+		totalCount += headerResult.Count
 	}
 
-	if result := e.stripProgramHeaderTimestamps(); result != nil && result.Applied {
-		operations = append(operations, result.Message)
-		totalCount += result.Count
+	if timestampResult := e.stripProgramHeaderTimestamps(); timestampResult != nil && timestampResult.Applied {
+		result.AddDetail(timestampResult.Message, timestampResult.Count, false)
+		totalCount += timestampResult.Count
 	}
 
 	if totalCount == 0 {
 		return common.NewSkipped("no header stripping operations were applied")
 	}
 
-	message := fmt.Sprintf("Header strip completed: %s", strings.Join(operations, ", "))
-	return common.NewApplied(message, totalCount)
+	result.Count = totalCount
+	return result
 }
 
 func (e *ELFFile) stripELFHeaderFields() *common.OperationResult {
-	var operations []string
 	totalCount := 0
+	result := common.NewApplied("stripped ELF header fields", 0)
 
 	// Zero out e_version (not critical for execution)
 	versionOffset := 6 // Same position in both 32-bit and 64-bit ELF
 	if err := e.writeAtOffset(versionOffset, uint32(0)); err == nil {
-		operations = append(operations, "removed ELF version field")
+		result.AddDetail("removed ELF version field", 1, false)
 		totalCount++
 	}
 
@@ -253,13 +262,13 @@ func (e *ELFFile) stripELFHeaderFields() *common.OperationResult {
 		flagsOffset = 36
 	}
 	if err := e.writeAtOffset(flagsOffset, uint32(0)); err == nil {
-		operations = append(operations, "removed ELF flags field")
+		result.AddDetail("removed ELF flags field", 1, false)
 		totalCount++
 	}
 
 	// Zero out e_ident[EI_ABIVERSION] (ABI version, often safe to remove)
 	if err := e.writeAtOffset(8, byte(0)); err == nil {
-		operations = append(operations, "removed ABI version field")
+		result.AddDetail("removed ABI version field", 1, false)
 		totalCount++
 	}
 
@@ -267,19 +276,21 @@ func (e *ELFFile) stripELFHeaderFields() *common.OperationResult {
 		return common.NewSkipped("no header fields were stripped")
 	}
 
-	return common.NewApplied(fmt.Sprintf("stripped %d ELF header fields", totalCount), totalCount)
+	result.Message = fmt.Sprintf("stripped %d ELF header fields", totalCount)
+	result.Count = totalCount
+	return result
 }
 
 func (e *ELFFile) stripProgramHeaderTimestamps() *common.OperationResult {
-	var operations []string
 	totalCount := 0
+	result := common.NewApplied("removed program header timestamps", 0)
 
 	// Find PT_NOTE segments that might contain timestamps
 	for i, segment := range e.Segments {
 		if segment.Type == PT_NOTE && segment.FileSize > 0 {
 			// Zero out the data portion of the note segment
 			if err := e.fillRegion(segment.Offset, int(segment.FileSize), false); err == nil {
-				operations = append(operations, fmt.Sprintf("zeroed PT_NOTE segment %d", i))
+				result.AddDetail(fmt.Sprintf("zeroed PT_NOTE segment %d", i), 1, false)
 				totalCount++
 			}
 		}
@@ -289,7 +300,9 @@ func (e *ELFFile) stripProgramHeaderTimestamps() *common.OperationResult {
 		return common.NewSkipped("no program header timestamps found")
 	}
 
-	return common.NewApplied(fmt.Sprintf("removed timestamps from %d program headers", totalCount), totalCount)
+	result.Message = fmt.Sprintf("removed timestamps from %d program headers", totalCount)
+	result.Count = totalCount
+	return result
 }
 
 func (e *ELFFile) StripSingleRegexRule(regex string) *common.OperationResult {
@@ -303,13 +316,17 @@ func (e *ELFFile) StripSingleRegexRule(regex string) *common.OperationResult {
 		return common.NewSkipped(fmt.Sprintf("error processing '%s': %v", regex, err))
 	}
 
-	return common.NewApplied(fmt.Sprintf("stripped %d matches for '%s'", modifications, regex), modifications)
+	message := fmt.Sprintf("stripped %d matches for '%s'", modifications, regex)
+	result := common.NewApplied(message, modifications)
+	result.SetCategory("PATTERNS")
+	return result
 }
 
 func (e *ELFFile) stripAllRegexRules(force bool) *common.OperationResult {
 	rules := GetRegexStripRules()
 	totalModifications := 0
-	var messages []string
+	result := common.NewApplied("Regex pattern stripping", 0)
+	result.SetCategory("PATTERNS")
 
 	for _, rule := range rules {
 		if rule.IsRisky && !force {
@@ -319,99 +336,30 @@ func (e *ELFFile) stripAllRegexRules(force bool) *common.OperationResult {
 		for _, patternStr := range rule.Patterns {
 			pattern, err := regexp.Compile(patternStr)
 			if err != nil {
-				messages = append(messages, fmt.Sprintf("invalid regex '%s': %v", patternStr, err))
+				// Just log the error and continue
 				continue
 			}
 
 			modifications, err := e.StripByteRegex(pattern, rule.Fill == RandomFill)
 			if err != nil {
-				messages = append(messages, fmt.Sprintf("error processing '%s': %v", patternStr, err))
+				// Just log the error and continue
 				continue
 			}
 
 			if modifications > 0 {
 				msg := fmt.Sprintf("stripped %d matches for '%s' (%s)", modifications, patternStr, rule.Description)
-				messages = append(messages, msg)
+				result.AddDetail(msg, modifications, rule.IsRisky)
 				totalModifications += modifications
 			}
 		}
 	}
 
 	if totalModifications > 0 {
-		return common.NewApplied(strings.Join(messages, "; "), totalModifications)
+		result.Message = fmt.Sprintf("stripped %d regex pattern matches", totalModifications)
+		result.Count = totalModifications
+		return result
 	}
 	return common.NewSkipped("no regex-based metadata found")
 }
 
-func formatStripOperations(operations []string) string {
-	if len(operations) == 0 {
-		return "No operations performed"
-	}
-
-	var result strings.Builder
-	grouped := map[string][]string{
-		"section": {},
-		"regex":   {},
-		"other":   {},
-	}
-
-	uniqueOps := map[string]map[string]bool{
-		"section": make(map[string]bool),
-		"regex":   make(map[string]bool),
-		"other":   make(map[string]bool),
-	}
-
-	for _, op := range operations {
-		switch {
-		case strings.Contains(op, "sections:"):
-			if !uniqueOps["section"][op] {
-				uniqueOps["section"][op] = true
-				grouped["section"] = append(grouped["section"], op)
-			}
-		case strings.Contains(op, "matches for"):
-			if !uniqueOps["regex"][op] {
-				uniqueOps["regex"][op] = true
-				grouped["regex"] = append(grouped["regex"], op)
-			}
-		default:
-			if !uniqueOps["other"][op] {
-				uniqueOps["other"][op] = true
-				grouped["other"] = append(grouped["other"], op)
-			}
-		}
-	}
-
-	if len(grouped["section"]) > 0 {
-		result.WriteString("📦 SECTIONS STRIPPED:\n")
-		for _, op := range grouped["section"] {
-			prefix := "   ✓ "
-			if strings.HasPrefix(op, "⚠️") {
-				prefix = "   "
-			}
-			result.WriteString(prefix + op + "\n")
-		}
-	}
-	if len(grouped["regex"]) > 0 {
-		result.WriteString("🔍 REGEX PATTERNS STRIPPED:\n")
-		for _, op := range grouped["regex"] {
-			for _, msg := range strings.Split(op, "; ") {
-				msg = strings.TrimSpace(msg)
-				if msg != "" {
-					result.WriteString("   ✓ " + msg + "\n")
-				}
-			}
-		}
-	}
-	if len(grouped["other"]) > 0 {
-		result.WriteString("🛠️ OTHER OPERATIONS:\n")
-		for _, op := range grouped["other"] {
-			prefix := "   ✓ "
-			if strings.HasPrefix(op, "⚠️") {
-				prefix = "   "
-			}
-			result.WriteString(prefix + op + "\n")
-		}
-	}
-
-	return strings.TrimSuffix(result.String(), "\n")
-}
+// This function has been replaced by common.FormatOperationResult

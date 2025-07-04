@@ -162,18 +162,6 @@ func runOperations(config *Configuration) error {
 	}
 
 	var operations []string
-	if config.Insert != "" {
-		if err := runInsert(config, isPE); err != nil {
-			return err
-		}
-		operations = append(operations, "insert")
-	}
-	if config.Overlay != "" {
-		if err := runOverlay(config, isPE); err != nil {
-			return err
-		}
-		operations = append(operations, "overlay")
-	}
 	if config.Strip {
 		if err := runStrip(config, isPE); err != nil {
 			return fmt.Errorf("strip operation failed: %v", err)
@@ -191,6 +179,18 @@ func runOperations(config *Configuration) error {
 			return err
 		}
 		operations = append(operations, "obfuscate")
+	}
+	if config.Insert != "" {
+		if err := runInsert(config, isPE); err != nil {
+			return err
+		}
+		operations = append(operations, "insert")
+	}
+	if config.Overlay != "" {
+		if err := runOverlay(config, isPE); err != nil {
+			return err
+		}
+		operations = append(operations, "overlay")
 	}
 	if config.Regex != "" {
 		if err := runRegex(config, isPE); err != nil {
@@ -216,7 +216,7 @@ func runAnalysis(config *Configuration, isPE bool) error {
 }
 
 func runStrip(config *Configuration, isPE bool) error {
-	fmt.Println("\n=== StripAll Operations ===\nPerforming stripping...")
+	fmt.Println("\n=== Strip Operations ===\nPerforming stripping...")
 	var result *common.OperationResult
 	if isPE {
 		result = perw.StripPE(config.FilePath, config.Force)
@@ -260,7 +260,7 @@ func runRegex(config *Configuration, isPE bool) error {
 	} else {
 		result = elfrw.RegexELF(config.FilePath, config.Regex)
 	}
-	printOperationResult(getFileType(isPE), "Obfuscation", result)
+	printOperationResult(getFileType(isPE), "Regex", result)
 	return nil
 }
 
@@ -318,7 +318,7 @@ func runOverlay(config *Configuration, isPE bool) error {
 
 func printOperationResult(fileType, operation string, result *common.OperationResult) {
 	if result.Applied {
-		fmt.Printf("✅ %s %s: %s\n", fileType, operation, result.Message)
+		fmt.Printf("✅ %s %s: %s\n", fileType, operation, result.FormatDetails())
 	} else {
 		fmt.Printf("❌ %s %s: %s\n", fileType, operation, result.Message)
 	}

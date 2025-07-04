@@ -313,7 +313,7 @@ func (e *ELFFile) parseSections() []Section {
 	count := e.ELF.GetSectionCount()
 	sections := make([]Section, 0, count)
 
-	fmt.Printf("🔍 Parsing %d sections with elf_reader\n", count)
+	fmt.Printf("🔍 Parsing %d sections\n", count)
 
 	for i := uint16(0); i < count; i++ {
 		header, err := e.ELF.GetSectionHeader(i)
@@ -322,11 +322,11 @@ func (e *ELFFile) parseSections() []Section {
 			continue
 		}
 		name, err := e.ELF.GetSectionName(i)
-		if err != nil {
+		if err != nil && i != SHT_NULL {
 			fmt.Printf("⚠️  Failed to get section name %d: %v\n", i, err)
 			name = fmt.Sprintf("section_%d", i)
 		}
-		if name == "" {
+		if name == "" && i != SHT_NULL {
 			fmt.Printf("⚠️  Empty section name for section %d\n", i)
 			name = fmt.Sprintf("section_%d", i)
 		}
