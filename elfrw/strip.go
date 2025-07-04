@@ -8,6 +8,45 @@ import (
 	"strings"
 )
 
+func (e *ELFFile) StripAll(force bool) *common.OperationResult {
+	var operations []string
+	totalCount := 0
+
+	sectionRules := getSectionStripRule()
+	for sectionType, rule := range sectionRules {
+		if rule.IsRisky && !force {
+			continue
+		}
+		isSharedObject := e.IsDynamic()
+		if (isSharedObject && !rule.StripForSO) || (!isSharedObject && !rule.StripForBIN) {
+			continue
+		}
+		result := e.stripSectionsByType(sectionType, rule.Fill == RandomFill)
+		if result != nil && result.Applied {
+			message := result.Message
+			if rule.IsRisky {
+				message = fmt.Sprintf("⚠️  %s (risky)", message)
+			}
+			operations = append(operations, message)
+			totalCount += result.Count
+		}
+	}
+	if headersResult := e.stripAllHeaders(); headersResult != nil && headersResult.Applied {
+		operations = append(operations, headersResult.Message)
+		totalCount += headersResult.Count
+	}
+	if regexResult := e.stripAllRegexRules(force); regexResult != nil && regexResult.Applied {
+		operations = append(operations, regexResult.Message)
+		totalCount += regexResult.Count
+	}
+	if totalCount == 0 {
+		return common.NewSkipped("no stripping operations applied")
+	}
+	message := fmt.Sprintf("ELF strip completed: %d operations applied", totalCount)
+	message += "\n" + formatStripOperations(operations)
+	return common.NewApplied(message, totalCount)
+}
+
 func (e *ELFFile) fillRegion(offset uint64, size int, useRandom bool) error {
 	if offset+uint64(size) > uint64(len(e.RawData)) {
 		return fmt.Errorf("write beyond file limits: offset %d, size %d, file size %d",
@@ -63,13 +102,13 @@ func (e *ELFFile) stripSectionData(sectionIndex int, useRandom bool) error {
 	return nil
 }
 
-func (e *ELFFile) StripSectionsByType(sectionType SectionType, useRandom bool) *common.OperationResult {
+func (e *ELFFile) stripSectionsByType(sectionType SectionType, useRandom bool) *common.OperationResult {
 	if err := e.validateELF(); err != nil {
 		return common.NewSkipped(fmt.Sprintf("ELF validation failed: %v", err))
 	}
 
 	// Get section rules from strip_types.go
-	sectionRules := GetSectionStripRule()
+	sectionRules := getSectionStripRule()
 	rule, exists := sectionRules[sectionType]
 	if !exists {
 		return common.NewSkipped(fmt.Sprintf("unknown section type: %v", sectionType))
@@ -90,7 +129,7 @@ func (e *ELFFile) StripSectionsByType(sectionType SectionType, useRandom bool) *
 	}
 
 	// Update section headers after modification
-	if err := e.UpdateSectionHeaders(); err != nil {
+	if err := e.updateSectionHeaders(); err != nil {
 		return common.NewSkipped(fmt.Sprintf("failed to update section headers: %v", err))
 	}
 
@@ -173,18 +212,16 @@ func (e *ELFFile) getSectionHeaderOffset(shoffPos int) (uint64, error) {
 	return offset, nil
 }
 
-func (e *ELFFile) StripAllHeaders() *common.OperationResult {
+func (e *ELFFile) stripAllHeaders() *common.OperationResult {
 	var operations []string
 	totalCount := 0
 
-	// Strip ELF header fields
-	if result := e.StripELFHeaderFields(); result != nil && result.Applied {
+	if result := e.stripELFHeaderFields(); result != nil && result.Applied {
 		operations = append(operations, result.Message)
 		totalCount += result.Count
 	}
 
-	// Strip program header timestamps
-	if result := e.StripProgramHeaderTimestamps(); result != nil && result.Applied {
+	if result := e.stripProgramHeaderTimestamps(); result != nil && result.Applied {
 		operations = append(operations, result.Message)
 		totalCount += result.Count
 	}
@@ -197,7 +234,7 @@ func (e *ELFFile) StripAllHeaders() *common.OperationResult {
 	return common.NewApplied(message, totalCount)
 }
 
-func (e *ELFFile) StripELFHeaderFields() *common.OperationResult {
+func (e *ELFFile) stripELFHeaderFields() *common.OperationResult {
 	var operations []string
 	totalCount := 0
 
@@ -233,7 +270,7 @@ func (e *ELFFile) StripELFHeaderFields() *common.OperationResult {
 	return common.NewApplied(fmt.Sprintf("stripped %d ELF header fields", totalCount), totalCount)
 }
 
-func (e *ELFFile) StripProgramHeaderTimestamps() *common.OperationResult {
+func (e *ELFFile) stripProgramHeaderTimestamps() *common.OperationResult {
 	var operations []string
 	totalCount := 0
 
@@ -269,7 +306,7 @@ func (e *ELFFile) StripSingleRegexRule(regex string) *common.OperationResult {
 	return common.NewApplied(fmt.Sprintf("stripped %d matches for '%s'", modifications, regex), modifications)
 }
 
-func (e *ELFFile) StripAllRegexRules(force bool) *common.OperationResult {
+func (e *ELFFile) stripAllRegexRules(force bool) *common.OperationResult {
 	rules := GetRegexStripRules()
 	totalModifications := 0
 	var messages []string
@@ -306,56 +343,6 @@ func (e *ELFFile) StripAllRegexRules(force bool) *common.OperationResult {
 	return common.NewSkipped("no regex-based metadata found")
 }
 
-func (e *ELFFile) StripAll(force bool) *common.OperationResult {
-	var operations []string
-	totalCount := 0
-
-	// 1. Use section rules from GetSectionStripRule()
-	sectionRules := GetSectionStripRule()
-	for sectionType, rule := range sectionRules {
-		if rule.IsRisky && !force {
-			continue
-		}
-
-		// Apply appropriate security checks based on file type
-		isSharedObject := e.IsDynamic()
-		if (isSharedObject && !rule.StripForSO) || (!isSharedObject && !rule.StripForBIN) {
-			continue
-		}
-
-		// Strip sections by type
-		result := e.StripSectionsByType(sectionType, rule.Fill == RandomFill)
-		if result != nil && result.Applied {
-			message := result.Message
-			if rule.IsRisky {
-				message = fmt.Sprintf("⚠️  %s (risky)", message)
-			}
-			operations = append(operations, message)
-			totalCount += result.Count
-		}
-	}
-
-	// 2. Strip all headers
-	if headersResult := e.StripAllHeaders(); headersResult != nil && headersResult.Applied {
-		operations = append(operations, headersResult.Message)
-		totalCount += headersResult.Count
-	}
-
-	//3. Strip regex patterns
-	if regexResult := e.StripAllRegexRules(force); regexResult != nil && regexResult.Applied {
-		operations = append(operations, regexResult.Message)
-		totalCount += regexResult.Count
-	}
-
-	if totalCount == 0 {
-		return common.NewSkipped("no stripping operations applied")
-	}
-	// Report number of operations applied
-	message := fmt.Sprintf("ELF strip completed: %d operations applied", totalCount)
-	message += "\n" + formatStripOperations(operations)
-	return common.NewApplied(message, totalCount)
-}
-
 func formatStripOperations(operations []string) string {
 	if len(operations) == 0 {
 		return "No operations performed"
@@ -368,7 +355,6 @@ func formatStripOperations(operations []string) string {
 		"other":   {},
 	}
 
-	// Use maps to track unique operations
 	uniqueOps := map[string]map[string]bool{
 		"section": make(map[string]bool),
 		"regex":   make(map[string]bool),
@@ -377,7 +363,7 @@ func formatStripOperations(operations []string) string {
 
 	for _, op := range operations {
 		switch {
-		case strings.Contains(op, "sections ("):
+		case strings.Contains(op, "sections:"):
 			if !uniqueOps["section"][op] {
 				uniqueOps["section"][op] = true
 				grouped["section"] = append(grouped["section"], op)

@@ -8,11 +8,12 @@ import (
 	"strings"
 )
 
-func (p *PEFile) Compact(force bool) (*common.OperationResult, error) {
-	//if force {
-	//	return p.simpleTruncatePE(), nil
-	//}
-	return p.sectionRemoval(force)
+func (p *PEFile) Compact(force bool) *common.OperationResult {
+	result, err := p.sectionRemoval(force)
+	if err != nil {
+		return common.NewSkipped(fmt.Sprintf("Failed to compact PE file: %v", err))
+	}
+	return result
 }
 
 func (p *PEFile) identifyCriticalSections() map[int]struct{} {

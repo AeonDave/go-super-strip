@@ -11,7 +11,7 @@ import (
 // The format is similar to AddHexSection but without a section name
 // dataOrFile: path to a file or a string to add
 // password: optional password for encryption
-func (p *PEFile) AddOverlay(dataOrFile string, password string) error {
+func (p *PEFile) AddOverlay(dataOrFile string, password string) *common.OperationResult {
 	fileStat, err := os.Stat(dataOrFile)
 	isFile := err == nil && !fileStat.IsDir()
 
@@ -19,17 +19,26 @@ func (p *PEFile) AddOverlay(dataOrFile string, password string) error {
 	if isFile {
 		finalContent, err = common.ProcessFileForInsertion(dataOrFile, password)
 		if err != nil {
-			return fmt.Errorf("failed to process file for overlay: %w", err)
+			return common.NewSkipped(fmt.Sprintf("Failed to process file for overlay: %v", err))
 		}
 	} else {
 		finalContent, err = common.ProcessStringForInsertion(dataOrFile, password)
 		if err != nil {
-			return fmt.Errorf("failed to process string for overlay: %w", err)
+			return common.NewSkipped(fmt.Sprintf("Failed to process string for overlay: %v", err))
 		}
 	}
 
 	// Use the fallback method directly as we want to append data without modifying PE structure
-	return p.appendDataToFileDirectly(finalContent)
+	err = p.appendDataToFileDirectly(finalContent)
+	if err != nil {
+		return common.NewSkipped(fmt.Sprintf("Failed to add overlay: %v", err))
+	}
+
+	message := "Added overlay data"
+	if password != "" {
+		message += " (encrypted)"
+	}
+	return common.NewApplied(message, 1)
 }
 
 func (p *PEFile) appendDataToFileDirectly(content []byte) error {

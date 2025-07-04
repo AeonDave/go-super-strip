@@ -110,7 +110,7 @@ func (p *PEFile) StripAll(force bool) *common.OperationResult {
 			totalCount += result.Count
 		}
 	}
-	// StripAll StripAllHeaders
+	// StripAll stripAllHeaders
 	if timeDateStampResult := p.StripAllHeaders(); timeDateStampResult != nil && timeDateStampResult.Applied {
 		operations = append(operations, timeDateStampResult.Message)
 		totalCount += timeDateStampResult.Count

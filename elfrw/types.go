@@ -79,6 +79,16 @@ type Segment struct {
 	Index        uint16
 }
 
+type SectionInfo struct {
+	Name         string
+	FileOffset   int64
+	Size         int64
+	IsExecutable bool
+	IsWritable   bool
+	IsReadable   bool
+	Entropy      float64
+}
+
 type Symbol struct {
 	Name    string
 	Value   uint64
@@ -104,6 +114,18 @@ type ParseResult struct {
 
 type ELFFileMode struct {
 	usedFallbackMode bool
+}
+
+// ELF header field positions
+type elfOffsets struct {
+	shOff      int // Section header table offset
+	shEntSize  int // Section header entry size
+	shNum      int // Number of section headers
+	shStrNdx   int // Section header string table index
+	phOff      int // Program header table offset
+	phEntSize  int // Program header entry size
+	entryPoint int // Entry point
+	flags      int // Processor-specific flags
 }
 
 const (

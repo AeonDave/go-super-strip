@@ -25,6 +25,13 @@ func ReadPE(file *os.File) (*PEFile, error) {
 	return pf, nil
 }
 
+func (p *PEFile) Close() error {
+	if p.File != nil {
+		return p.File.Close()
+	}
+	return nil
+}
+
 func newPEFileFromDisk(file *os.File) (*PEFile, error) {
 	fileInfo, err := file.Stat()
 	if err != nil {
@@ -90,10 +97,95 @@ func newPEFileFromDisk(file *os.File) (*PEFile, error) {
 		PE:       peLibFile,
 		FileName: file.Name(),
 		RawData:  rawData,
-		Is64Bit:  isPE64Bit(peLibFile),
+		Is64Bit:  peLibFile.FileHeader.Machine == pe.IMAGE_FILE_MACHINE_AMD64,
 		FileSize: fileInfo.Size(),
 	}
 	return pf, nil
+}
+
+func IsPEFile(filePath string) (bool, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return false, err
+	}
+	defer func(file *os.File) {
+		_ = file.Close()
+	}(file)
+
+	dosHeader := make([]byte, 64)
+	if _, err := file.Read(dosHeader); err != nil {
+		return false, nil
+	}
+
+	if dosHeader[0] != 'M' || dosHeader[1] != 'Z' {
+		return false, nil
+	}
+
+	peOffset := binary.LittleEndian.Uint32(dosHeader[60:64])
+
+	if _, err := file.Seek(int64(peOffset), 0); err != nil {
+		return false, nil
+	}
+
+	peSignature := make([]byte, 4)
+	if _, err := file.Read(peSignature); err != nil {
+		return false, nil
+	}
+
+	return string(peSignature) == "PE\x00\x00", nil
+}
+
+func isLikelyPacked(sections []Section) bool {
+	if len(sections) == 0 {
+		return false
+	}
+	var (
+		highEntropyCount int
+		total            int
+		sumEntropy       float64
+	)
+	for _, s := range sections {
+		if s.Size == 0 {
+			continue
+		}
+		total++
+		sumEntropy += s.Entropy
+		if s.Entropy > 7.0 {
+			highEntropyCount++
+		}
+	}
+	if total == 0 {
+		return false
+	}
+	avgEntropy := sumEntropy / float64(total)
+	percentHigh := float64(highEntropyCount) / float64(total)
+
+	return percentHigh > 0.5 || avgEntropy > 6.8
+}
+
+func readFileData(file *os.File) ([]byte, error) {
+	fileInfo, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+
+	data := make([]byte, fileInfo.Size())
+	_, err = file.ReadAt(data, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	return data, nil
+}
+
+func validateDOSHeader(data []byte) error {
+	if len(data) < 64 {
+		return fmt.Errorf("file too small to be a valid PE file")
+	}
+	if data[0] != 'M' || data[1] != 'Z' {
+		return fmt.Errorf("invalid DOS header signature")
+	}
+	return nil
 }
 
 func (p *PEFile) parseAllPEComponents() error {
@@ -277,35 +369,6 @@ func (p *PEFile) parseImports() error {
 	return nil
 }
 
-func readFileData(file *os.File) ([]byte, error) {
-	fileInfo, err := file.Stat()
-	if err != nil {
-		return nil, err
-	}
-
-	data := make([]byte, fileInfo.Size())
-	_, err = file.ReadAt(data, 0)
-	if err != nil {
-		return nil, err
-	}
-
-	return data, nil
-}
-
-func isPE64Bit(peFile *pe.File) bool {
-	return peFile.FileHeader.Machine == pe.IMAGE_FILE_MACHINE_AMD64
-}
-
-func validateDOSHeader(data []byte) error {
-	if len(data) < 64 {
-		return fmt.Errorf("file too small to be a valid PE file")
-	}
-	if data[0] != 'M' || data[1] != 'Z' {
-		return fmt.Errorf("invalid DOS header signature")
-	}
-	return nil
-}
-
 func (p *PEFile) parseHeaders() error {
 
 	if p.PE == nil {
@@ -386,110 +449,6 @@ func (p *PEFile) ReadBytes(offset int64, size int) ([]byte, error) {
 	return p.RawData[offset : offset+int64(size)], nil
 }
 
-func (p *PEFile) Close() error {
-	var errors []error
-	if p.PE != nil {
-		if err := p.PE.Close(); err != nil {
-			errors = append(errors, fmt.Errorf("failed to close PE: %w", err))
-		}
-	}
-
-	if p.File != nil {
-		if err := p.File.Close(); err != nil {
-			errors = append(errors, fmt.Errorf("failed to close file: %w", err))
-		}
-	}
-
-	if len(errors) > 0 {
-		return fmt.Errorf("close errors: %v", errors)
-	}
-
-	return nil
-}
-
-func IsPEFile(filePath string) (bool, error) {
-	file, err := os.Open(filePath)
-	if err != nil {
-		return false, err
-	}
-	defer func(file *os.File) {
-		_ = file.Close()
-	}(file)
-
-	dosHeader := make([]byte, 64)
-	if _, err := file.Read(dosHeader); err != nil {
-		return false, nil
-	}
-
-	if dosHeader[0] != 'M' || dosHeader[1] != 'Z' {
-		return false, nil
-	}
-
-	peOffset := binary.LittleEndian.Uint32(dosHeader[60:64])
-
-	if _, err := file.Seek(int64(peOffset), 0); err != nil {
-		return false, nil
-	}
-
-	peSignature := make([]byte, 4)
-	if _, err := file.Read(peSignature); err != nil {
-		return false, nil
-	}
-
-	return string(peSignature) == "PE\x00\x00", nil
-}
-
-func (p *PEFile) ImageBase() uint64 {
-	return p.imageBase
-}
-
-func (p *PEFile) EntryPoint() uint32 {
-	return p.entryPoint
-}
-
-func (p *PEFile) SizeOfImage() uint32 {
-	return p.sizeOfImage
-}
-
-func (p *PEFile) SizeOfHeaders() uint32 {
-	return p.sizeOfHeaders
-}
-
-func (p *PEFile) Checksum() uint32 {
-	return p.checksum
-}
-
-func (p *PEFile) Subsystem() uint16 {
-	return p.subsystem
-}
-
-func (p *PEFile) DllCharacteristics() uint16 {
-	return p.dllCharacteristics
-}
-
-func (p *PEFile) Directories() []DirectoryEntry {
-	return p.directories
-}
-
-func (p *PEFile) SignatureSize() int64 {
-	return p.signatureSize
-}
-
-func (p *PEFile) PDB() string {
-	return p.PDBPath
-}
-
-func (p *PEFile) GUIDAge() string {
-	return p.guidAge
-}
-
-func (p *PEFile) VersionInfo() map[string]string {
-	if p.versionInfo == nil {
-		p.versionInfo = make(map[string]string)
-	}
-	return p.versionInfo
-}
-
 func (p *PEFile) extractMachineType() {
 	switch p.PE.FileHeader.Machine {
 	case pe.IMAGE_FILE_MACHINE_I386:
@@ -554,27 +513,6 @@ func (p *PEFile) extractVersionInfo() {
 	p.versionInfo["CompanyName"] = "Unknown"
 	p.versionInfo["FileDescription"] = "Unknown"
 
-}
-
-func utf16le(s string) []byte {
-	u := make([]byte, len(s)*2)
-	for i, r := range s {
-		u[i*2] = byte(r)
-		u[i*2+1] = 0
-	}
-	return u
-}
-
-func readUtf16String(b []byte) string {
-	var runes []rune
-	for i := 0; i+1 < len(b); i += 2 {
-		r := rune(b[i]) | (rune(b[i+1]) << 8)
-		if r == 0 {
-			break
-		}
-		runes = append(runes, r)
-	}
-	return string(runes)
 }
 
 func (p *PEFile) sanitizeSectionName(nameBytes []byte) string {
@@ -813,35 +751,6 @@ func (p *PEFile) isValidSectionData(virtualAddr uint32, virtualSize uint32, rawD
 	return true
 }
 
-func isLikelyPacked(sections []Section) bool {
-	if len(sections) == 0 {
-		return false
-	}
-	var (
-		highEntropyCount int
-		total            int
-		sumEntropy       float64
-	)
-	for _, s := range sections {
-		if s.Size == 0 {
-			continue
-		}
-		total++
-		sumEntropy += s.Entropy
-		if s.Entropy > 7.0 {
-			highEntropyCount++
-		}
-	}
-	if total == 0 {
-		return false
-	}
-	avgEntropy := sumEntropy / float64(total)
-	percentHigh := float64(highEntropyCount) / float64(total)
-
-	return percentHigh > 0.5 || avgEntropy > 6.8
-}
-
-// ExtractOverlay extracts overlay data from a PE file if present
 func (p *PEFile) ExtractOverlay() ([]byte, error) {
 	if !p.HasOverlay {
 		return nil, fmt.Errorf("no overlay found in PE file")

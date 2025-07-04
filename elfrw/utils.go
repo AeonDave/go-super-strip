@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-func DecodeSegmentFlags(flags uint32) string {
+func decodeSegmentFlags(flags uint32) string {
 	var flagStrs []string
 
 	if flags&uint32(elf.PF_R) != 0 {
@@ -27,7 +27,7 @@ func DecodeSegmentFlags(flags uint32) string {
 	return strings.Join(flagStrs, ", ")
 }
 
-func GetSegmentTypeName(segmentType uint32) string {
+func getSegmentTypeName(segmentType uint32) string {
 	switch elf.ProgType(segmentType) {
 	case elf.PT_NULL:
 		return "NULL"
@@ -57,7 +57,7 @@ func (e *ELFFile) IsDynamic() bool {
 	return e.ELF != nil && e.ELF.GetFileType() == 3 // ET_DYN
 }
 
-func (e *ELFFile) GetFileTypeName() string {
+func (e *ELFFile) getFileTypeName() string {
 	if e.ELF == nil {
 		return "Unknown"
 	}
@@ -78,30 +78,19 @@ func (e *ELFFile) GetFileTypeName() string {
 	}
 }
 
-func (e *ELFFile) GetMachineName() string {
-	if e.ELF == nil {
-		return "Unknown"
-	}
-	return e.machineType
-}
-
-func (e *ELFFile) GetEntryPoint() uint64 {
-	return e.entryPoint
-}
-
-func (e *ELFFile) GetFileType() uint16 {
+func (e *ELFFile) getFileType() uint16 {
 	if e.ELF == nil {
 		return 0
 	}
 	return uint16(e.ELF.GetFileType())
 }
 
-func (e *ELFFile) IsLittleEndian() bool {
+func (e *ELFFile) isLittleEndian() bool {
 	return e.RawData[5] == 0x01 // EI_DATA field, 1 for LSB
 }
 
 func (e *ELFFile) getEndian() binary.ByteOrder {
-	if e.IsLittleEndian() {
+	if e.isLittleEndian() {
 		return binary.LittleEndian
 	}
 	return binary.BigEndian

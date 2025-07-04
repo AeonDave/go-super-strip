@@ -307,7 +307,7 @@ func (p *PEFile) CalculatePhysicalFileSize() (uint64, error) {
 		return 0, fmt.Errorf("PE file not initialized")
 	}
 
-	maxSize := uint64(p.SizeOfHeaders())
+	maxSize := uint64(p.sizeOfHeaders)
 	for _, s := range p.Sections {
 		if s.Size > 0 {
 			end := uint64(s.Offset) + uint64(s.Size)
@@ -318,4 +318,25 @@ func (p *PEFile) CalculatePhysicalFileSize() (uint64, error) {
 	}
 
 	return maxSize, nil
+}
+
+func utf16le(s string) []byte {
+	u := make([]byte, len(s)*2)
+	for i, r := range s {
+		u[i*2] = byte(r)
+		u[i*2+1] = 0
+	}
+	return u
+}
+
+func readUtf16String(b []byte) string {
+	var runes []rune
+	for i := 0; i+1 < len(b); i += 2 {
+		r := rune(b[i]) | (rune(b[i+1]) << 8)
+		if r == 0 {
+			break
+		}
+		runes = append(runes, r)
+	}
+	return string(runes)
 }

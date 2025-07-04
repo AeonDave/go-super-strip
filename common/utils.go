@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"math"
+	"os"
 	"strings"
 )
 
@@ -18,6 +19,14 @@ const (
 	SymbolWarn  = "⚠️"
 	SymbolInfo  = "ℹ️"
 )
+
+func OpenFile(filePath string, flags int) (*os.File, error) {
+	file, err := os.OpenFile(filePath, flags, 0755)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open file: %w", err)
+	}
+	return file, nil
+}
 
 func CalculateEntropy(data []byte) float64 {
 	if len(data) == 0 {

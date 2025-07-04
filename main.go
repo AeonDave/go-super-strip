@@ -199,7 +199,7 @@ func runOperations(config *Configuration) error {
 		operations = append(operations, "regex")
 	}
 	if len(operations) > 0 {
-		fmt.Printf("Completed operations: %s\n", strings.Join(operations, ", "))
+		fmt.Printf("\nCompleted operations: %s\n", strings.Join(operations, ", "))
 	}
 	return nil
 }

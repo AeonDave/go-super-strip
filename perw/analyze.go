@@ -217,12 +217,12 @@ func (p *PEFile) printPEHeaders() {
 
 	fmt.Printf("Sections:        %d total\n", len(p.Sections))
 	fmt.Printf("Packed Status:   %s\n", map[bool]string{true: "📦 Likely PACKED", false: "✅ Not packed"}[p.IsPacked])
-	fmt.Printf("Image Base:      0x%X\n", p.ImageBase())
-	fmt.Printf("Entry Point:     0x%X (RVA)\n", p.EntryPoint())
-	fmt.Printf("Size of Image:   %d bytes (%s)\n", p.SizeOfImage(), common.FormatFileSize(int64(p.SizeOfImage())))
-	fmt.Printf("Size of Headers: %d bytes\n", p.SizeOfHeaders())
+	fmt.Printf("Image Base:      0x%X\n", p.imageBase)
+	fmt.Printf("Entry Point:     0x%X (RVA)\n", p.entryPoint)
+	fmt.Printf("Size of Image:   %d bytes (%s)\n", p.sizeOfImage, common.FormatFileSize(int64(p.sizeOfImage)))
+	fmt.Printf("Size of Headers: %d bytes\n", p.sizeOfHeaders)
 
-	checksum := p.Checksum()
+	checksum := p.checksum
 	if checksum != 0 {
 		fmt.Printf("Checksum:        0x%X\n", checksum)
 	} else {
@@ -230,13 +230,13 @@ func (p *PEFile) printPEHeaders() {
 	}
 
 	fmt.Printf("File Type:       %s\n", p.GetFileType())
-	subsystemName := getSubsystemName(p.Subsystem())
-	fmt.Printf("Subsystem:       %d (%s)\n", p.Subsystem(), subsystemName)
+	subsystemName := getSubsystemName(p.subsystem)
+	fmt.Printf("Subsystem:       %d (%s)\n", p.subsystem, subsystemName)
 
-	dllChars := decodeDLLCharacteristics(p.DllCharacteristics())
-	fmt.Printf("DLL Characteristics: 0x%X (%s)\n", p.DllCharacteristics(), dllChars)
+	dllChars := decodeDLLCharacteristics(p.dllCharacteristics)
+	fmt.Printf("DLL Characteristics: 0x%X (%s)\n", p.dllCharacteristics, dllChars)
 
-	directories := p.Directories()
+	directories := p.directories
 	nonEmptyDirs := 0
 	for _, dir := range directories {
 		if dir.RVA != 0 || dir.Size != 0 {
@@ -266,8 +266,8 @@ func (p *PEFile) printPEHeaders() {
 		}
 	}
 
-	versionInfo := p.VersionInfo()
-	if len(versionInfo) > 0 {
+	versionInfo := p.versionInfo
+	if versionInfo != nil && len(versionInfo) > 0 {
 		fmt.Printf("\n📄 VERSION DETAILS:\n")
 
 		keyOrder := []string{"FileDescription", "FileVersion", "ProductVersion", "CompanyName", "LegalCopyright", "OriginalFilename", "ProductName", "InternalName"}
@@ -317,11 +317,11 @@ func (p *PEFile) printPEHeaders() {
 		fmt.Printf("Rich Header:     ❓ Cannot analyze (insufficient data)\n")
 	}
 
-	if p.PDB() != "" && p.PDB() != "@" && !strings.HasPrefix(p.PDB(), "@") {
+	if p.PDBPath != "" && p.PDBPath != "@" && !strings.HasPrefix(p.PDBPath, "@") {
 		fmt.Printf("\n🐛 DEBUG INFO:\n")
-		fmt.Printf("Debug Info:      %s\n", p.PDB())
-		if p.GUIDAge() != "" {
-			fmt.Printf("GUID/Age:        %s\n", p.GUIDAge())
+		fmt.Printf("Debug Info:      %s\n", p.PDBPath)
+		if p.guidAge != "" {
+			fmt.Printf("GUID/Age:        %s\n", p.guidAge)
 		}
 	}
 
@@ -337,10 +337,10 @@ func (p *PEFile) printPEHeaders() {
 	if len(p.Sections) > 0 {
 		complianceChecks++
 	}
-	if p.SizeOfImage() > 0 {
+	if p.sizeOfImage > 0 {
 		complianceChecks++
 	}
-	if p.EntryPoint() > 0 {
+	if p.entryPoint > 0 {
 		complianceChecks++
 	}
 
@@ -370,7 +370,7 @@ func (p *PEFile) printPEHeaders() {
 	p.printPackingAnalysis()
 
 	fmt.Printf("\n🧠 MEMORY LAYOUT:\n")
-	imageSize := p.SizeOfImage()
+	imageSize := p.sizeOfImage
 	fmt.Printf("Image Size:      %s (0x%X)\n", common.FormatFileSize(int64(imageSize)), imageSize)
 
 	var usedSpace int64

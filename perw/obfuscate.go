@@ -68,7 +68,20 @@ func (p *PEFile) ObfuscateAll(force bool) *common.OperationResult {
 	message := fmt.Sprintf("PE obfuscation completed: %d bytes processed\n%s",
 		originalSize, p.formatObfuscationOperations(operations))
 
-	return common.NewApplied(message, totalCount)
+	result := common.NewApplied(message, totalCount)
+
+	// Save the file with the changes
+	if result.Applied {
+		if saveErr := p.Save(true, int64(len(p.RawData))); saveErr != nil {
+			fmt.Printf("⚠️ Warning: Failed to save with headers: %v\n", saveErr)
+			if saveErr = p.Save(false, int64(len(p.RawData))); saveErr != nil {
+				fmt.Printf("⚠️ Warning: Failed to save without headers: %v\n", saveErr)
+				return common.NewSkipped("Obfuscation succeeded but failed to save file")
+			}
+		}
+	}
+
+	return result
 }
 
 func (p *PEFile) ObfuscateSectionNames() *common.OperationResult {

@@ -8,19 +8,93 @@ import (
 	"strings"
 )
 
-// ELF header field positions
-type elfOffsets struct {
-	shOff      int // Section header table offset
-	shEntSize  int // Section header entry size
-	shNum      int // Number of section headers
-	shStrNdx   int // Section header string table index
-	phOff      int // Program header table offset
-	phEntSize  int // Program header entry size
-	entryPoint int // Entry point
-	flags      int // Processor-specific flags
+func generateRandomOffset() (uint64, error) {
+	randomBytes, err := common.GenerateRandomBytes(8)
+	if err != nil {
+		return 0, fmt.Errorf("failed to generate random offset: %w", err)
+	}
+
+	offset := (binary.LittleEndian.Uint64(randomBytes) / 0x1000) * 0x1000
+	if offset > 0x40000000 {
+		offset = offset % 0x40000000
+	}
+	return offset, nil
 }
 
-// getELFOffsets returns the correct field offsets based on architecture
+func getVAddrOffset(is64bit bool) uint64 {
+	if is64bit {
+		return 16
+	}
+	return 8
+}
+
+func getPAddrOffset(is64bit bool) uint64 {
+	if is64bit {
+		return 24
+	}
+	return 12
+}
+
+func (e *ELFFile) ObfuscateAll(force bool) *common.OperationResult {
+	originalSize := uint64(len(e.RawData))
+	var operations []string
+	totalCount := 0
+
+	if err := e.validateELF(); err != nil {
+		return common.NewSkipped(fmt.Sprintf("ELF validation failed: %v", err))
+	}
+
+	if result := e.obfuscateSectionNames(); result != nil && result.Applied {
+		operations = append(operations, result.Message)
+		totalCount += result.Count
+	}
+
+	if result := e.obfuscateSectionPadding(); result != nil && result.Applied {
+		operations = append(operations, result.Message)
+		totalCount += result.Count
+	}
+
+	if result := e.obfuscateRuntimeStrings(); result != nil && result.Applied {
+		operations = append(operations, result.Message)
+		totalCount += result.Count
+	}
+
+	if result := e.obfuscateReservedHeaderFields(); result != nil && result.Applied {
+		operations = append(operations, result.Message)
+		totalCount += result.Count
+	}
+
+	//if force {
+	//	if result := e.obfuscateBaseAddresses(); result != nil && result.Applied {
+	//		message := fmt.Sprintf("⚠️ %s (risky)", result.Message)
+	//		operations = append(operations, message)
+	//		totalCount += result.Count
+	//	}
+	//}
+
+	if len(operations) == 0 {
+		return common.NewSkipped("no obfuscation operations applied")
+	}
+
+	message := fmt.Sprintf("ELF obfuscation completed: %d bytes processed\n%s",
+		originalSize, e.formatObfuscationOperations(operations))
+
+	result := common.NewApplied(message, totalCount)
+
+	// Save the file with the changes
+	if result.Applied {
+		if saveErr := e.Save(true, int64(len(e.RawData))); saveErr != nil {
+			fmt.Printf("⚠️ Warning: Failed to save with headers: %v\n", saveErr)
+			if saveErr = e.Save(false, int64(len(e.RawData))); saveErr != nil {
+				fmt.Printf("⚠️ Warning: Failed to save without headers: %v\n", saveErr)
+				return common.NewSkipped("Obfuscation succeeded but failed to save file")
+			}
+		}
+	}
+
+	return result
+}
+
 func (e *ELFFile) getELFOffsets() elfOffsets {
 	if e.Is64Bit {
 		return elfOffsets{
@@ -46,115 +120,7 @@ func (e *ELFFile) getELFOffsets() elfOffsets {
 	}
 }
 
-// readValue reads a value from the ELF file at the given offset
-func (e *ELFFile) readValue(offset int, is64bit bool) uint64 {
-	// Add bounds checking to prevent panics
-	if offset < 0 {
-		return 0
-	}
-
-	endian := e.getEndian()
-	if is64bit {
-		if offset+8 > len(e.RawData) {
-			return 0
-		}
-		if endian == binary.LittleEndian {
-			return binary.LittleEndian.Uint64(e.RawData[offset : offset+8])
-		}
-		return binary.BigEndian.Uint64(e.RawData[offset : offset+8])
-	}
-
-	if offset+4 > len(e.RawData) {
-		return 0
-	}
-	if endian == binary.LittleEndian {
-		return uint64(binary.LittleEndian.Uint32(e.RawData[offset : offset+4]))
-	}
-	return uint64(binary.BigEndian.Uint32(e.RawData[offset : offset+4]))
-}
-
-// readValue16 reads a 16-bit value from the ELF file
-func (e *ELFFile) readValue16(offset int) uint16 {
-	// Add bounds checking to prevent panics
-	if offset < 0 || offset+2 > len(e.RawData) {
-		return 0
-	}
-
-	endian := e.getEndian()
-	if endian == binary.LittleEndian {
-		return binary.LittleEndian.Uint16(e.RawData[offset : offset+2])
-	}
-	return binary.BigEndian.Uint16(e.RawData[offset : offset+2])
-}
-
-// generateRandomOffset creates a page-aligned random offset
-func generateRandomOffset() (uint64, error) {
-	randomBytes, err := common.GenerateRandomBytes(8)
-	if err != nil {
-		return 0, fmt.Errorf("failed to generate random offset: %w", err)
-	}
-
-	offset := (binary.LittleEndian.Uint64(randomBytes) / 0x1000) * 0x1000
-	if offset > 0x40000000 {
-		offset = offset % 0x40000000
-	}
-	return offset, nil
-}
-
-// findSection finds a section by name
-func (e *ELFFile) findSection(name string) *Section {
-	for i := range e.Sections {
-		if e.Sections[i].Name == name {
-			return &e.Sections[i]
-		}
-	}
-	return nil
-}
-
-// findSections finds multiple sections by names
-func (e *ELFFile) findSections(names []string) map[string]*Section {
-	result := make(map[string]*Section)
-	for _, name := range names {
-		result[name] = e.findSection(name)
-	}
-	return result
-}
-
-// validateELF checks if critical ELF values are reasonable
-func (e *ELFFile) validateELF() error {
-	if len(e.RawData) < 4 || string(e.RawData[0:4]) != "\x7FELF" {
-		return fmt.Errorf("invalid ELF header")
-	}
-
-	if len(e.RawData) < 64 {
-		return fmt.Errorf("file too small to be a valid ELF: %d bytes", len(e.RawData))
-	}
-
-	offsets := e.getELFOffsets()
-	shOffset := e.readValue(offsets.shOff, e.Is64Bit)
-	shCount := e.readValue16(offsets.shNum)
-
-	// Handle the case where there are no section headers (valid for stripped binaries)
-	if shOffset == 0 && shCount == 0 {
-		return nil // This is valid - no section headers
-	}
-
-	if shOffset >= uint64(len(e.RawData)) {
-		return fmt.Errorf("section header offset (%d) out of bounds (%d)", shOffset, len(e.RawData))
-	}
-
-	shEntSize := e.readValue16(offsets.shEntSize)
-
-	totalSize := shOffset + uint64(shCount)*uint64(shEntSize)
-	if totalSize > uint64(len(e.RawData)) {
-		return fmt.Errorf("section headers exceed file size: %d > %d", totalSize, len(e.RawData))
-	}
-
-	return nil
-}
-
-// ObfuscateSectionNames obfuscates ELF section names with realistic alternatives
-func (e *ELFFile) ObfuscateSectionNames() *common.OperationResult {
+func (e *ELFFile) obfuscateSectionNames() *common.OperationResult {
 	if err := e.validateELF(); err != nil {
 		return common.NewSkipped(fmt.Sprintf("ELF validation failed: %v", err))
 	}
@@ -285,8 +251,7 @@ func (e *ELFFile) ObfuscateSectionNames() *common.OperationResult {
 	return common.NewApplied(message, len(renamedSections))
 }
 
-// ObfuscateBaseAddresses randomly modifies virtual base addresses
-func (e *ELFFile) ObfuscateBaseAddresses() *common.OperationResult {
+func (e *ELFFile) obfuscateBaseAddresses() *common.OperationResult {
 	if err := e.validateELF(); err != nil {
 		return common.NewSkipped(fmt.Sprintf("ELF validation failed: %v", err))
 	}
@@ -351,43 +316,7 @@ func (e *ELFFile) ObfuscateBaseAddresses() *common.OperationResult {
 	return common.NewApplied(message, len(modifiedSegments))
 }
 
-// Helper functions for program header offsets
-func getVAddrOffset(is64bit bool) uint64 {
-	if is64bit {
-		return 16
-	}
-	return 8
-}
-
-func getPAddrOffset(is64bit bool) uint64 {
-	if is64bit {
-		return 24
-	}
-	return 12
-}
-
-// writeValue writes a value to the ELF file
-func (e *ELFFile) writeValue(offset, value uint64, is64bit bool) error {
-	// Add bounds checking to prevent panics
-	if offset >= uint64(len(e.RawData)) {
-		return fmt.Errorf("offset out of range: %d", offset)
-	}
-
-	if is64bit {
-		if offset+8 > uint64(len(e.RawData)) {
-			return fmt.Errorf("offset+size out of range: %d+8", offset)
-		}
-		return WriteAtOffset(e.RawData, int64(offset), value, e.getEndian())
-	}
-
-	if offset+4 > uint64(len(e.RawData)) {
-		return fmt.Errorf("offset+size out of range: %d+4", offset)
-	}
-	return WriteAtOffset(e.RawData, int64(offset), uint32(value), e.getEndian())
-}
-
-// ObfuscateSectionPadding randomizes padding between sections
-func (e *ELFFile) ObfuscateSectionPadding() *common.OperationResult {
+func (e *ELFFile) obfuscateSectionPadding() *common.OperationResult {
 	paddingCount := 0
 
 	for i := 0; i < len(e.Sections)-1; i++ {
@@ -412,9 +341,8 @@ func (e *ELFFile) ObfuscateSectionPadding() *common.OperationResult {
 	return common.NewApplied(fmt.Sprintf("randomized padding in %d section gaps", paddingCount), paddingCount)
 }
 
-// ObfuscateReservedHeaderFields randomizes reserved fields in ELF header
-func (e *ELFFile) ObfuscateReservedHeaderFields() *common.OperationResult {
-	modifiedFields := []string{}
+func (e *ELFFile) obfuscateReservedHeaderFields() *common.OperationResult {
+	var modifiedFields []string
 
 	// Randomize e_ident[9:16] (padding)
 	randBytes, err := common.GenerateRandomBytes(7)
@@ -443,8 +371,7 @@ func (e *ELFFile) ObfuscateReservedHeaderFields() *common.OperationResult {
 	return common.NewApplied(message, len(modifiedFields))
 }
 
-// ObfuscateRuntimeStrings obfuscates common strings in data sections
-func (e *ELFFile) ObfuscateRuntimeStrings() *common.OperationResult {
+func (e *ELFFile) obfuscateRuntimeStrings() *common.OperationResult {
 	stringReplacements := map[string]string{
 		"fprintf":   "foutput",   // 7 byte -> 7 byte
 		"printf":    "output",    // 6 byte -> 6 byte
@@ -520,7 +447,6 @@ func (e *ELFFile) ObfuscateRuntimeStrings() *common.OperationResult {
 	return common.NewApplied(message, modifications)
 }
 
-// formatObfuscationOperations formats the list of applied obfuscation operations
 func (e *ELFFile) formatObfuscationOperations(operations []string) string {
 	if len(operations) == 0 {
 		return "No operations performed"
@@ -578,52 +504,4 @@ func (e *ELFFile) formatObfuscationOperations(operations []string) string {
 	}
 
 	return strings.TrimSuffix(result.String(), "\n")
-}
-
-// ObfuscateAll applies all obfuscation techniques to the ELF file
-func (e *ELFFile) ObfuscateAll(force bool) *common.OperationResult {
-	originalSize := uint64(len(e.RawData))
-	var operations []string
-	totalCount := 0
-
-	if err := e.validateELF(); err != nil {
-		return common.NewSkipped(fmt.Sprintf("ELF validation failed: %v", err))
-	}
-
-	if result := e.ObfuscateSectionNames(); result != nil && result.Applied {
-		operations = append(operations, result.Message)
-		totalCount += result.Count
-	}
-
-	if result := e.ObfuscateSectionPadding(); result != nil && result.Applied {
-		operations = append(operations, result.Message)
-		totalCount += result.Count
-	}
-
-	if result := e.ObfuscateRuntimeStrings(); result != nil && result.Applied {
-		operations = append(operations, result.Message)
-		totalCount += result.Count
-	}
-
-	if result := e.ObfuscateReservedHeaderFields(); result != nil && result.Applied {
-		operations = append(operations, result.Message)
-		totalCount += result.Count
-	}
-
-	//if force {
-	//	if result := e.ObfuscateBaseAddresses(); result != nil && result.Applied {
-	//		message := fmt.Sprintf("⚠️ %s (risky)", result.Message)
-	//		operations = append(operations, message)
-	//		totalCount += result.Count
-	//	}
-	//}
-
-	if len(operations) == 0 {
-		return common.NewSkipped("no obfuscation operations applied")
-	}
-
-	message := fmt.Sprintf("ELF obfuscation completed: %d bytes processed\n%s",
-		originalSize, e.formatObfuscationOperations(operations))
-
-	return common.NewApplied(message, totalCount)
 }

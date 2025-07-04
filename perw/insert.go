@@ -8,7 +8,7 @@ import (
 	"os"
 )
 
-func (p *PEFile) AddHexSection(sectionName string, dataOrFile string, password string) error {
+func (p *PEFile) AddHexSection(sectionName string, dataOrFile string, password string) *common.OperationResult {
 	fileStat, err := os.Stat(dataOrFile)
 	isFile := err == nil && !fileStat.IsDir()
 
@@ -16,33 +16,37 @@ func (p *PEFile) AddHexSection(sectionName string, dataOrFile string, password s
 	if isFile {
 		content, err = common.ProcessFileForInsertion(dataOrFile, password)
 		if err != nil {
-			return fmt.Errorf("failed to process file for insertion: %w", err)
+			return common.NewSkipped(fmt.Sprintf("Failed to process file for insertion: %v", err))
 		}
 	} else {
 		content, err = common.ProcessStringForInsertion(dataOrFile, password)
 		if err != nil {
-			return fmt.Errorf("failed to process string for insertion: %w", err)
+			return common.NewSkipped(fmt.Sprintf("Failed to process string for insertion: %v", err))
 		}
 	}
-	return p.addSectionWithContent(sectionName, content, password != "")
+
+	err = p.addSectionWithContent(sectionName, content, password != "")
+	if err != nil {
+		return common.NewSkipped(fmt.Sprintf("Failed to insert section: %v", err))
+	}
+
+	message := fmt.Sprintf("Added hex section '%s'", sectionName)
+	if password != "" {
+		message += " (encrypted)"
+	}
+	return common.NewApplied(message, 1)
 }
 
 func (p *PEFile) addSectionWithContent(sectionName string, content []byte, isEncrypted bool) error {
 	if len(content) == 0 {
 		return fmt.Errorf("content cannot be empty")
 	}
-
-	// Sanitize section name (max 8 chars, null-terminated)
 	name := sanitizeSectionName(sectionName)
-
-	// Check if section already exists
 	for _, section := range p.Sections {
 		if section.Name == name {
 			return fmt.Errorf("section '%s' already exists", name)
 		}
 	}
-
-	// Add section normally - even if PE was corrupted, we can fix it by rewriting headers
 	return p.addSectionNormal(name, content)
 }
 
@@ -221,7 +225,6 @@ func (p *PEFile) writeSectionHeader(section *Section, offsets *PEOffsets) error 
 	return nil
 }
 
-// updateOptionalHeaderForNewSection updates SizeOfImage in optional header
 func (p *PEFile) updateOptionalHeaderForNewSection(newSection *Section) error {
 	if len(p.RawData) < 64 {
 		return fmt.Errorf("file too small for PE headers")

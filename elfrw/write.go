@@ -54,10 +54,6 @@ func WriteAtOffset(rawData []byte, offset int64, value interface{}, endian binar
 	return nil
 }
 
-func (e *ELFFile) writeAtOffset(pos int, value interface{}) error {
-	return WriteAtOffset(e.RawData, int64(pos), value, e.getEndian())
-}
-
 func (e *ELFFile) Save(updateHeaders bool, newSize int64) error {
 	if e.File == nil {
 		return fmt.Errorf("invalid file reference")
@@ -65,10 +61,7 @@ func (e *ELFFile) Save(updateHeaders bool, newSize int64) error {
 	if newSize > 0 && int64(len(e.RawData)) > newSize {
 		e.RawData = e.RawData[:newSize]
 	}
-
-	// For fallback mode (corrupted files), use a safer approach
 	if e.usedFallbackMode {
-		// Just write the data without updating headers or truncating
 		if _, err := e.File.Seek(0, io.SeekStart); err != nil {
 			return fmt.Errorf("failed to reposition file: %w", err)
 		}
@@ -77,63 +70,16 @@ func (e *ELFFile) Save(updateHeaders bool, newSize int64) error {
 		}
 		return nil
 	}
-
 	if updateHeaders {
-		if err := e.ModifyHeaders(uint64(len(e.RawData))); err != nil {
-			// If header modification fails, try to save without it
+		if err := e.modifyHeaders(uint64(len(e.RawData))); err != nil {
 			fmt.Printf("⚠️ Warning: Failed to update headers: %v\n", err)
-			// Continue without header updates
 		}
 	}
-
 	if err := e.writeRawData(); err != nil {
 		return err
 	}
-
-	// Make truncation optional - if it fails, log a warning but continue
 	if err := e.truncateFile(); err != nil {
 		fmt.Printf("⚠️ Warning: Failed to truncate file: %v\n", err)
-		// Continue despite truncation error
-	}
-
-	return nil
-}
-
-func (e *ELFFile) writeRawData() error {
-	if _, err := e.File.Seek(0, io.SeekStart); err != nil {
-		return fmt.Errorf("failed to reposition file: %w", err)
-	}
-	if _, err := e.File.Write(e.RawData); err != nil {
-		return fmt.Errorf("failed to write changes to disk: %w", err)
-	}
-	return nil
-}
-
-func (e *ELFFile) truncateFile() error {
-	if err := e.File.Truncate(int64(len(e.RawData))); err != nil {
-		return fmt.Errorf("failed to resize file: %w", err)
-	}
-	return nil
-}
-
-func (e *ELFFile) updateProgramHeader(index uint16, newSize uint64) error {
-	header, err := e.ELF.GetProgramHeader(index)
-	if err != nil {
-		return fmt.Errorf("failed to read program header %d: %w", index, err)
-	}
-	headerOffset, headerSize := header.GetFileOffset(), header.GetFileSize()
-
-	pos, err := e.getProgramHeaderPosition(index)
-	if err != nil {
-		// If we can't get the position, just skip this header
-		return nil
-	}
-
-	if headerOffset >= newSize {
-		return e.writeProgramHeaderOffsets(pos, newSize, 0)
-	} else if headerOffset+headerSize > newSize {
-		newFileSize := newSize - headerOffset
-		return e.writeProgramHeaderOffsets(pos, headerOffset, newFileSize)
 	}
 	return nil
 }
@@ -193,6 +139,39 @@ func (e *ELFFile) getProgramHeaderPosition(index uint16) (uint64, error) {
 	return offset + uint64(index)*entrySize, nil
 }
 
+func (e *ELFFile) writeAtOffset(pos int, value interface{}) error {
+	return WriteAtOffset(e.RawData, int64(pos), value, e.getEndian())
+}
+
+func (e *ELFFile) writeValue(offset, value uint64, is64bit bool) error {
+	// Add bounds checking to prevent panics
+	if offset >= uint64(len(e.RawData)) {
+		return fmt.Errorf("offset out of range: %d", offset)
+	}
+
+	if is64bit {
+		if offset+8 > uint64(len(e.RawData)) {
+			return fmt.Errorf("offset+size out of range: %d+8", offset)
+		}
+		return WriteAtOffset(e.RawData, int64(offset), value, e.getEndian())
+	}
+
+	if offset+4 > uint64(len(e.RawData)) {
+		return fmt.Errorf("offset+size out of range: %d+4", offset)
+	}
+	return WriteAtOffset(e.RawData, int64(offset), uint32(value), e.getEndian())
+}
+
+func (e *ELFFile) writeRawData() error {
+	if _, err := e.File.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("failed to reposition file: %w", err)
+	}
+	if _, err := e.File.Write(e.RawData); err != nil {
+		return fmt.Errorf("failed to write changes to disk: %w", err)
+	}
+	return nil
+}
+
 func (e *ELFFile) writeProgramHeaderOffsets(pos, offset, size uint64) error {
 	if e.Is64Bit {
 		if err := e.writeAtOffset(int(pos+elf64P_offset), offset); err != nil {
@@ -207,7 +186,36 @@ func (e *ELFFile) writeProgramHeaderOffsets(pos, offset, size uint64) error {
 	return e.writeAtOffset(int(pos+elf32P_filesz), uint32(size))
 }
 
-func (e *ELFFile) UpdateSectionHeaders() error {
+func (e *ELFFile) truncateFile() error {
+	if err := e.File.Truncate(int64(len(e.RawData))); err != nil {
+		return fmt.Errorf("failed to resize file: %w", err)
+	}
+	return nil
+}
+
+func (e *ELFFile) updateProgramHeader(index uint16, newSize uint64) error {
+	header, err := e.ELF.GetProgramHeader(index)
+	if err != nil {
+		return fmt.Errorf("failed to read program header %d: %w", index, err)
+	}
+	headerOffset, headerSize := header.GetFileOffset(), header.GetFileSize()
+
+	pos, err := e.getProgramHeaderPosition(index)
+	if err != nil {
+		// If we can't get the position, just skip this header
+		return nil
+	}
+
+	if headerOffset >= newSize {
+		return e.writeProgramHeaderOffsets(pos, newSize, 0)
+	} else if headerOffset+headerSize > newSize {
+		newFileSize := newSize - headerOffset
+		return e.writeProgramHeaderOffsets(pos, headerOffset, newFileSize)
+	}
+	return nil
+}
+
+func (e *ELFFile) updateSectionHeaders() error {
 	shoffPos, _, _ := e.getHeaderPositions()
 
 	// Ensure we have enough data to read the section header offset
@@ -285,8 +293,8 @@ func (e *ELFFile) clearNameOffsetCache() {
 	e.nameOffsets = nil
 }
 
-func (e *ELFFile) ModifyHeaders(newSize uint64) error {
-	if err := e.UpdateSectionHeaders(); err != nil {
+func (e *ELFFile) modifyHeaders(newSize uint64) error {
+	if err := e.updateSectionHeaders(); err != nil {
 		return err
 	}
 	for i := uint16(0); i < uint16(len(e.Segments)); i++ {

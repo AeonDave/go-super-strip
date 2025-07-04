@@ -7,7 +7,7 @@ import (
 )
 
 // AddHexSection adds a new section to the ELF file with hex content, optionally encrypted
-func (e *ELFFile) AddHexSection(sectionName string, dataOrFile string, password string) error {
+func (e *ELFFile) AddHexSection(sectionName string, dataOrFile string, password string) *common.OperationResult {
 	fileStat, err := os.Stat(dataOrFile)
 	isFile := err == nil && !fileStat.IsDir()
 
@@ -15,15 +15,25 @@ func (e *ELFFile) AddHexSection(sectionName string, dataOrFile string, password 
 	if isFile {
 		content, err = common.ProcessFileForInsertion(dataOrFile, password)
 		if err != nil {
-			return fmt.Errorf("failed to process file for insertion: %w", err)
+			return common.NewSkipped(fmt.Sprintf("Failed to process file for insertion: %v", err))
 		}
 	} else {
 		content, err = common.ProcessStringForInsertion(dataOrFile, password)
 		if err != nil {
-			return fmt.Errorf("failed to process string for insertion: %w", err)
+			return common.NewSkipped(fmt.Sprintf("Failed to process string for insertion: %v", err))
 		}
 	}
-	return e.addSectionWithContent(sectionName, content, password != "")
+
+	err = e.addSectionWithContent(sectionName, content, password != "")
+	if err != nil {
+		return common.NewSkipped(fmt.Sprintf("Failed to insert section: %v", err))
+	}
+
+	message := fmt.Sprintf("Added hex section '%s'", sectionName)
+	if password != "" {
+		message += " (encrypted)"
+	}
+	return common.NewApplied(message, 1)
 }
 
 // addSectionWithContent adds a section with the provided content

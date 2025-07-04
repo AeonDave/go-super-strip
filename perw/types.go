@@ -21,7 +21,6 @@ type PEFile struct {
 	subsystem          uint16
 	dllCharacteristics uint16
 	Machine            string
-	usedFallbackMode   bool // Tracks if we used fallback mode for section insertion
 	TimeDateStamp      string
 
 	directories []DirectoryEntry

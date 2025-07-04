@@ -38,7 +38,7 @@ type RegexStripRule struct {
 	IsRisky     bool
 }
 
-func GetSectionStripRule() map[SectionType]SectionStripRule {
+func getSectionStripRule() map[SectionType]SectionStripRule {
 	return map[SectionType]SectionStripRule{
 		DebugSections: {
 			ExactNames:  []string{},
