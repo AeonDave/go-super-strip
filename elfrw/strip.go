@@ -318,7 +318,7 @@ func (e *ELFFile) StripAll(force bool) *common.OperationResult {
 		}
 
 		// Apply appropriate security checks based on file type
-		isSharedObject := e.IsSharedObject()
+		isSharedObject := e.IsDynamic()
 		if (isSharedObject && !rule.StripForSO) || (!isSharedObject && !rule.StripForBIN) {
 			continue
 		}

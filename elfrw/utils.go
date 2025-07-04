@@ -53,52 +53,8 @@ func GetSegmentTypeName(segmentType uint32) string {
 	}
 }
 
-func (e *ELFFile) GetSectionByName(name string) (*Section, error) {
-	for i := range e.Sections {
-		if e.Sections[i].Name == name {
-			return &e.Sections[i], nil
-		}
-	}
-	return nil, fmt.Errorf("section '%s' not found", name)
-}
-
-func (e *ELFFile) GetSectionByIndex(index int) (*Section, error) {
-	if index < 0 || index >= len(e.Sections) {
-		return nil, fmt.Errorf("section index out of bounds: %d", index)
-	}
-	return &e.Sections[index], nil
-}
-
-func (e *ELFFile) GetExecutableSections() []Section {
-	var execSections []Section
-	for _, section := range e.Sections {
-		if section.IsExecutable {
-			execSections = append(execSections, section)
-		}
-	}
-	return execSections
-}
-
-func (e *ELFFile) GetLoadableSegments() []Segment {
-	var loadableSegments []Segment
-	for _, segment := range e.Segments {
-		if segment.Loadable {
-			loadableSegments = append(loadableSegments, segment)
-		}
-	}
-	return loadableSegments
-}
-
-func (e *ELFFile) IsExecutable() bool {
-	return e.ELF != nil && e.ELF.GetFileType() == 2 // ET_EXEC
-}
-
 func (e *ELFFile) IsDynamic() bool {
 	return e.ELF != nil && e.ELF.GetFileType() == 3 // ET_DYN
-}
-
-func (e *ELFFile) IsSharedObject() bool {
-	return e.IsDynamic()
 }
 
 func (e *ELFFile) GetFileTypeName() string {
@@ -140,17 +96,22 @@ func (e *ELFFile) GetFileType() uint16 {
 	return uint16(e.ELF.GetFileType())
 }
 
-// IsLittleEndian checks if the ELF file uses little-endian byte order.
 func (e *ELFFile) IsLittleEndian() bool {
 	return e.RawData[5] == 0x01 // EI_DATA field, 1 for LSB
 }
 
-// GetEndian returns the binary.ByteOrder for the ELF file.
 func (e *ELFFile) GetEndian() binary.ByteOrder {
 	if e.IsLittleEndian() {
 		return binary.LittleEndian
 	}
 	return binary.BigEndian
+}
+
+func (e *ELFFile) getFileAlignment() int64 {
+	if e.Is64Bit {
+		return 8
+	}
+	return 4
 }
 
 func (e *ELFFile) readUint64(pos int) uint64 {
