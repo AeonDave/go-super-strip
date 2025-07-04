@@ -65,7 +65,7 @@ func analyzeSectionAnomalies(sections []SectionInfo, fileSize int64) []string {
 		}
 
 		// Check for overlapping sections
-		if i > 0 && s.FileOffset < sections[i-1].FileOffset+sections[i-1].Size {
+		if i > 0 && s.Offset < sections[i-1].Offset+sections[i-1].Size {
 			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' overlaps previous section")
 		}
 
@@ -90,13 +90,13 @@ func analyzeSectionAnomalies(sections []SectionInfo, fileSize int64) []string {
 		}
 
 		// Check for negative file offsets
-		if s.FileOffset < 0 {
+		if s.Offset < 0 {
 			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' has invalid file offset")
 		}
 
 		// Check for non-aligned file offsets
-		if s.FileOffset > 0 && s.FileOffset%0x10 != 0 {
-			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' has non-aligned file offset (0x"+fmt.Sprintf("%X", s.FileOffset)+")")
+		if s.Offset > 0 && s.Offset%0x10 != 0 {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' has non-aligned file offset (0x"+fmt.Sprintf("%X", s.Offset)+")")
 		}
 
 		// Check for executable sections with unexpected names
@@ -116,8 +116,8 @@ func analyzeSectionAnomalies(sections []SectionInfo, fileSize int64) []string {
 
 		// Check for large gaps between sections
 		if i > 0 {
-			prevEnd := sections[i-1].FileOffset + sections[i-1].Size
-			gap := s.FileOffset - prevEnd
+			prevEnd := sections[i-1].Offset + sections[i-1].Size
+			gap := s.Offset - prevEnd
 			if gap > 64*1024 { // Gap > 64KB
 				issues = append(issues, common.SymbolWarn+" Large gap ("+formatSizeELF(gap)+") between '"+sections[i-1].Name+"' and '"+s.Name+"'")
 			}
@@ -177,7 +177,6 @@ func isExpectedWritableSectionELF(name string) bool {
 }
 
 func isWrongSectionOrderELF(prev, current string) bool {
-	// In ELF, .text typically comes before .data, which comes before .bss
 	if strings.HasPrefix(strings.ToLower(prev), ".data") &&
 		strings.HasPrefix(strings.ToLower(current), ".text") {
 		return true
@@ -247,75 +246,6 @@ func analyzeGlobalSectionAnomaliesELF(sections []SectionInfo, issues *[]string) 
 		if count > 1 {
 			*issues = append(*issues, common.SymbolWarn+" Duplicate section name '"+name+"' ("+fmt.Sprintf("%d", count)+" times)")
 		}
-	}
-}
-
-func formatSizeELF(size int64) string {
-	if size < 1024 {
-		return fmt.Sprintf("%d B", size)
-	} else if size < 1024*1024 {
-		return fmt.Sprintf("%.1f KB", float64(size)/1024)
-	} else {
-		return fmt.Sprintf("%.1f MB", float64(size)/(1024*1024))
-	}
-}
-
-func getSectionTypeName(sectionType uint32) string {
-	switch sectionType {
-	case 0:
-		return "NULL"
-	case 1:
-		return "PROGBITS"
-	case 2:
-		return "SYMTAB"
-	case 3:
-		return "STRTAB"
-	case 4:
-		return "RELA"
-	case 5:
-		return "HASH"
-	case 6:
-		return "DYNAMIC"
-	case 7:
-		return "NOTE"
-	case 8:
-		return "NOBITS"
-	case 9:
-		return "REL"
-	case 10:
-		return "SHLIB"
-	case 11:
-		return "DYNSYM"
-	default:
-		return fmt.Sprintf("UNK_%X", sectionType)
-	}
-}
-
-func formatPresence(present bool) string {
-	if present {
-		return "✅ Present"
-	}
-	return "❌ Missing"
-}
-
-func getDynamicTagName(tag int64) string {
-	switch tag {
-	case 0:
-		return "DT_NULL"
-	case 1:
-		return "DT_NEEDED"
-	case 2:
-		return "DT_PLTRELSZ"
-	case 3:
-		return "DT_PLTGOT"
-	case 4:
-		return "DT_HASH"
-	case 5:
-		return "DT_STRTAB"
-	case 6:
-		return "DT_SYMTAB"
-	default:
-		return fmt.Sprintf("DT_UNKNOWN_%X", tag)
 	}
 }
 
@@ -446,7 +376,7 @@ func (e *ELFFile) printBasicInfo() {
 	fmt.Printf("\n💾 SPACE UTILIZATION:\n")
 	var totalSectionSize int64
 	for _, section := range e.Sections {
-		if section.Type != 8 { // Skip NOBITS sections
+		if section.Type != SHT_NOBITS { // Skip NOBITS sections
 			totalSectionSize += section.Size
 		}
 	}
@@ -461,7 +391,7 @@ func (e *ELFFile) printBasicInfo() {
 	if len(e.Sections) > 0 && e.RawData != nil {
 		var lastSectionEnd int64
 		for _, section := range e.Sections {
-			if section.Type != 8 { // Skip NOBITS
+			if section.Type != SHT_NOBITS { // Skip NOBITS
 				sectionEnd := section.Offset + section.Size
 				if sectionEnd > lastSectionEnd {
 					lastSectionEnd = sectionEnd
@@ -562,7 +492,7 @@ func (e *ELFFile) printELFHeaders() {
 
 	// Check 2: Entry point validation
 	complianceChecks++
-	if e.entryPoint == 0 && e.getFileType() != 3 { // Not a shared object
+	if e.entryPoint == 0 && e.getFileType() != ET_DYN { // Not a shared object
 		warnings = append(warnings, "Entry point is zero for executable")
 	}
 
@@ -575,7 +505,7 @@ func (e *ELFFile) printELFHeaders() {
 
 	// Check 4: Dynamic linking consistency
 	complianceChecks++
-	if e.isDynamic && !e.hasInterpreter && e.getFileType() == 2 { // ET_EXEC
+	if e.isDynamic && !e.hasInterpreter && e.getFileType() == ET_EXEC { // ET_EXEC
 		warnings = append(warnings, "Dynamic executable without interpreter")
 	}
 
@@ -757,13 +687,10 @@ func (e *ELFFile) printSectionAnomalies() {
 	infos := make([]SectionInfo, len(e.Sections))
 	for i, s := range e.Sections {
 		infos[i] = SectionInfo{
-			Name:         s.Name,
-			FileOffset:   s.Offset,
-			Size:         s.Size,
-			IsExecutable: s.IsExecutable,
-			IsWritable:   s.IsWritable,
-			IsReadable:   s.IsReadable,
-			Entropy:      s.Entropy,
+			Name:              s.Name,
+			Offset:            s.Offset,
+			Size:              s.Size,
+			CommonSectionInfo: s.CommonSectionInfo,
 		}
 	}
 	issues := analyzeSectionAnomalies(infos, e.FileSize)
@@ -894,7 +821,7 @@ func (e *ELFFile) printDynamicAnalysis() {
 	// Check for RELRO
 	relroStatus := "❌ NO RELRO"
 	for _, segment := range e.Segments {
-		if segment.Type == 0x6474e552 { // PT_GNU_RELRO
+		if segment.Type == PT_GNU_RELRO { // PT_GNU_RELRO
 			relroStatus = "✅ RELRO enabled"
 			break
 		}
@@ -905,7 +832,7 @@ func (e *ELFFile) printDynamicAnalysis() {
 	nxStatus := "❌ NO NX protection"
 	hasExecutableStack := false
 	for _, segment := range e.Segments {
-		if segment.Type == 0x6474e551 { // PT_GNU_STACK
+		if segment.Type == PT_GNU_STACK { // PT_GNU_STACK
 			if segment.Flags&1 == 0 { // Not executable
 				nxStatus = "✅ NX enabled (non-exec stack)"
 			} else {
@@ -922,9 +849,9 @@ func (e *ELFFile) printDynamicAnalysis() {
 	// PIE/ASLR support
 	pieStatus := "❌ NO PIE"
 	fileType := e.getFileType()
-	if fileType == 3 { // ET_DYN
+	if fileType == ET_DYN { // ET_DYN
 		pieStatus = "✅ PIE enabled"
-	} else if fileType == 2 { // ET_EXEC
+	} else if fileType == ET_EXEC { // ET_EXEC
 		pieStatus = "⚠️  Fixed address executable"
 	}
 	fmt.Printf("PIE/ASLR:         %s\n", pieStatus)
@@ -1067,20 +994,20 @@ func (e *ELFFile) printExportsAnalysis() {
 	fmt.Println("═══════════════════")
 
 	// Parse both static and dynamic symbols for exports
-	staticSymbols := e.parseStaticSymbols()
+	staticSymbols := e.parseSymbolTable(".symtab", ".strtab")
 	dynamicSymbols := e.parseDynamicSymbols()
 
 	var exportedSymbols []Symbol
 
 	// Find exported symbols (global binding, defined)
 	for _, symbol := range staticSymbols {
-		if symbol.Binding == 1 && symbol.Section != 0 { // STB_GLOBAL and not undefined
+		if symbol.Binding == STB_GLOBAL && symbol.Section != 0 { // STB_GLOBAL and not undefined
 			exportedSymbols = append(exportedSymbols, symbol)
 		}
 	}
 
 	for _, symbol := range dynamicSymbols {
-		if symbol.Binding == 1 && symbol.Section != 0 { // STB_GLOBAL and not undefined
+		if symbol.Binding == STB_GLOBAL && symbol.Section != 0 { // STB_GLOBAL and not undefined
 			exportedSymbols = append(exportedSymbols, symbol)
 		}
 	}
@@ -1100,9 +1027,9 @@ func (e *ELFFile) printExportsAnalysis() {
 
 	for _, symbol := range exportedSymbols {
 		switch symbol.Type {
-		case 2: // STT_FUNC
+		case STT_FUNC: // STT_FUNC
 			functions = append(functions, symbol)
-		case 1: // STT_OBJECT
+		case STT_OBJECT: // STT_OBJECT
 			objects = append(objects, symbol)
 		default:
 			others = append(others, symbol)
@@ -1162,7 +1089,7 @@ func (e *ELFFile) parseDynamicLibraries() []string {
 	}
 
 	for _, entry := range e.DynamicEntries {
-		if entry.Tag == 1 { // DT_NEEDED
+		if entry.Tag == DT_NEEDED { // DT_NEEDED
 			if libName := e.readStringFromSection(strIndex, int(entry.Value)); libName != "" {
 				libraries = append(libraries, libName)
 			}
@@ -1213,26 +1140,134 @@ func (e *ELFFile) categorizeSymbol(symbolName string) string {
 	return "unknown"
 }
 
-func (e *ELFFile) parseStaticSymbols() []Symbol {
-	return []Symbol{} // Placeholder implementation
-}
-
 func (e *ELFFile) detectLanguageAndCompiler() (string, string) {
-	// Look for common section patterns
+
 	language := "Unknown"
 	compiler := "Unknown"
+	langDetected := false
 
+	hasGoSections := false
+	hasGccComment := false
+	hasClangComment := false
+	hasRustSections := false
+	hasSwiftSections := false
+	hasFPCSections := false
+	hasDSections := false
 	for _, section := range e.Sections {
-		if section.Name == ".comment" {
-			// In a real implementation, we'd parse the comment section
-			language = "C/C++"
-			compiler = "GCC/Clang"
-			break
+		name := section.Name
+		switch {
+		case strings.HasPrefix(name, ".go.") || name == ".gopclntab" || name == ".go.buildinfo":
+			hasGoSections = true
+		case name == ".comment":
+			if section.Offset+section.Size <= int64(len(e.RawData)) && section.Size > 0 {
+				commentData := e.RawData[section.Offset : section.Offset+section.Size]
+				commentStr := string(commentData)
+				if common.VersionRegex.MatchString(commentStr) {
+					if strings.Contains(strings.ToLower(commentStr), "gcc") {
+						hasGccComment = true
+						language = "C/C++"
+						compiler = "GCC"
+						langDetected = true
+					}
+				}
+				if common.BuildInfoRegex.MatchString(commentStr) {
+					commentLower := strings.ToLower(commentStr)
+					switch {
+					case strings.Contains(commentLower, "clang"):
+						hasClangComment = true
+						language = "C/C++"
+						compiler = "Clang"
+						langDetected = true
+					case strings.Contains(commentLower, "gcc"):
+						hasGccComment = true
+						language = "C/C++"
+						compiler = "GCC"
+						langDetected = true
+					case strings.Contains(commentLower, "rustc"):
+						language = "Rust"
+						compiler = "rustc"
+						langDetected = true
+					case strings.Contains(commentLower, "msvc"):
+						language = "C/C++"
+						compiler = "MSVC"
+						langDetected = true
+					case strings.Contains(commentLower, "fpc"):
+						language = "Free Pascal"
+						compiler = "FPC"
+						langDetected = true
+					case strings.Contains(commentLower, "dmd"):
+						language = "D"
+						compiler = "DMD"
+						langDetected = true
+					}
+				}
+				if !langDetected {
+					commentLower := strings.ToLower(commentStr)
+					if strings.Contains(commentLower, "gcc") || strings.Contains(commentLower, "gnu") {
+						hasGccComment = true
+						language = "C/C++"
+						compiler = "GCC"
+						langDetected = true
+					} else if strings.Contains(commentLower, "clang") || strings.Contains(commentLower, "llvm") {
+						hasClangComment = true
+						language = "C/C++"
+						compiler = "Clang"
+						langDetected = true
+					}
+				}
+			}
+		case name == ".rustc":
+			hasRustSections = true
+		case strings.HasPrefix(name, "__swift5_"):
+			hasSwiftSections = true
+		case strings.Contains(name, "fpc"):
+			hasFPCSections = true
+		case strings.HasPrefix(name, ".d_"):
+			hasDSections = true
 		}
-		if strings.Contains(section.Name, ".go.") {
-			language = "Go"
-			compiler = "Go compiler"
-			break
+	}
+
+	if hasGoSections {
+		language = "Go"
+		compiler = "Go Compiler"
+		langDetected = true
+	} else if hasRustSections {
+		language = "Rust"
+		compiler = "rustc"
+		langDetected = true
+	} else if hasSwiftSections {
+		language = "Swift"
+		compiler = "Swift Compiler"
+		langDetected = true
+	} else if hasFPCSections {
+		language = "Free Pascal"
+		compiler = "FPC"
+		langDetected = true
+	} else if hasDSections {
+		language = "D"
+		compiler = "LDC/GDC"
+		langDetected = true
+	} else if hasGccComment || hasClangComment {
+		language = "C/C++"
+		if hasGccComment && hasClangComment {
+			compiler = "GCC/Clang"
+		} else if hasGccComment {
+			compiler = "GCC"
+		} else {
+			compiler = "Clang"
+		}
+		langDetected = true
+	}
+
+	// Heuristica di fallback per i binari stripped
+	if !langDetected {
+		for _, section := range e.Sections {
+			if section.Name == ".rodata" && section.Size > 0 {
+				// Potrebbe essere un binario C/C++ o Rust
+				language = "C/C++ or Rust"
+				compiler = "Unknown (stripped)"
+				break
+			}
 		}
 	}
 
@@ -1282,9 +1317,9 @@ func (e *ELFFile) parseSymbolTable(symtabName, strtabName string) []Symbol {
 	stringTableData := e.RawData[strtabSection.Offset : strtabSection.Offset+strtabSection.Size]
 	var entrySize int64
 	if e.Is64Bit {
-		entrySize = 24 // sizeof(Elf64_Sym)
+		entrySize = ELF64_SYM_SIZE // sizeof(Elf64_Sym)
 	} else {
-		entrySize = 16 // sizeof(Elf32_Sym)
+		entrySize = ELF32_SYM_SIZE // sizeof(Elf32_Sym)
 	}
 
 	if symtabSection.Size%entrySize != 0 {
@@ -1344,37 +1379,6 @@ func (e *ELFFile) parseSymbolEntry(data []byte, stringTable []byte) Symbol {
 	return symbol
 }
 
-func (e *ELFFile) readUint32FromBytes(data []byte) uint32 {
-	if len(data) < 4 {
-		return 0
-	}
-	if e.isLittleEndian() {
-		return uint32(data[0]) | uint32(data[1])<<8 | uint32(data[2])<<16 | uint32(data[3])<<24
-	}
-	return uint32(data[3]) | uint32(data[2])<<8 | uint32(data[1])<<16 | uint32(data[0])<<24
-}
-
-func (e *ELFFile) readUint64FromBytes(data []byte) uint64 {
-	if len(data) < 8 {
-		return 0
-	}
-	if e.isLittleEndian() {
-		return uint64(data[0]) | uint64(data[1])<<8 | uint64(data[2])<<16 | uint64(data[3])<<24 |
-			uint64(data[4])<<32 | uint64(data[5])<<40 | uint64(data[6])<<48 | uint64(data[7])<<56
-	}
-	return uint64(data[7]) | uint64(data[6])<<8 | uint64(data[5])<<16 | uint64(data[4])<<24 |
-		uint64(data[3])<<32 | uint64(data[2])<<40 | uint64(data[1])<<48 | uint64(data[0])<<56
-}
-
-func (e *ELFFile) readNullTerminatedString(data []byte) string {
-	for i, b := range data {
-		if b == 0 {
-			return string(data[:i])
-		}
-	}
-	return string(data) // No null terminator found
-}
-
 func (e *ELFFile) findSectionByName(name string) (uint16, bool) {
 	count := e.ELF.GetSectionCount()
 	for i := uint16(0); i < count; i++ {
@@ -1416,9 +1420,9 @@ func (e *ELFFile) parseSymbolsFromSection(symIndex, strIndex uint16) []Symbol {
 	// Symbol table entry size depends on architecture
 	var entrySize int
 	if e.Is64Bit {
-		entrySize = 24 // 64-bit symbol table entry
+		entrySize = ELF64_SYM_SIZE // 64-bit symbol table entry
 	} else {
-		entrySize = 16 // 32-bit symbol table entry
+		entrySize = ELF32_SYM_SIZE // 32-bit symbol table entry
 	}
 
 	// Parse each symbol entry

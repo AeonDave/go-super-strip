@@ -24,8 +24,8 @@ var (
 	networkURLRegex   = regexp.MustCompile(`^(?:https?|ftp|ssh|telnet|ldap)://[a-zA-Z0-9.-]+|^www\.[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}|^[a-zA-Z0-9.-]+\.(?:com|org|net|edu|gov|mil|info|biz|io|co)(?:/|$)|^(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?::[0-9]{1,5})?/`)
 	emailRegex        = regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`)
 	uuidRegex         = regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
-	versionRegex      = regexp.MustCompile(`(?i)\b(?:v|vers|version)\s*\.?\s*([0-9]{1,3}\.){1,2}[0-9]{1,3}(?:-[a-zA-Z0-9]+)?(?:\+[a-zA-Z0-9]+)?\b|go1\.[0-9]{1,2}(?:\.[0-9]{1,2})?\b|GCC: \([^)]+\) [0-9]+\.[0-9]+\.[0-9]+\b`)
-	buildInfoRegex    = regexp.MustCompile(`(?i)(?:Go build ID: "[a-zA-Z0-9/_\-=+]"|build[-\s]?id[:\s]*[a-f0-9]{7,40}|commit[-:\s]*[a-f0-9]{7,40}|revision[-:\s]*[a-f0-9]{7,40}|(?:gcc|clang|rustc|msvc|dotnet|mono|delphi|fpc|dmd)[\s:/\-]+[0-9]+\.[0-9]+(?:\.[0-9]+)?|/build/[^/\s]+/[^/\s]+\.(go|c|cpp|rs|cs|vb)|version\s*[0-9]+\.[0-9]+(?:\.[0-9]+)?)`)
+	VersionRegex      = regexp.MustCompile(`(?i)\b(?:v|vers|version)\s*\.?\s*([0-9]{1,3}\.){1,2}[0-9]{1,3}(?:-[a-zA-Z0-9]+)?(?:\+[a-zA-Z0-9]+)?\b|go1\.[0-9]{1,2}(?:\.[0-9]{1,2})?\b|GCC: \([^)]+\) [0-9]+\.[0-9]+\.[0-9]+\b`)
+	BuildInfoRegex    = regexp.MustCompile(`(?i)(?:Go build ID: "[a-zA-Z0-9/_\-=+]"|build[-\s]?id[:\s]*[a-f0-9]{7,40}|commit[-:\s]*[a-f0-9]{7,40}|revision[-:\s]*[a-f0-9]{7,40}|(?:gcc|clang|rustc|msvc|dotnet|mono|delphi|fpc|dmd)[\s:/\-]+[0-9]+\.[0-9]+(?:\.[0-9]+)?|/build/[^/\s]+/[^/\s]+\.(go|c|cpp|rs|cs|vb)|version\s*[0-9]+\.[0-9]+(?:\.[0-9]+)?)`)
 	hexStringRegex    = regexp.MustCompile(`^[0-9A-Fa-f]{32,}$`)
 	base64Regex       = regexp.MustCompile(`^[A-Za-z0-9+/]{20,}={0,2}$`)
 	urlEncodedRegex   = regexp.MustCompile(`%[0-9A-Fa-f]{2}`)
@@ -168,7 +168,7 @@ func filterAndCategorize(strs []string, categories map[string][]string) []string
 func categorizeString(s string, categories map[string][]string) bool {
 	sLower := strings.ToLower(s)
 
-	if versionRegex.MatchString(s) {
+	if VersionRegex.MatchString(s) {
 		if len(s) < 100 && !strings.Contains(s, "error") && !strings.Contains(s, "failed") &&
 			!strings.Contains(s, "malformed") && !strings.Contains(s, "invalid") {
 			categories["🔧 Versions/Compiler"] = append(categories["🔧 Versions/Compiler"], s)
@@ -177,7 +177,7 @@ func categorizeString(s string, categories map[string][]string) bool {
 	}
 
 	// Check build information
-	if buildInfoRegex.MatchString(s) || containsDatePattern(sLower) {
+	if BuildInfoRegex.MatchString(s) || containsDatePattern(sLower) {
 		categories["🏗️ Build Information"] = append(categories["🏗️ Build Information"], s)
 		return true
 	}

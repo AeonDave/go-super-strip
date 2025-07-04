@@ -74,17 +74,19 @@ func newPEFileFromDisk(file *os.File) (*PEFile, error) {
 			FileName: file.Name(),
 			RawData:  rawData,
 			Is64Bit:  false,
-			FileSize: fileInfo.Size(),
+			CommonFileInfo: common.CommonFileInfo{
+				FileSize: fileInfo.Size(),
+			},
 		}
 
-		if len(rawData) > 64 {
+		if len(rawData) > PE_DOS_HEADER_SIZE {
 
-			dosHeaderOffset := int(rawData[60]) | int(rawData[61])<<8 | int(rawData[62])<<16 | int(rawData[63])<<24
-			if dosHeaderOffset > 0 && dosHeaderOffset+24 < len(rawData) {
-				magic := rawData[dosHeaderOffset+24 : dosHeaderOffset+26]
+			dosHeaderOffset := int(rawData[PE_ELFANEW_OFFSET]) | int(rawData[PE_ELFANEW_OFFSET+1])<<8 | int(rawData[PE_ELFANEW_OFFSET+2])<<16 | int(rawData[PE_ELFANEW_OFFSET+3])<<24
+			if dosHeaderOffset > 0 && dosHeaderOffset+PE_FILE_HEADER_SIZE+4 < len(rawData) {
+				magic := rawData[dosHeaderOffset+PE_FILE_HEADER_SIZE+4 : dosHeaderOffset+PE_FILE_HEADER_SIZE+6]
 				if len(magic) >= 2 {
 					magicValue := uint16(magic[0]) | uint16(magic[1])<<8
-					pf.Is64Bit = magicValue == 0x20b
+					pf.Is64Bit = magicValue == PE64_MAGIC
 				}
 			}
 		}
@@ -98,7 +100,9 @@ func newPEFileFromDisk(file *os.File) (*PEFile, error) {
 		FileName: file.Name(),
 		RawData:  rawData,
 		Is64Bit:  peLibFile.FileHeader.Machine == pe.IMAGE_FILE_MACHINE_AMD64,
-		FileSize: fileInfo.Size(),
+		CommonFileInfo: common.CommonFileInfo{
+			FileSize: fileInfo.Size(),
+		},
 	}
 	return pf, nil
 }
@@ -112,7 +116,7 @@ func IsPEFile(filePath string) (bool, error) {
 		_ = file.Close()
 	}(file)
 
-	dosHeader := make([]byte, 64)
+	dosHeader := make([]byte, PE_DOS_HEADER_SIZE)
 	if _, err := file.Read(dosHeader); err != nil {
 		return false, nil
 	}
@@ -121,7 +125,7 @@ func IsPEFile(filePath string) (bool, error) {
 		return false, nil
 	}
 
-	peOffset := binary.LittleEndian.Uint32(dosHeader[60:64])
+	peOffset := binary.LittleEndian.Uint32(dosHeader[PE_ELFANEW_OFFSET : PE_ELFANEW_OFFSET+4])
 
 	if _, err := file.Seek(int64(peOffset), 0); err != nil {
 		return false, nil
@@ -179,7 +183,7 @@ func readFileData(file *os.File) ([]byte, error) {
 }
 
 func validateDOSHeader(data []byte) error {
-	if len(data) < 64 {
+	if len(data) < PE_DOS_HEADER_SIZE {
 		return fmt.Errorf("file too small to be a valid PE file")
 	}
 	if data[0] != 'M' || data[1] != 'Z' {
@@ -279,9 +283,11 @@ func (p *PEFile) parseSectionBase(i int, s *pe.Section) Section {
 		Flags:          s.Characteristics,
 		RVA:            s.VirtualAddress,
 		FileOffset:     s.Offset,
-		IsExecutable:   (s.Characteristics & pe.IMAGE_SCN_MEM_EXECUTE) != 0,
-		IsReadable:     (s.Characteristics & pe.IMAGE_SCN_MEM_READ) != 0,
-		IsWritable:     (s.Characteristics & pe.IMAGE_SCN_MEM_WRITE) != 0,
+		CommonSectionInfo: common.CommonSectionInfo{
+			IsExecutable: (s.Characteristics & pe.IMAGE_SCN_MEM_EXECUTE) != 0,
+			IsReadable:   (s.Characteristics & pe.IMAGE_SCN_MEM_READ) != 0,
+			IsWritable:   (s.Characteristics & pe.IMAGE_SCN_MEM_WRITE) != 0,
+		},
 	}
 }
 
@@ -475,7 +481,7 @@ func (p *PEFile) extractTimeDateStamp() {
 }
 
 func (p *PEFile) extractVersionInfo() {
-	p.versionInfo = make(map[string]string)
+	p.VersionInfo = make(map[string]string)
 
 	if p.PE != nil && len(p.PE.Sections) > 0 {
 		for _, s := range p.PE.Sections {
@@ -496,22 +502,22 @@ func (p *PEFile) extractVersionInfo() {
 							valStart := fidx + len(fieldUtf16) + 2
 							val := readUtf16String(block[valStart:])
 							if val != "" {
-								p.versionInfo[field] = val
+								p.VersionInfo[field] = val
 							}
 						}
 					}
 
-					if len(p.versionInfo) > 0 {
+					if len(p.VersionInfo) > 0 {
 						return
 					}
 				}
 			}
 		}
 	}
-	p.versionInfo["FileVersion"] = "Unknown"
-	p.versionInfo["ProductVersion"] = "Unknown"
-	p.versionInfo["CompanyName"] = "Unknown"
-	p.versionInfo["FileDescription"] = "Unknown"
+	p.VersionInfo["FileVersion"] = "Unknown"
+	p.VersionInfo["ProductVersion"] = "Unknown"
+	p.VersionInfo["CompanyName"] = "Unknown"
+	p.VersionInfo["FileDescription"] = "Unknown"
 
 }
 
@@ -615,9 +621,11 @@ func (p *PEFile) parseBasicSectionsFromRaw() error {
 				FileOffset:     uint32(pointerToRawData),
 				Flags:          characteristics,
 				Index:          validSections,
-				IsExecutable:   (characteristics & 0x20000000) != 0,
-				IsReadable:     (characteristics & 0x40000000) != 0,
-				IsWritable:     (characteristics & 0x80000000) != 0,
+				CommonSectionInfo: common.CommonSectionInfo{
+					IsExecutable: (characteristics & 0x20000000) != 0,
+					IsReadable:   (characteristics & 0x40000000) != 0,
+					IsWritable:   (characteristics & 0x80000000) != 0,
+				},
 			}
 
 			p.fillSectionHashesAndEntropy(&section)

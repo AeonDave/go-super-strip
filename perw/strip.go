@@ -231,7 +231,7 @@ func (p *PEFile) StripAllDirs() *common.OperationResult {
 }
 
 func (p *PEFile) StripHeader() *common.OperationResult {
-	dosReservedStart, dosReservedSize := int64(0x1C), 0x3C-0x1C
+	dosReservedStart, dosReservedSize := int64(0x1C), PE_ELFANEW_OFFSET-0x1C
 	if err := p.validateOffset(dosReservedStart, dosReservedSize); err != nil {
 		return common.NewSkipped("DOS header reserved fields not accessible")
 	}
@@ -247,7 +247,7 @@ func (p *PEFile) StripRichHeader() *common.OperationResult {
 		return common.NewSkipped(fmt.Sprintf("failed to calculate offsets: %v", err))
 	}
 	richSignature := []byte{0x52, 0x69, 0x63, 0x68} // "Rich" in little endian
-	searchStart := int64(dosHeaderSize)
+	searchStart := int64(PE_DOS_HEADER_SIZE)
 	searchEnd := offsets.ELfanew
 
 	if searchEnd <= searchStart {
@@ -255,17 +255,17 @@ func (p *PEFile) StripRichHeader() *common.OperationResult {
 	}
 
 	for i := searchStart; i < searchEnd-3; i++ {
-		if err := p.validateOffset(i, 4); err != nil {
+		if err := p.validateOffset(i, PE_SIGNATURE_SIZE); err != nil {
 			continue
 		}
 
-		if bytes.Equal(p.RawData[i:i+4], richSignature) {
+		if bytes.Equal(p.RawData[i:i+PE_SIGNATURE_SIZE], richSignature) {
 			dansSignature := []byte{0x44, 0x61, 0x6E, 0x53} // "DanS"
-			for j := i - 4; j >= searchStart; j -= 4 {
-				if err := p.validateOffset(j, 4); err != nil {
+			for j := i - PE_SIGNATURE_SIZE; j >= searchStart; j -= PE_SIGNATURE_SIZE {
+				if err := p.validateOffset(j, PE_SIGNATURE_SIZE); err != nil {
 					continue
 				}
-				if bytes.Equal(p.RawData[j:j+4], dansSignature) {
+				if bytes.Equal(p.RawData[j:j+PE_SIGNATURE_SIZE], dansSignature) {
 					headerSize := int(i + 8 - j)
 					if err := p.validateOffset(j, headerSize); err != nil {
 						return common.NewSkipped("Rich Header not accessible")
@@ -283,12 +283,12 @@ func (p *PEFile) StripRichHeader() *common.OperationResult {
 }
 
 func (p *PEFile) StripPEHeaderTimeDateStamp() *common.OperationResult {
-	if len(p.RawData) < 64 {
+	if len(p.RawData) < PE_DOS_HEADER_SIZE {
 		return common.NewSkipped("file too small for PE structure")
 	}
-	peHeaderOffset := int64(binary.LittleEndian.Uint32(p.RawData[60:64]))
-	coffHeaderOffset := peHeaderOffset + 4
-	timeDateStampOffset := coffHeaderOffset + 4
+	peHeaderOffset := int64(binary.LittleEndian.Uint32(p.RawData[PE_ELFANEW_OFFSET : PE_ELFANEW_OFFSET+4]))
+	coffHeaderOffset := peHeaderOffset + PE_SIGNATURE_SIZE
+	timeDateStampOffset := coffHeaderOffset + PE_TIMESTAMP_OFFSET
 	if err := p.validateOffset(timeDateStampOffset, 4); err != nil {
 		return common.NewSkipped("TimeDateStamp field not accessible")
 	}
@@ -501,10 +501,10 @@ func (p *PEFile) shouldStripForFileType(sectionType SectionType) bool {
 }
 
 func (p *PEFile) isDLL() bool {
-	if len(p.RawData) < 64 {
+	if len(p.RawData) < PE_DOS_HEADER_SIZE {
 		return false
 	}
-	peHeaderOffset := binary.LittleEndian.Uint32(p.RawData[0x3C:0x40])
+	peHeaderOffset := binary.LittleEndian.Uint32(p.RawData[PE_ELFANEW_OFFSET : PE_ELFANEW_OFFSET+4])
 	if peHeaderOffset+26 > uint32(len(p.RawData)) {
 		return false
 	}
@@ -581,15 +581,15 @@ func (p *PEFile) rvaToPhysical(rva uint64) (uint64, error) {
 }
 
 func (p *PEFile) fixCOFFHeaderAfterStripping() error {
-	if len(p.RawData) < 64 {
+	if len(p.RawData) < PE_DOS_HEADER_SIZE {
 		return fmt.Errorf("file too small for PE structure")
 	}
-	peHeaderOffset := int64(binary.LittleEndian.Uint32(p.RawData[60:64]))
-	if peHeaderOffset < 0 || peHeaderOffset+24 >= int64(len(p.RawData)) {
+	peHeaderOffset := int64(binary.LittleEndian.Uint32(p.RawData[PE_ELFANEW_OFFSET : PE_ELFANEW_OFFSET+4]))
+	if peHeaderOffset < 0 || peHeaderOffset+PE_FILE_HEADER_SIZE+PE_SIGNATURE_SIZE >= int64(len(p.RawData)) {
 		return fmt.Errorf("invalid PE header")
 	}
 
-	coffHeaderOffset := peHeaderOffset + 4
+	coffHeaderOffset := peHeaderOffset + PE_SIGNATURE_SIZE
 	if coffHeaderOffset+16 > int64(len(p.RawData)) {
 		return fmt.Errorf("invalid COFF header")
 	}

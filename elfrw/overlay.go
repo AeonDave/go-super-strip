@@ -7,9 +7,6 @@ import (
 	"os"
 )
 
-// AddOverlay adds data as an overlay to an ELF file without creating a named section
-// dataOrFile: path to a file or a string to add
-// password: optional password for encryption
 func (e *ELFFile) AddOverlay(dataOrFile string, password string) *common.OperationResult {
 	fileStat, err := os.Stat(dataOrFile)
 	isFile := err == nil && !fileStat.IsDir()

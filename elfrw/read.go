@@ -6,12 +6,11 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"github.com/yalue/elf_reader"
 	"gosstrip/common"
 	"io"
 	"os"
 	"strings"
-
-	"github.com/yalue/elf_reader"
 )
 
 func ReadELF(file *os.File) (*ELFFile, error) {
@@ -40,15 +39,13 @@ func IsELFFile(filePath string) (bool, error) {
 	defer func(file *os.File) {
 		_ = file.Close()
 	}(file)
-
-	// Read ELF header
-	elfHeader := make([]byte, 16)
+	elfHeader := make([]byte, ELF_IDENT_SIZE)
 	if _, err := file.Read(elfHeader); err != nil {
 		return false, nil // Not enough data, not an ELF file
 	}
 
 	// Check ELF signature (0x7f + "ELF")
-	return elfHeader[0] == 0x7f && elfHeader[1] == 'E' && elfHeader[2] == 'L' && elfHeader[3] == 'F', nil
+	return elfHeader[0] == ELF_MAG0 && elfHeader[1] == ELF_MAG1 && elfHeader[2] == ELF_MAG2 && elfHeader[3] == ELF_MAG3, nil
 }
 
 func newELFFileFromDisk(file *os.File) (*ELFFile, error) {
@@ -68,11 +65,13 @@ func newELFFileFromDisk(file *os.File) (*ELFFile, error) {
 
 	is64Bit := len(rawData) > 4 && rawData[4] == 2
 	ef := &ELFFile{
-		File:        file,
-		FileName:    file.Name(),
-		RawData:     rawData,
-		Is64Bit:     is64Bit,
-		FileSize:    fileInfo.Size(),
+		File:     file,
+		FileName: file.Name(),
+		RawData:  rawData,
+		Is64Bit:  is64Bit,
+		CommonFileInfo: common.CommonFileInfo{
+			FileSize: fileInfo.Size(),
+		},
 		nameOffsets: make(map[string]uint32),
 	}
 
@@ -97,10 +96,10 @@ func executeSafeParsing(component, fileName string, parseFunc func()) {
 }
 
 func validateELFHeader(data []byte) error {
-	if len(data) < 4 {
+	if len(data) < ELF_MAG_SIZE {
 		return fmt.Errorf("file too small to be an ELF file")
 	}
-	if !(data[0] == 0x7f && data[1] == 'E' && data[2] == 'L' && data[3] == 'F') {
+	if !(data[0] == ELF_MAG0 && data[1] == ELF_MAG1 && data[2] == ELF_MAG2 && data[3] == ELF_MAG3) {
 		return fmt.Errorf("not an ELF file (invalid magic number)")
 	}
 	return nil
@@ -121,34 +120,39 @@ func parseFlags(flags elf_reader.ELFSectionFlags) uint64 {
 }
 
 func (e *ELFFile) validateELF() error {
-	if len(e.RawData) < 4 || string(e.RawData[0:4]) != "\x7FELF" {
+	if len(e.RawData) < ELF_MAG_SIZE {
 		return fmt.Errorf("invalid ELF header")
 	}
-
-	if len(e.RawData) < 64 {
+	if !(e.RawData[0] == ELF_MAG0 && e.RawData[1] == ELF_MAG1 &&
+		e.RawData[2] == ELF_MAG2 && e.RawData[3] == ELF_MAG3) {
+		return fmt.Errorf("invalid ELF header")
+	}
+	minHeaderSize := ELF64_EHDR_SIZE
+	if len(e.RawData) < minHeaderSize {
 		return fmt.Errorf("file too small to be a valid ELF: %d bytes", len(e.RawData))
 	}
+	var shOffset uint64
+	var shCount, shEntSize uint16
 
-	offsets := e.getELFOffsets()
-	shOffset := e.readValue(offsets.shOff, e.Is64Bit)
-	shCount := e.readValue16(offsets.shNum)
-
-	// Handle the case where there are no section headers (valid for stripped binaries)
+	if e.Is64Bit {
+		shOffset = e.readValue(ELF64_E_SHOFF, e.Is64Bit)
+		shCount = e.readValue16(ELF64_E_SHNUM)
+		shEntSize = e.readValue16(ELF64_E_SHENTSIZE)
+	} else {
+		shOffset = e.readValue(ELF32_E_SHOFF, e.Is64Bit)
+		shCount = e.readValue16(ELF32_E_SHNUM)
+		shEntSize = e.readValue16(ELF32_E_SHENTSIZE)
+	}
 	if shOffset == 0 && shCount == 0 {
 		return nil // This is valid - no section headers
 	}
-
 	if shOffset >= uint64(len(e.RawData)) {
 		return fmt.Errorf("section header offset (%d) out of bounds (%d)", shOffset, len(e.RawData))
 	}
-
-	shEntSize := e.readValue16(offsets.shEntSize)
-
 	totalSize := shOffset + uint64(shCount)*uint64(shEntSize)
 	if totalSize > uint64(len(e.RawData)) {
 		return fmt.Errorf("section headers exceed file size: %d > %d", totalSize, len(e.RawData))
 	}
-
 	return nil
 }
 
@@ -178,11 +182,9 @@ func (e *ELFFile) readValue(offset int, is64bit bool) uint64 {
 }
 
 func (e *ELFFile) readValue16(offset int) uint16 {
-	// Add bounds checking to prevent panics
 	if offset < 0 || offset+2 > len(e.RawData) {
 		return 0
 	}
-
 	endian := e.getEndian()
 	if endian == binary.LittleEndian {
 		return binary.LittleEndian.Uint16(e.RawData[offset : offset+2])
@@ -334,18 +336,20 @@ func (e *ELFFile) parseSections() []Section {
 		flags := header.GetFlags()
 
 		section := Section{
-			Name:         name,
-			Offset:       int64(header.GetFileOffset()),
-			Size:         int64(header.GetSize()),
-			Address:      header.GetVirtualAddress(),
-			Index:        int(i),
-			Type:         uint32(header.GetType()),
-			Flags:        parseFlags(flags),
-			IsExecutable: flags.Executable(),
-			IsReadable:   true,
-			IsWritable:   flags.Writable(),
-			IsAlloc:      flags.Allocated(),
-			Alignment:    header.GetAlignment(),
+			Name:      name,
+			Offset:    int64(header.GetFileOffset()),
+			Size:      int64(header.GetSize()),
+			Address:   header.GetVirtualAddress(),
+			Index:     int(i),
+			Type:      uint32(header.GetType()),
+			Flags:     parseFlags(flags),
+			IsAlloc:   flags.Allocated(),
+			Alignment: header.GetAlignment(),
+			CommonSectionInfo: common.CommonSectionInfo{
+				IsExecutable: flags.Executable(),
+				IsReadable:   true,
+				IsWritable:   flags.Writable(),
+			},
 		}
 		if section.Size > 0 && section.Offset >= 0 && section.Offset+section.Size <= int64(len(e.RawData)) {
 			content := e.RawData[section.Offset : section.Offset+section.Size]
@@ -366,10 +370,10 @@ func (e *ELFFile) parseBasicSectionsFromRaw() error {
 	var shstrndx uint16
 
 	if e.Is64Bit {
-		shOffPos = elf64E_shoff_offset
-		shNumPos = elf64E_shnum_offset
-		shEntSizePos = elf64E_shentsize_offset
-		shstrndxPos := elf64E_shstrndx_offset
+		shOffPos = ELF64_E_SHOFF
+		shNumPos = ELF64_E_SHNUM
+		shEntSizePos = ELF64_E_SHENTSIZE
+		shstrndxPos := ELF64_E_SHSTRNDX
 		if len(e.RawData) < shNumPos+2 {
 			return fmt.Errorf("file too small for 64-bit ELF header")
 		}
@@ -378,10 +382,10 @@ func (e *ELFFile) parseBasicSectionsFromRaw() error {
 		shEntSize = e.getEndian().Uint16(e.RawData[shEntSizePos : shEntSizePos+2])
 		shstrndx = e.getEndian().Uint16(e.RawData[shstrndxPos : shstrndxPos+2])
 	} else {
-		shOffPos = elf32E_shoff_offset
-		shNumPos = elf32E_shnum_offset
-		shEntSizePos = elf32E_shentsize_offset
-		shstrndxPos := elf32E_shstrndx_offset
+		shOffPos = ELF32_E_SHOFF
+		shNumPos = ELF32_E_SHNUM
+		shEntSizePos = ELF32_E_SHENTSIZE
+		shstrndxPos := ELF32_E_SHSTRNDX
 		if len(e.RawData) < shNumPos+2 {
 			return fmt.Errorf("file too small for 32-bit ELF header")
 		}
@@ -431,37 +435,37 @@ func (e *ELFFile) parseBasicSectionsFromRaw() error {
 
 func (e *ELFFile) parseSectionOffsetAndSize(base uint64) (uint64, uint64) {
 	if e.Is64Bit {
-		off := e.getEndian().Uint64(e.RawData[base+elf64S_offset : base+elf64S_offset+8])
-		sz := e.getEndian().Uint64(e.RawData[base+elf64S_size : base+elf64S_size+8])
+		off := e.getEndian().Uint64(e.RawData[base+ELF64_S_OFFSET : base+ELF64_S_OFFSET+8])
+		sz := e.getEndian().Uint64(e.RawData[base+ELF64_S_SIZE : base+ELF64_S_SIZE+8])
 		return off, sz
 	}
-	off := uint64(e.getEndian().Uint32(e.RawData[base+elf32S_offset : base+elf32S_offset+4]))
-	sz := uint64(e.getEndian().Uint32(e.RawData[base+elf32S_size : base+elf32S_size+4]))
+	off := uint64(e.getEndian().Uint32(e.RawData[base+ELF32_S_OFFSET : base+ELF32_S_OFFSET+4]))
+	sz := uint64(e.getEndian().Uint32(e.RawData[base+ELF32_S_SIZE : base+ELF32_S_SIZE+4]))
 	return off, sz
 }
 
 func (e *ELFFile) parseSectionHeader(base uint64, index uint16, stringTableData []byte) Section {
-	nameOffset := uint64(e.getEndian().Uint32(e.RawData[base : base+4]))
-	sectionType := e.getEndian().Uint32(e.RawData[base+4 : base+8])
+	nameOffset := uint64(e.getEndian().Uint32(e.RawData[base+ELF_SH_NAME : base+ELF_SH_NAME+4]))
+	sectionType := e.getEndian().Uint32(e.RawData[base+ELF_SH_TYPE : base+ELF_SH_TYPE+4])
 
 	var flags, address uint64
 	if e.Is64Bit {
-		flags = e.getEndian().Uint64(e.RawData[base+8 : base+16])
-		address = e.getEndian().Uint64(e.RawData[base+16 : base+24])
+		flags = e.getEndian().Uint64(e.RawData[base+ELF64_SH_FLAGS : base+ELF64_SH_FLAGS+8])
+		address = e.getEndian().Uint64(e.RawData[base+ELF64_SH_ADDR : base+ELF64_SH_ADDR+8])
 	} else {
-		flags = uint64(e.getEndian().Uint32(e.RawData[base+8 : base+12]))
-		address = uint64(e.getEndian().Uint32(e.RawData[base+12 : base+16]))
+		flags = uint64(e.getEndian().Uint32(e.RawData[base+ELF32_SH_FLAGS : base+ELF32_SH_FLAGS+4]))
+		address = uint64(e.getEndian().Uint32(e.RawData[base+ELF32_SH_ADDR : base+ELF32_SH_ADDR+4]))
 	}
 	offset, size := e.parseSectionOffsetAndSize(base)
 	var link, info, alignment uint64
 	if e.Is64Bit {
-		link = uint64(e.getEndian().Uint32(e.RawData[base+40 : base+44]))
-		info = uint64(e.getEndian().Uint32(e.RawData[base+44 : base+48]))
-		alignment = e.getEndian().Uint64(e.RawData[base+48 : base+56])
+		link = uint64(e.getEndian().Uint32(e.RawData[base+ELF64_SH_LINK : base+ELF64_SH_LINK+4]))
+		info = uint64(e.getEndian().Uint32(e.RawData[base+ELF64_SH_INFO : base+ELF64_SH_INFO+4]))
+		alignment = e.getEndian().Uint64(e.RawData[base+ELF64_SH_ADDRALIGN : base+ELF64_SH_ADDRALIGN+8])
 	} else {
-		link = uint64(e.getEndian().Uint32(e.RawData[base+24 : base+28]))
-		info = uint64(e.getEndian().Uint32(e.RawData[base+28 : base+32]))
-		alignment = uint64(e.getEndian().Uint32(e.RawData[base+32 : base+36]))
+		link = uint64(e.getEndian().Uint32(e.RawData[base+ELF32_SH_LINK : base+ELF32_SH_LINK+4]))
+		info = uint64(e.getEndian().Uint32(e.RawData[base+ELF32_SH_INFO : base+ELF32_SH_INFO+4]))
+		alignment = uint64(e.getEndian().Uint32(e.RawData[base+ELF32_SH_ADDRALIGN : base+ELF32_SH_ADDRALIGN+4]))
 	}
 	name := fmt.Sprintf("raw_section_%d", index)
 	if stringTableData != nil && nameOffset < uint64(len(stringTableData)) {
@@ -479,21 +483,22 @@ func (e *ELFFile) parseSectionHeader(base uint64, index uint16, stringTableData 
 			nameOffset, index, len(stringTableData))
 	}
 	section := Section{
-		Name:         name,
-		Offset:       int64(offset),
-		Size:         int64(size),
-		Address:      address,
-		Index:        int(index),
-		Type:         sectionType,
-		Flags:        flags,
-		IsExecutable: (flags & SHF_EXECINSTR) != 0,
-		IsReadable:   true,
-		IsWritable:   (flags & SHF_WRITE) != 0,
-		IsAlloc:      (flags & SHF_ALLOC) != 0,
-		Alignment:    alignment,
-		Link:         uint32(link),
-		Info:         uint32(info),
-		//EntrySize:    entsize,
+		Name:      name,
+		Offset:    int64(offset),
+		Size:      int64(size),
+		Address:   address,
+		Index:     int(index),
+		Type:      sectionType,
+		Flags:     flags,
+		IsAlloc:   (flags & SHF_ALLOC) != 0,
+		Alignment: alignment,
+		Link:      uint32(link),
+		Info:      uint32(info),
+		CommonSectionInfo: common.CommonSectionInfo{
+			IsExecutable: (flags & SHF_EXECINSTR) != 0,
+			IsReadable:   true,
+			IsWritable:   (flags & SHF_WRITE) != 0,
+		},
 	}
 
 	if section.Size > 0 && section.Type != SHT_NOBITS && section.Offset >= 0 && section.Offset+section.Size <= int64(len(e.RawData)) {
@@ -523,9 +528,9 @@ func (e *ELFFile) parseSegments() []Segment {
 			Offset:       phdr.GetFileOffset(),
 			FileSize:     phdr.GetFileSize(),
 			MemSize:      phdr.GetMemorySize(),
-			IsExecutable: (flags & PF_X) != 0,
-			IsReadable:   (flags & PF_R) != 0,
-			IsWritable:   (flags & PF_W) != 0,
+			IsExecutable: (flags & common.PERM_EXECUTE) != 0,
+			IsReadable:   (flags & common.PERM_READ) != 0,
+			IsWritable:   (flags & common.PERM_WRITE) != 0,
 			Loadable:     phdr.GetType() == elf_reader.ProgramHeaderType(PT_LOAD),
 			Index:        i,
 		})
@@ -534,11 +539,11 @@ func (e *ELFFile) parseSegments() []Segment {
 }
 
 func (e *ELFFile) parseBasicSegmentsFromRaw() error {
-	if len(e.RawData) < 64 {
+	minHeaderSize := ELF64_EHDR_SIZE
+	if len(e.RawData) < minHeaderSize {
 		return fmt.Errorf("file too small")
 	}
 	e.Segments = []Segment{}
-
 	return nil
 }
 
@@ -554,9 +559,9 @@ func (e *ELFFile) parseDynamicEntries() []DynamicEntry {
 	}
 	var entrySize int
 	if e.Is64Bit {
-		entrySize = 16 // 64-bit: 8 bytes tag + 8 bytes value
+		entrySize = ELF64_DYN_SIZE
 	} else {
-		entrySize = 8 // 32-bit: 4 bytes tag + 4 bytes value
+		entrySize = ELF32_DYN_SIZE
 	}
 	for offset := 0; offset < len(dynData); offset += entrySize {
 		if offset+entrySize > len(dynData) {
@@ -568,10 +573,10 @@ func (e *ELFFile) parseDynamicEntries() []DynamicEntry {
 
 		if e.Is64Bit {
 			tag = int64(e.readUint64FromBytes(dynData[offset:]))
-			value = e.readUint64FromBytes(dynData[offset+8:])
+			value = e.readUint64FromBytes(dynData[offset+ELF64_DYN_VAL:])
 		} else {
 			tag = int64(e.readUint32FromBytes(dynData[offset:]))
-			value = uint64(e.readUint32FromBytes(dynData[offset+4:]))
+			value = uint64(e.readUint32FromBytes(dynData[offset+ELF32_DYN_VAL:]))
 		}
 		if tag == 0 {
 			break

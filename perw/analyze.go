@@ -12,14 +12,6 @@ import (
 	"time"
 )
 
-func isDebugSection(name string) bool {
-	name = strings.ToLower(name)
-	return strings.HasPrefix(name, ".debug") ||
-		strings.HasPrefix(name, ".zdebug") ||
-		name == ".symtab" ||
-		strings.Contains(name, "gdb")
-}
-
 func (p *PEFile) printExportAnalysis() {
 	fmt.Println("🔍 EXPORT ANALYSIS")
 	fmt.Println("══════════════════")
@@ -43,14 +35,6 @@ func (p *PEFile) printExportAnalysis() {
 	fmt.Println()
 }
 
-type SectionInfo struct {
-	Name         string
-	FileOffset   int64
-	Size         int64
-	IsExecutable bool
-	IsWritable   bool
-}
-
 func (p *PEFile) printSectionAnomalies() {
 	fmt.Println("🚨 SECTION ANOMALY ANALYSIS")
 	fmt.Println("════════════════════════════")
@@ -64,7 +48,7 @@ func (p *PEFile) printSectionAnomalies() {
 			IsWritable:   s.IsWritable,
 		}
 	}
-	issues := AnalyzeSectionAnomalies(infos)
+	issues := analyzeSectionAnomalies(infos)
 	if len(issues) == 0 {
 		fmt.Printf("%s No section anomalies detected\n", common.SymbolCheck)
 	} else {
@@ -196,7 +180,7 @@ func (p *PEFile) printBasicInfo() {
 	fmt.Printf("\n🗂️  OVERLAY ANALYSIS:\n")
 	if len(p.Sections) > 0 && p.RawData != nil {
 		last := p.Sections[len(p.Sections)-1]
-		present, offset, size, entropy := OverlayInfo(p.FileSize, last.Offset, last.Size, p.RawData)
+		present, offset, size, entropy := overlayInfo(p.FileSize, last.Offset, last.Size, p.RawData)
 		if present {
 			fmt.Printf("Overlay Status:     %s Present at 0x%X\n", common.SymbolWarn, offset)
 			fmt.Printf("Overlay Size:       %s\n", common.FormatFileSize(size))
@@ -266,7 +250,7 @@ func (p *PEFile) printPEHeaders() {
 		}
 	}
 
-	versionInfo := p.versionInfo
+	versionInfo := p.VersionInfo
 	if versionInfo != nil && len(versionInfo) > 0 {
 		fmt.Printf("\n📄 VERSION DETAILS:\n")
 
@@ -294,10 +278,10 @@ func (p *PEFile) printPEHeaders() {
 
 	fmt.Printf("\n🔧 RICH HEADER INFO:\n")
 
-	if len(p.RawData) > 200 {
+	if len(p.RawData) > PE_MIN_DATA_FOR_RICH_ANALYSIS {
 		richFound := false
 
-		searchLimit := 1024
+		searchLimit := PE_RICH_HEADER_SEARCH_LIMIT
 		if len(p.RawData) < searchLimit {
 			searchLimit = len(p.RawData)
 		}
@@ -515,171 +499,6 @@ func (p *PEFile) printImportsAnalysis() {
 	fmt.Println()
 }
 
-func AnalyzeSectionAnomalies(sections []SectionInfo) []string {
-	var issues []string
-
-	for i, s := range sections {
-		if s.Size == 0 {
-			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' has zero size")
-		}
-		if s.IsExecutable && s.IsWritable {
-			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' is both executable and writable (RWX)")
-		}
-		if len(s.Name) == 0 || s.Name == "\x00" {
-			issues = append(issues, common.SymbolWarn+" Section with empty or invalid name")
-		}
-		if i > 0 && s.FileOffset < sections[i-1].FileOffset+sections[i-1].Size {
-			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' overlaps previous section")
-		}
-		// 1. Suspicious section names
-		if isSuspiciousSectionName(s.Name) {
-			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' has suspicious/unusual name")
-		}
-		// 2. Abnormal section sizes
-		if s.Size > 100*1024*1024 { // > 100MB
-			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' is unusually large ("+formatSize(s.Size)+")")
-		}
-		// 3. Sections with negative file offsets
-		if s.FileOffset < 0 {
-			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' has invalid file offset")
-		}
-		// 4. Sections with non-aligned file offsets
-		if s.FileOffset > 0 && s.FileOffset%0x200 != 0 {
-			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' has non-aligned file offset (0x"+fmt.Sprintf("%X", s.FileOffset)+")")
-		}
-		// 5. Executable sections unexpected
-		if s.IsExecutable && !isExpectedExecutableSection(s.Name) {
-			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' is executable but has unexpected name")
-		}
-		// 6. Writable sections unexpected
-		if s.IsWritable && !isExpectedWritableSection(s.Name) {
-			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' is writable but has unexpected name")
-		}
-		// 7. Unusual section order
-		if i > 0 && isWrongSectionOrder(sections[i-1].Name, s.Name) {
-			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' appears after '"+sections[i-1].Name+"' (unusual order)")
-		}
-		// 8. Gap too large between sections
-		if i > 0 {
-			prevEnd := sections[i-1].FileOffset + sections[i-1].Size
-			gap := s.FileOffset - prevEnd
-			if gap > 64*1024 { // Gap > 64KB
-				issues = append(issues, common.SymbolWarn+" Large gap ("+formatSize(gap)+") between '"+sections[i-1].Name+"' and '"+s.Name+"'")
-			}
-		}
-		// 9. Sections with unusual permissions
-		if strings.HasPrefix(s.Name, ".text") && !s.IsExecutable {
-			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' should be executable but isn't")
-		}
-		if strings.HasPrefix(s.Name, ".data") && !s.IsWritable {
-			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' should be writable but isn't")
-		}
-		if strings.HasPrefix(s.Name, ".rodata") && s.IsWritable {
-			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' should be read-only but is writable")
-		}
-	}
-	analyzeGlobalSectionAnomalies(sections, &issues)
-	return issues
-}
-
-func isSuspiciousSectionName(name string) bool {
-	nameLower := strings.ToLower(name)
-	for _, suspicious := range common.SuspiciousSectionNames {
-		if strings.Contains(nameLower, suspicious) {
-			return true
-		}
-	}
-	for _, c := range name {
-		if c < 32 || c > 126 {
-			return true
-		}
-	}
-	return false
-}
-
-func isExpectedExecutableSection(name string) bool {
-	executableSections := []string{".text", ".code", "CODE", ".init", ".fini"}
-	name = strings.ToLower(name)
-	for _, expected := range executableSections {
-		if strings.HasPrefix(name, strings.ToLower(expected)) {
-			return true
-		}
-	}
-	return false
-}
-
-func isExpectedWritableSection(name string) bool {
-	writableSections := []string{".data", ".bss", ".rdata", ".idata", ".tls", ".CRT"}
-	name = strings.ToLower(name)
-	for _, expected := range writableSections {
-		if strings.HasPrefix(name, strings.ToLower(expected)) {
-			return true
-		}
-	}
-	return false
-}
-
-func isWrongSectionOrder(prev, current string) bool {
-	if strings.HasPrefix(strings.ToLower(prev), ".data") &&
-		strings.HasPrefix(strings.ToLower(current), ".text") {
-		return true
-	}
-	if strings.HasPrefix(strings.ToLower(prev), ".bss") &&
-		(strings.HasPrefix(strings.ToLower(current), ".text") ||
-			strings.HasPrefix(strings.ToLower(current), ".data")) {
-		return true
-	}
-
-	return false
-}
-
-func analyzeGlobalSectionAnomalies(sections []SectionInfo, issues *[]string) {
-	if len(sections) < 3 {
-		*issues = append(*issues, common.SymbolWarn+" Very few sections ("+fmt.Sprintf("%d", len(sections))+") - possible packing")
-	}
-	if len(sections) > 20 {
-		*issues = append(*issues, common.SymbolWarn+" Unusually many sections ("+fmt.Sprintf("%d", len(sections))+")")
-	}
-	hasExecutable := false
-	for _, s := range sections {
-		if s.IsExecutable {
-			hasExecutable = true
-			break
-		}
-	}
-	if !hasExecutable {
-		*issues = append(*issues, common.SymbolWarn+" No executable sections found")
-	}
-	nameCount := make(map[string]int)
-	for _, s := range sections {
-		nameCount[s.Name]++
-	}
-	for name, count := range nameCount {
-		if count > 1 {
-			*issues = append(*issues, common.SymbolWarn+" Duplicate section name '"+name+"' ("+fmt.Sprintf("%d", count)+" times)")
-		}
-	}
-}
-
-func formatSize(size int64) string {
-	if size < 1024 {
-		return fmt.Sprintf("%d B", size)
-	} else if size < 1024*1024 {
-		return fmt.Sprintf("%.1f KB", float64(size)/1024)
-	} else {
-		return fmt.Sprintf("%.1f MB", float64(size)/(1024*1024))
-	}
-}
-
-func OverlayInfo(fileSize int64, lastSectionOffset int64, lastSectionSize int64, data []byte) (present bool, offset int64, size int64, entropy float64) {
-	overlayStart := lastSectionOffset + lastSectionSize
-	if overlayStart < fileSize {
-		overlayData := data[overlayStart:]
-		return true, overlayStart, int64(len(overlayData)), common.CalculateEntropy(overlayData)
-	}
-	return false, 0, 0, 0
-}
-
 func (p *PEFile) detectLanguageAndCompiler() (language, compiler string) {
 	if p.RawData == nil {
 		return "", ""
@@ -878,4 +697,177 @@ func (p *PEFile) printPackingAnalysis() {
 	} else {
 		fmt.Printf("Status:          ✅ Normal executable\n")
 	}
+}
+
+func analyzeSectionAnomalies(sections []SectionInfo) []string {
+	var issues []string
+
+	for i, s := range sections {
+		if s.Size == 0 {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' has zero size")
+		}
+		if s.IsExecutable && s.IsWritable {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' is both executable and writable (RWX)")
+		}
+		if len(s.Name) == 0 || s.Name == "\x00" {
+			issues = append(issues, common.SymbolWarn+" Section with empty or invalid name")
+		}
+		if i > 0 && s.FileOffset < sections[i-1].FileOffset+sections[i-1].Size {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' overlaps previous section")
+		}
+		// 1. Suspicious section names
+		if isSuspiciousSectionName(s.Name) {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' has suspicious/unusual name")
+		}
+		// 2. Abnormal section sizes
+		if s.Size > 100*1024*1024 { // > 100MB
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' is unusually large ("+formatSize(s.Size)+")")
+		}
+		// 3. Sections with negative file offsets
+		if s.FileOffset < 0 {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' has invalid file offset")
+		}
+		// 4. Sections with non-aligned file offsets
+		if s.FileOffset > 0 && s.FileOffset%PE_FILE_ALIGNMENT_DEFAULT != 0 {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' has non-aligned file offset (0x"+fmt.Sprintf("%X", s.FileOffset)+")")
+		}
+		// 5. Executable sections unexpected
+		if s.IsExecutable && !isExpectedExecutableSection(s.Name) {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' is executable but has unexpected name")
+		}
+		// 6. Writable sections unexpected
+		if s.IsWritable && !isExpectedWritableSection(s.Name) {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' is writable but has unexpected name")
+		}
+		// 7. Unusual section order
+		if i > 0 && isWrongSectionOrder(sections[i-1].Name, s.Name) {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' appears after '"+sections[i-1].Name+"' (unusual order)")
+		}
+		// 8. Gap too large between sections
+		if i > 0 {
+			prevEnd := sections[i-1].FileOffset + sections[i-1].Size
+			gap := s.FileOffset - prevEnd
+			if gap > 64*1024 { // Gap > 64KB
+				issues = append(issues, common.SymbolWarn+" Large gap ("+formatSize(gap)+") between '"+sections[i-1].Name+"' and '"+s.Name+"'")
+			}
+		}
+		// 9. Sections with unusual permissions
+		if strings.HasPrefix(s.Name, ".text") && !s.IsExecutable {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' should be executable but isn't")
+		}
+		if strings.HasPrefix(s.Name, ".data") && !s.IsWritable {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' should be writable but isn't")
+		}
+		if strings.HasPrefix(s.Name, ".rodata") && s.IsWritable {
+			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' should be read-only but is writable")
+		}
+	}
+	analyzeGlobalSectionAnomalies(sections, &issues)
+	return issues
+}
+
+func isSuspiciousSectionName(name string) bool {
+	nameLower := strings.ToLower(name)
+	for _, suspicious := range common.SuspiciousSectionNames {
+		if strings.Contains(nameLower, suspicious) {
+			return true
+		}
+	}
+	for _, c := range name {
+		if c < 32 || c > 126 {
+			return true
+		}
+	}
+	return false
+}
+
+func isExpectedExecutableSection(name string) bool {
+	executableSections := []string{".text", ".code", "CODE", ".init", ".fini"}
+	name = strings.ToLower(name)
+	for _, expected := range executableSections {
+		if strings.HasPrefix(name, strings.ToLower(expected)) {
+			return true
+		}
+	}
+	return false
+}
+
+func isExpectedWritableSection(name string) bool {
+	writableSections := []string{".data", ".bss", ".rdata", ".idata", ".tls", ".CRT"}
+	name = strings.ToLower(name)
+	for _, expected := range writableSections {
+		if strings.HasPrefix(name, strings.ToLower(expected)) {
+			return true
+		}
+	}
+	return false
+}
+
+func isWrongSectionOrder(prev, current string) bool {
+	if strings.HasPrefix(strings.ToLower(prev), ".data") &&
+		strings.HasPrefix(strings.ToLower(current), ".text") {
+		return true
+	}
+	if strings.HasPrefix(strings.ToLower(prev), ".bss") &&
+		(strings.HasPrefix(strings.ToLower(current), ".text") ||
+			strings.HasPrefix(strings.ToLower(current), ".data")) {
+		return true
+	}
+
+	return false
+}
+
+func isDebugSection(name string) bool {
+	name = strings.ToLower(name)
+	return strings.HasPrefix(name, ".debug") ||
+		strings.HasPrefix(name, ".zdebug") ||
+		name == ".symtab" ||
+		strings.Contains(name, "gdb")
+}
+
+func analyzeGlobalSectionAnomalies(sections []SectionInfo, issues *[]string) {
+	if len(sections) < 3 {
+		*issues = append(*issues, common.SymbolWarn+" Very few sections ("+fmt.Sprintf("%d", len(sections))+") - possible packing")
+	}
+	if len(sections) > 20 {
+		*issues = append(*issues, common.SymbolWarn+" Unusually many sections ("+fmt.Sprintf("%d", len(sections))+")")
+	}
+	hasExecutable := false
+	for _, s := range sections {
+		if s.IsExecutable {
+			hasExecutable = true
+			break
+		}
+	}
+	if !hasExecutable {
+		*issues = append(*issues, common.SymbolWarn+" No executable sections found")
+	}
+	nameCount := make(map[string]int)
+	for _, s := range sections {
+		nameCount[s.Name]++
+	}
+	for name, count := range nameCount {
+		if count > 1 {
+			*issues = append(*issues, common.SymbolWarn+" Duplicate section name '"+name+"' ("+fmt.Sprintf("%d", count)+" times)")
+		}
+	}
+}
+
+func formatSize(size int64) string {
+	if size < 1024 {
+		return fmt.Sprintf("%d B", size)
+	} else if size < 1024*1024 {
+		return fmt.Sprintf("%.1f KB", float64(size)/1024)
+	} else {
+		return fmt.Sprintf("%.1f MB", float64(size)/(1024*1024))
+	}
+}
+
+func overlayInfo(fileSize int64, lastSectionOffset int64, lastSectionSize int64, data []byte) (present bool, offset int64, size int64, entropy float64) {
+	overlayStart := lastSectionOffset + lastSectionSize
+	if overlayStart < fileSize {
+		overlayData := data[overlayStart:]
+		return true, overlayStart, int64(len(overlayData)), common.CalculateEntropy(overlayData)
+	}
+	return false, 0, 0, 0
 }

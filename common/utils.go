@@ -179,6 +179,25 @@ func FirstNonEmpty(values ...string) string {
 	return ""
 }
 
+func SanitizeSectionName(name string) string {
+	if len(name) > 8 {
+		name = name[:8]
+	}
+	sanitized := ""
+	for _, char := range name {
+		if (char >= 'A' && char <= 'Z') ||
+			(char >= 'a' && char <= 'z') ||
+			(char >= '0' && char <= '9') ||
+			char == '_' || char == '.' {
+			sanitized += string(char)
+		}
+	}
+	if sanitized == "" {
+		sanitized = ".data"
+	}
+	return sanitized
+}
+
 func AlignUp(value, alignment uint32) uint32 {
 	if alignment == 0 {
 		return value

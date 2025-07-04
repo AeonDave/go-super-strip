@@ -7,10 +7,6 @@ import (
 	"os"
 )
 
-// AddOverlay adds data as an overlay to a PE file without creating a named section
-// The format is similar to AddHexSection but without a section name
-// dataOrFile: path to a file or a string to add
-// password: optional password for encryption
 func (p *PEFile) AddOverlay(dataOrFile string, password string) *common.OperationResult {
 	fileStat, err := os.Stat(dataOrFile)
 	isFile := err == nil && !fileStat.IsDir()
@@ -28,7 +24,6 @@ func (p *PEFile) AddOverlay(dataOrFile string, password string) *common.Operatio
 		}
 	}
 
-	// Use the fallback method directly as we want to append data without modifying PE structure
 	err = p.appendDataToFileDirectly(finalContent)
 	if err != nil {
 		return common.NewSkipped(fmt.Sprintf("Failed to add overlay: %v", err))

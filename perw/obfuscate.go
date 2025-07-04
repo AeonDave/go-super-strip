@@ -9,28 +9,25 @@ import (
 )
 
 const (
-	dosHeaderSize     = 0x40
-	sectionHeaderSize = 40
-	sectionNameSize   = 8
-	maxPaddingSize    = 0x10000
+	maxPaddingSize = 0x10000
 )
 
 var directoryOffsets = struct {
 	debug, loadConfig, tls, baseReloc, importTable map[bool]int64
 }{
-	debug:       map[bool]int64{true: 128, false: 112},
-	loadConfig:  map[bool]int64{true: 152, false: 136},
-	tls:         map[bool]int64{true: 144, false: 128},
-	baseReloc:   map[bool]int64{true: 168, false: 152},
-	importTable: map[bool]int64{true: 104, false: 88},
+	debug:       map[bool]int64{true: PE64_DATA_DIRECTORIES + 6*8, false: PE32_DATA_DIRECTORIES + 6*8},
+	loadConfig:  map[bool]int64{true: PE64_DATA_DIRECTORIES + 10*8, false: PE32_DATA_DIRECTORIES + 10*8},
+	tls:         map[bool]int64{true: PE64_DATA_DIRECTORIES + 9*8, false: PE32_DATA_DIRECTORIES + 9*8},
+	baseReloc:   map[bool]int64{true: PE64_DATA_DIRECTORIES + 5*8, false: PE32_DATA_DIRECTORIES + 5*8},
+	importTable: map[bool]int64{true: PE64_DATA_DIRECTORIES + 1*8, false: PE32_DATA_DIRECTORIES + 1*8},
 }
 
 // PE header field offsets
 var headerOffsets = struct {
 	imageBase, loaderFlags map[bool]int64
 }{
-	imageBase:   map[bool]int64{true: 24, false: 28},
-	loaderFlags: map[bool]int64{true: 108, false: 92},
+	imageBase:   map[bool]int64{true: PE64_IMAGE_BASE, false: PE32_IMAGE_BASE},
+	loaderFlags: map[bool]int64{true: PE64_DATA_DIRECTORIES - 4, false: PE32_DATA_DIRECTORIES - 4},
 }
 
 func (p *PEFile) ObfuscateAll(force bool) *common.OperationResult {
@@ -53,13 +50,13 @@ func (p *PEFile) ObfuscateAll(force bool) *common.OperationResult {
 		totalCount += result.Count
 	}
 
-	if force {
-		if result := p.ObfuscateBaseAddresses(); result != nil && result.Applied {
-			message := fmt.Sprintf("⚠️  %s (risky)", result.Message)
-			operations = append(operations, message)
-			totalCount += result.Count
-		}
-	}
+	//if force {
+	//	if result := p.ObfuscateBaseAddresses(); result != nil && result.Applied {
+	//		message := fmt.Sprintf("⚠️  %s (risky)", result.Message)
+	//		operations = append(operations, message)
+	//		totalCount += result.Count
+	//	}
+	//}
 
 	if len(operations) == 0 {
 		return common.NewSkipped("no obfuscation operations applied")
@@ -108,10 +105,10 @@ func (p *PEFile) ObfuscateSectionNames() *common.OperationResult {
 	usedNames := make(map[string]bool)
 
 	for i := 0; i < offsets.NumberOfSections; i++ {
-		sectionHeaderOffset := offsets.FirstSectionHdr + int64(i*sectionHeaderSize)
+		sectionHeaderOffset := offsets.FirstSectionHdr + int64(i*PE_SECTION_HEADER_SIZE)
 		sectionNameOffset := sectionHeaderOffset
 
-		if err := p.validateOffset(sectionNameOffset, sectionNameSize); err != nil {
+		if err := p.validateOffset(sectionNameOffset, PE_SECTION_NAME_SIZE); err != nil {
 			return common.NewSkipped(fmt.Sprintf("section name offset validation failed for section %d: %v", i, err))
 		}
 
@@ -148,9 +145,9 @@ func (p *PEFile) ObfuscateSectionNames() *common.OperationResult {
 			newName = "." + string(randBytes[:4+int(randBytes[4]%4)])
 		}
 
-		newNameBytes := make([]byte, sectionNameSize)
+		newNameBytes := make([]byte, PE_SECTION_NAME_SIZE)
 		copy(newNameBytes, newName)
-		copy(p.RawData[sectionNameOffset:sectionNameOffset+sectionNameSize], newNameBytes)
+		copy(p.RawData[sectionNameOffset:sectionNameOffset+PE_SECTION_NAME_SIZE], newNameBytes)
 
 		// Update internal structure
 		if i < len(p.Sections) {

@@ -86,24 +86,24 @@ func (e *ELFFile) Save(updateHeaders bool, newSize int64) error {
 
 func (e *ELFFile) getProgramHeaderPosition(index uint16) (uint64, error) {
 	// Ensure we have enough data to read the header
-	minSize := elf64E_phentsize_offset + 2
+	minSize := ELF64_E_PHENTSIZE + 2
 	if len(e.RawData) < minSize {
 		return 0, fmt.Errorf("file too small to read program header info")
 	}
 
 	if e.Is64Bit {
 		// Check if we have enough data to read a 64-bit offset
-		if len(e.RawData) < elf64E_phoff_offset+8 {
+		if len(e.RawData) < ELF64_E_PHOFF+8 {
 			return 0, fmt.Errorf("file too small to read 64-bit program header offset")
 		}
-		phOffset := e.readUint64(elf64E_phoff_offset)
+		phOffset := e.readUint64(ELF64_E_PHOFF)
 
 		// Validate the program header offset
 		if phOffset == 0 || phOffset >= uint64(len(e.RawData)) {
 			return 0, fmt.Errorf("invalid program header offset: %d", phOffset)
 		}
 
-		entrySize := uint64(e.readUint16(elf64E_phentsize_offset))
+		entrySize := uint64(e.readUint16(ELF64_E_PHENTSIZE))
 		if entrySize == 0 {
 			return 0, fmt.Errorf("invalid program header entry size: 0")
 		}
@@ -117,16 +117,16 @@ func (e *ELFFile) getProgramHeaderPosition(index uint16) (uint64, error) {
 	}
 
 	// 32-bit ELF
-	if len(e.RawData) < elf32E_phoff_offset+4 {
+	if len(e.RawData) < ELF32_E_PHOFF+4 {
 		return 0, fmt.Errorf("file too small to read 32-bit program header offset")
 	}
 
-	offset := uint64(e.readUint32(elf32E_phoff_offset))
+	offset := uint64(e.readUint32(ELF32_E_PHOFF))
 	if offset == 0 || offset >= uint64(len(e.RawData)) {
 		return 0, fmt.Errorf("invalid program header offset: %d", offset)
 	}
 
-	entrySize := uint64(e.readUint16(elf32E_phentsize_offset))
+	entrySize := uint64(e.readUint16(ELF32_E_PHENTSIZE))
 	if entrySize == 0 {
 		return 0, fmt.Errorf("invalid program header entry size: 0")
 	}
@@ -174,16 +174,15 @@ func (e *ELFFile) writeRawData() error {
 
 func (e *ELFFile) writeProgramHeaderOffsets(pos, offset, size uint64) error {
 	if e.Is64Bit {
-		if err := e.writeAtOffset(int(pos+elf64P_offset), offset); err != nil {
+		if err := e.writeAtOffset(int(pos+ELF64_P_OFFSET), offset); err != nil {
 			return err
 		}
-		return e.writeAtOffset(int(pos+elf64P_filesz), size)
+		return e.writeAtOffset(int(pos+ELF64_P_FILESZ), size)
 	}
-	// 32-bit
-	if err := e.writeAtOffset(int(pos+elf32P_offset), uint32(offset)); err != nil {
+	if err := e.writeAtOffset(int(pos+ELF32_P_OFFSET), uint32(offset)); err != nil {
 		return err
 	}
-	return e.writeAtOffset(int(pos+elf32P_filesz), uint32(size))
+	return e.writeAtOffset(int(pos+ELF32_P_FILESZ), uint32(size))
 }
 
 func (e *ELFFile) truncateFile() error {
@@ -237,15 +236,15 @@ func (e *ELFFile) updateSectionHeaders() error {
 	// Ensure we have enough data to read the section header entry size
 	entrySize := uint64(0)
 	if e.Is64Bit {
-		if elf64E_shentsize_offset+2 > len(e.RawData) {
+		if ELF64_E_SHENTSIZE+2 > len(e.RawData) {
 			return nil
 		}
-		entrySize = uint64(e.readUint16(elf64E_shentsize_offset))
+		entrySize = uint64(e.readUint16(ELF64_E_SHENTSIZE))
 	} else {
-		if elf32E_shentsize_offset+2 > len(e.RawData) {
+		if ELF32_E_SHENTSIZE+2 > len(e.RawData) {
 			return nil
 		}
-		entrySize = uint64(e.readUint16(elf32E_shentsize_offset))
+		entrySize = uint64(e.readUint16(ELF32_E_SHENTSIZE))
 	}
 
 	if entrySize == 0 {
@@ -262,26 +261,26 @@ func (e *ELFFile) updateSectionHeaders() error {
 
 		if e.Is64Bit {
 			// Ensure we have enough data to write the offset and size
-			if int(pos+elf64S_offset+8) > len(e.RawData) || int(pos+elf64S_size+8) > len(e.RawData) {
+			if int(pos+ELF64_S_OFFSET+8) > len(e.RawData) || int(pos+ELF64_S_SIZE+8) > len(e.RawData) {
 				continue
 			}
 
-			if err := e.writeAtOffset(int(pos+elf64S_offset), section.Offset); err != nil {
+			if err := e.writeAtOffset(int(pos+ELF64_S_OFFSET), section.Offset); err != nil {
 				continue
 			}
-			if err := e.writeAtOffset(int(pos+elf64S_size), section.Size); err != nil {
+			if err := e.writeAtOffset(int(pos+ELF64_S_SIZE), section.Size); err != nil {
 				continue
 			}
 		} else {
 			// Ensure we have enough data to write the offset and size
-			if int(pos+elf32S_offset+4) > len(e.RawData) || int(pos+elf32S_size+4) > len(e.RawData) {
+			if int(pos+ELF32_S_OFFSET+4) > len(e.RawData) || int(pos+ELF32_S_SIZE+4) > len(e.RawData) {
 				continue
 			}
 
-			if err := e.writeAtOffset(int(pos+elf32S_offset), uint32(section.Offset)); err != nil {
+			if err := e.writeAtOffset(int(pos+ELF32_S_OFFSET), uint32(section.Offset)); err != nil {
 				continue
 			}
-			if err := e.writeAtOffset(int(pos+elf32S_size), uint32(section.Size)); err != nil {
+			if err := e.writeAtOffset(int(pos+ELF32_S_SIZE), uint32(section.Size)); err != nil {
 				continue
 			}
 		}

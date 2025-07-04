@@ -105,10 +105,10 @@ func (p *PEFile) saveWithAppendOnly() error {
 }
 
 func (p *PEFile) UpdateCOFFHeader() error {
-	if len(p.RawData) < 64 {
+	if len(p.RawData) < PE_DOS_HEADER_SIZE {
 		return fmt.Errorf("file too small for PE structure")
 	}
 
-	coffHeaderOffset := int64(binary.LittleEndian.Uint32(p.RawData[60:64])) + 4
-	return WriteAtOffset(p.RawData, coffHeaderOffset+2, uint16(len(p.Sections)))
+	coffHeaderOffset := int64(binary.LittleEndian.Uint32(p.RawData[PE_ELFANEW_OFFSET:PE_ELFANEW_OFFSET+4])) + PE_SIGNATURE_SIZE
+	return WriteAtOffset(p.RawData, coffHeaderOffset+PE_SECTIONS_OFFSET, uint16(len(p.Sections)))
 }

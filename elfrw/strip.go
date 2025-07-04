@@ -53,6 +53,51 @@ func (e *ELFFile) StripAll(force bool) *common.OperationResult {
 	return result
 }
 
+func (e *ELFFile) StripByteRegex(pattern *regexp.Regexp, useRandom bool) (int, error) {
+	if pattern == nil {
+		return 0, fmt.Errorf("regex pattern cannot be nil")
+	}
+	totalMatches := 0
+	// Helper to process a match range in the raw data
+	process := func(offset uint64, length int) {
+		if err := e.fillRegion(offset, length, useRandom); err == nil {
+			totalMatches++
+		}
+	}
+	if len(e.Sections) == 0 {
+		// Apply regex to entire file
+		for _, match := range pattern.FindAllIndex(e.RawData, -1) {
+			start, end := match[0], match[1]
+			if start < 0 || end > len(e.RawData) || start >= end {
+				continue
+			}
+			process(uint64(start), end-start)
+		}
+	} else {
+		// Apply regex within each section
+		for _, section := range e.Sections {
+			if section.Offset <= 0 || section.Size <= 0 {
+				continue
+			}
+			base := uint64(section.Offset)
+			maxLen := int64(len(e.RawData)) - section.Offset
+			if maxLen <= 0 {
+				continue
+			}
+			// Extract section data slice
+			secData := e.RawData[base : base+uint64(section.Size)]
+			for _, match := range pattern.FindAllIndex(secData, -1) {
+				start, end := match[0], match[1]
+				if start < 0 || end > len(secData) || start >= end {
+					continue
+				}
+				process(base+uint64(start), end-start)
+			}
+		}
+	}
+	return totalMatches, nil
+}
+
 func (e *ELFFile) fillRegion(offset uint64, size int, useRandom bool) error {
 	if offset+uint64(size) > uint64(len(e.RawData)) {
 		return fmt.Errorf("write beyond file limits: offset %d, size %d, file size %d",
@@ -145,56 +190,11 @@ func (e *ELFFile) stripSectionsByType(sectionType SectionType, useRandom bool) *
 	return result
 }
 
-func (e *ELFFile) StripByteRegex(pattern *regexp.Regexp, useRandom bool) (int, error) {
-	if pattern == nil {
-		return 0, fmt.Errorf("regex pattern cannot be nil")
-	}
-	totalMatches := 0
-	// Helper to process a match range in the raw data
-	process := func(offset uint64, length int) {
-		if err := e.fillRegion(offset, length, useRandom); err == nil {
-			totalMatches++
-		}
-	}
-	if len(e.Sections) == 0 {
-		// Apply regex to entire file
-		for _, match := range pattern.FindAllIndex(e.RawData, -1) {
-			start, end := match[0], match[1]
-			if start < 0 || end > len(e.RawData) || start >= end {
-				continue
-			}
-			process(uint64(start), end-start)
-		}
-	} else {
-		// Apply regex within each section
-		for _, section := range e.Sections {
-			if section.Offset <= 0 || section.Size <= 0 {
-				continue
-			}
-			base := uint64(section.Offset)
-			maxLen := int64(len(e.RawData)) - section.Offset
-			if maxLen <= 0 {
-				continue
-			}
-			// Extract section data slice
-			secData := e.RawData[base : base+uint64(section.Size)]
-			for _, match := range pattern.FindAllIndex(secData, -1) {
-				start, end := match[0], match[1]
-				if start < 0 || end > len(secData) || start >= end {
-					continue
-				}
-				process(base+uint64(start), end-start)
-			}
-		}
-	}
-	return totalMatches, nil
-}
-
 func (e *ELFFile) getHeaderPositions() (int, int, int) {
 	if e.Is64Bit {
-		return 40, 60, 62 // e_shoff, e_shnum, e_shstrndx for 64-bit
+		return ELF64_E_SHOFF, ELF64_E_SHNUM, ELF64_E_SHSTRNDX
 	}
-	return 32, 48, 50
+	return ELF32_E_SHOFF, ELF32_E_SHNUM, ELF32_E_SHSTRNDX
 }
 
 func (e *ELFFile) getSectionHeaderOffset(shoffPos int) (uint64, error) {
@@ -257,9 +257,9 @@ func (e *ELFFile) stripELFHeaderFields() *common.OperationResult {
 	// Zero out e_flags (often contains compiler-specific flags)
 	var flagsOffset int
 	if e.Is64Bit {
-		flagsOffset = 48
+		flagsOffset = ELF64_E_FLAGS
 	} else {
-		flagsOffset = 36
+		flagsOffset = ELF32_E_FLAGS
 	}
 	if err := e.writeAtOffset(flagsOffset, uint32(0)); err == nil {
 		result.AddDetail("removed ELF flags field", 1, false)
@@ -361,5 +361,3 @@ func (e *ELFFile) stripAllRegexRules(force bool) *common.OperationResult {
 	}
 	return common.NewSkipped("no regex-based metadata found")
 }
-
-// This function has been replaced by common.FormatOperationResult

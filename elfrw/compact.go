@@ -8,6 +8,11 @@ import (
 	"strings"
 )
 
+const (
+	// Maximum section size to check for null/zero content (64KB)
+	MAX_NULL_CHECK_SIZE = 65536
+)
+
 func (e *ELFFile) Compact(force bool) *common.OperationResult {
 	if len(e.Sections) == 0 {
 		return common.NewSkipped("no sections to process")
@@ -55,7 +60,7 @@ func (e *ELFFile) Compact(force bool) *common.OperationResult {
 		return common.NewSkipped(fmt.Sprintf("failed to rebuild section header table: %v", err))
 	}
 
-	if err := e.updateELFHeaderSectionCount(); err != nil {
+	if err := e.updateELFHeaderSectionCount(uint16(len(e.Sections))); err != nil {
 		return common.NewSkipped(fmt.Sprintf("failed to update ELF header section count: %v", err))
 	}
 
@@ -194,14 +199,12 @@ func (e *ELFFile) updateProgramHeaderOffsets(removedOffset int64, removedSize in
 	}
 }
 
-func (e *ELFFile) updateELFHeaderSectionCount() error {
-	sectionCount := uint16(len(e.Sections))
-
+func (e *ELFFile) updateELFHeaderSectionCount(sectionCount uint16) error {
 	var pos int
 	if e.Is64Bit {
-		pos = elf64E_shnum_offset
+		pos = ELF64_E_SHNUM
 	} else {
-		pos = elf32E_shnum_offset
+		pos = ELF32_E_SHNUM
 	}
 
 	return e.writeAtOffset(pos, sectionCount)
@@ -210,9 +213,9 @@ func (e *ELFFile) updateELFHeaderSectionCount() error {
 func (e *ELFFile) updateELFHeaderShstrtabIndex(shstrtabIndex uint16) error {
 	var pos int
 	if e.Is64Bit {
-		pos = elf64E_shstrndx_offset
+		pos = ELF64_E_SHSTRNDX
 	} else {
-		pos = elf32E_shstrndx_offset
+		pos = ELF32_E_SHSTRNDX
 	}
 
 	return e.writeAtOffset(pos, shstrtabIndex)
@@ -239,7 +242,7 @@ func (e *ELFFile) isNullOrZeroSection(section Section) bool {
 	if section.Offset <= 0 || section.Size <= 0 {
 		return false
 	}
-	if section.Size > 65536 {
+	if section.Size > MAX_NULL_CHECK_SIZE {
 		return false
 	}
 
@@ -322,9 +325,9 @@ func (e *ELFFile) updateSectionHeaderTableOffset(removedOffset int64, removedSiz
 
 func (e *ELFFile) entrySize() int64 {
 	if e.Is64Bit {
-		return elf64ShdrSize
+		return ELF64_SHDR_SIZE
 	}
-	return elf32ShdrSize
+	return ELF32_SHDR_SIZE
 }
 
 func (e *ELFFile) setShoff(offset uint64) {
@@ -380,7 +383,7 @@ func (e *ELFFile) findOrCreateShstrtabSection() (int, error) {
 	})
 
 	// Aggiorniamo il conteggio delle sezioni nell'header.
-	if err := e.updateELFHeaderSectionCount(); err != nil {
+	if err := e.updateELFHeaderSectionCount(uint16(len(e.Sections))); err != nil {
 		return -1, fmt.Errorf("failed to update section count for new shstrtab: %w", err)
 	}
 	return shstrtabIndex, nil

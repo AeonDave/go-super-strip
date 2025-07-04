@@ -60,8 +60,8 @@ func (e *ELFFile) addSectionWithContent(sectionName string, content []byte, encr
 		Name:   sectionName,
 		Offset: int64(newDataOffset),
 		Size:   int64(contentSize),
-		Type:   1, // SHT_PROGBITS
-		Flags:  2, // SHF_ALLOC
+		Type:   SHT_PROGBITS, // SHT_PROGBITS
+		Flags:  SHF_ALLOC,    // SHF_ALLOC
 		Index:  len(e.Sections),
 	}
 
@@ -111,17 +111,26 @@ func (e *ELFFile) validateForSectionAddition() error {
 		return fmt.Errorf("file too small to be valid ELF")
 	}
 
-	// Check if we have section headers
-	offsets := e.getELFOffsets()
-	shoff := e.readValue(offsets.shOff, e.Is64Bit)
-	shnum := e.readValue16(offsets.shNum)
+	// Read section header table information directly from ELF header
+	var shoff uint64
+	var shnum uint16
+	var shstrndx uint16
+
+	if e.Is64Bit {
+		shoff = e.readValue(ELF64_E_SHOFF, e.Is64Bit)
+		shnum = e.readValue16(ELF64_E_SHNUM)
+		shstrndx = e.readValue16(ELF64_E_SHSTRNDX)
+	} else {
+		shoff = e.readValue(ELF32_E_SHOFF, e.Is64Bit)
+		shnum = e.readValue16(ELF32_E_SHNUM)
+		shstrndx = e.readValue16(ELF32_E_SHSTRNDX)
+	}
 
 	if shoff == 0 || shnum == 0 {
 		return fmt.Errorf("file has no section headers - cannot add sections")
 	}
 
 	// Check if section header string table exists
-	shstrndx := e.readValue16(offsets.shStrNdx)
 	if shstrndx >= shnum {
 		return fmt.Errorf("invalid section header string table index")
 	}
@@ -134,7 +143,7 @@ func (e *ELFFile) findSectionDataLocation() uint64 {
 	// Find the end of the last section data
 	maxEnd := uint64(0)
 	for _, section := range e.Sections {
-		if section.Type != 8 { // Skip SHT_NOBITS sections
+		if section.Type != SHT_NOBITS { // Skip SHT_NOBITS sections
 			sectionEnd := section.Offset + section.Size
 			if uint64(sectionEnd) > maxEnd {
 				maxEnd = uint64(sectionEnd)
@@ -149,8 +158,12 @@ func (e *ELFFile) findSectionDataLocation() uint64 {
 
 // addSectionNameToStringTable adds a section name to .shstrtab
 func (e *ELFFile) addSectionNameToStringTable(sectionName string) error {
-	offsets := e.getELFOffsets()
-	shstrndx := e.readValue16(offsets.shStrNdx)
+	var shstrndx uint16
+	if e.Is64Bit {
+		shstrndx = e.readValue16(ELF64_E_SHSTRNDX)
+	} else {
+		shstrndx = e.readValue16(ELF32_E_SHSTRNDX)
+	}
 
 	if int(shstrndx) >= len(e.Sections) {
 		return fmt.Errorf("invalid section header string table index")
@@ -264,9 +277,9 @@ func (e *ELFFile) rebuildSectionHeaders() error {
 	// Calculate section header entry size
 	var shentsize uint64
 	if e.Is64Bit {
-		shentsize = 64 // 64-bit section header size
+		shentsize = ELF64_SHDR_SIZE // 64-bit section header size
 	} else {
-		shentsize = 40 // 32-bit section header size
+		shentsize = ELF32_SHDR_SIZE // 32-bit section header size
 	}
 
 	// Calculate total size needed for section headers
@@ -319,7 +332,7 @@ func (e *ELFFile) writeSectionHeader(section Section, offset uint64) error {
 
 	if e.Is64Bit {
 		// 64-bit section header
-		if offset+64 > uint64(len(e.RawData)) {
+		if offset+ELF64_SHDR_SIZE > uint64(len(e.RawData)) {
 			return fmt.Errorf("section header would exceed file bounds")
 		}
 
@@ -335,7 +348,7 @@ func (e *ELFFile) writeSectionHeader(section Section, offset uint64) error {
 		endian.PutUint64(e.RawData[offset+56:offset+64], 0)                      // sh_entsize
 	} else {
 		// 32-bit section header
-		if offset+40 > uint64(len(e.RawData)) {
+		if offset+ELF32_SHDR_SIZE > uint64(len(e.RawData)) {
 			return fmt.Errorf("section header would exceed file bounds")
 		}
 
@@ -364,8 +377,12 @@ func (e *ELFFile) getSectionNameOffset(sectionName string) (uint32, error) {
 	}
 
 	// Fallback to searching in the current string table
-	offsets := e.getELFOffsets()
-	shstrndx := e.readValue16(offsets.shStrNdx)
+	var shstrndx uint16
+	if e.Is64Bit {
+		shstrndx = e.readValue16(ELF64_E_SHSTRNDX)
+	} else {
+		shstrndx = e.readValue16(ELF32_E_SHSTRNDX)
+	}
 
 	if int(shstrndx) >= len(e.Sections) {
 		return 0, fmt.Errorf("invalid string table index")
@@ -377,15 +394,23 @@ func (e *ELFFile) getSectionNameOffset(sectionName string) (uint32, error) {
 
 // updateELFHeaderSectionInfo updates section-related fields in ELF header
 func (e *ELFFile) updateELFHeaderSectionInfo(shoff uint64, shnum uint16) error {
-	offsets := e.getELFOffsets()
+	var shoffOffset, shnumOffset int
+
+	if e.Is64Bit {
+		shoffOffset = ELF64_E_SHOFF
+		shnumOffset = ELF64_E_SHNUM
+	} else {
+		shoffOffset = ELF32_E_SHOFF
+		shnumOffset = ELF32_E_SHNUM
+	}
 
 	// Update e_shoff
-	if err := e.writeValueAtOffset(offsets.shOff, shoff, e.Is64Bit); err != nil {
+	if err := e.writeValueAtOffset(shoffOffset, shoff, e.Is64Bit); err != nil {
 		return fmt.Errorf("failed to update e_shoff: %w", err)
 	}
 
 	// Update e_shnum
-	if err := e.writeValue16AtOffset(offsets.shNum, shnum); err != nil {
+	if err := e.writeValue16AtOffset(shnumOffset, shnum); err != nil {
 		return fmt.Errorf("failed to update e_shnum: %w", err)
 	}
 
