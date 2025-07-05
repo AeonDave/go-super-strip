@@ -112,13 +112,11 @@ func (p *PEFile) ObfuscateSectionNames() *common.OperationResult {
 			return common.NewSkipped(fmt.Sprintf("section name offset validation failed for section %d: %v", i, err))
 		}
 
-		// Get original name
 		originalName := ""
 		if i < len(p.Sections) {
 			originalName = p.Sections[i].Name
 		}
 
-		// Choose a realistic name not already used
 		var newName string
 		for attempts := 0; attempts < 10; attempts++ {
 			randBytes, err := common.GenerateRandomBytes(1)

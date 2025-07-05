@@ -173,20 +173,19 @@ func (p *PEFile) hasInvalidOffsets(section Section) bool {
 }
 
 func (p *PEFile) sectionsReferencedByDataDirectories() map[int]struct{} {
-	const dataDirCount = 16
-	protected := make(map[int]struct{}, dataDirCount)
-	peHeaderOffset := int64(binary.LittleEndian.Uint32(p.RawData[0x3C:0x40]))
-	coffHeaderOffset := peHeaderOffset + 4
-	optionalHeaderOffset := coffHeaderOffset + 20
+	protected := make(map[int]struct{}, PE_DATA_DIRECTORY_COUNT)
+	peHeaderOffset := int64(binary.LittleEndian.Uint32(p.RawData[PE_ELFANEW_OFFSET : PE_ELFANEW_OFFSET+4]))
+	coffHeaderOffset := peHeaderOffset + PE_SIGNATURE_SIZE
+	optionalHeaderOffset := coffHeaderOffset + PE_FILE_HEADER_SIZE
 	var dataDirBase int64
 	if p.Is64Bit {
-		dataDirBase = optionalHeaderOffset + 112 // PE32+ offset
+		dataDirBase = optionalHeaderOffset + PE64_DATA_DIRECTORIES
 	} else {
-		dataDirBase = optionalHeaderOffset + 96 // PE32 offset
+		dataDirBase = optionalHeaderOffset + PE32_DATA_DIRECTORIES
 	}
-	for i := 0; i < dataDirCount; i++ {
-		entryOff := dataDirBase + int64(i*8) // RVA(uint32)+Size(uint32)
-		if int(entryOff+8) > len(p.RawData) {
+	for i := 0; i < PE_DATA_DIRECTORY_COUNT; i++ {
+		entryOff := dataDirBase + int64(i*IMAGE_SIZEOF_DATA_DIRECTORY)
+		if int(entryOff+IMAGE_SIZEOF_DATA_DIRECTORY) > len(p.RawData) {
 			break
 		}
 		rva := binary.LittleEndian.Uint32(p.RawData[entryOff:])
@@ -254,18 +253,18 @@ func (p *PEFile) sectionRemoval(force bool) (*common.OperationResult, error) {
 }
 
 func (p *PEFile) extractFileAlignment() (uint32, error) {
-	peHeaderOffset := int64(binary.LittleEndian.Uint32(p.RawData[0x3C:0x40]))
-	coffHeaderOffset := peHeaderOffset + 4
-	optionalHeaderOffset := coffHeaderOffset + 20
-	fileAlignmentOffset := optionalHeaderOffset + 36
+	peHeaderOffset := int64(binary.LittleEndian.Uint32(p.RawData[PE_ELFANEW_OFFSET : PE_ELFANEW_OFFSET+4]))
+	coffHeaderOffset := peHeaderOffset + PE_SIGNATURE_SIZE
+	optionalHeaderOffset := coffHeaderOffset + PE_FILE_HEADER_SIZE
+	fileAlignmentOffset := optionalHeaderOffset + PE32_FILE_ALIGN // Same for PE32 and PE64
 
 	if fileAlignmentOffset+4 > int64(len(p.RawData)) {
-		return 512, nil // Default fallback
+		return PE_FILE_ALIGNMENT_MIN, nil // Default fallback
 	}
 
 	fileAlignment := binary.LittleEndian.Uint32(p.RawData[fileAlignmentOffset:])
-	if fileAlignment == 0 || fileAlignment < 512 {
-		fileAlignment = 512 // Default minimum
+	if fileAlignment == 0 || fileAlignment < PE_FILE_ALIGNMENT_MIN {
+		fileAlignment = PE_FILE_ALIGNMENT_MIN // Default minimum
 	}
 
 	return fileAlignment, nil
@@ -332,9 +331,10 @@ func (p *PEFile) buildNewSectionsWithCorrectVirtualSize(removedIndices []int, re
 }
 
 func (p *PEFile) updateSectionTableWithNewSections(newSections []Section) error {
-	peHeaderOffset := int64(binary.LittleEndian.Uint32(p.RawData[0x3C:0x40]))
-	sectionTableOffset := peHeaderOffset + 24 + int64(binary.LittleEndian.Uint16(p.RawData[peHeaderOffset+20:]))
-	sectionTableSize := len(p.Sections) * 40
+	peHeaderOffset := int64(binary.LittleEndian.Uint32(p.RawData[PE_ELFANEW_OFFSET : PE_ELFANEW_OFFSET+4]))
+	optionalHeaderSize := binary.LittleEndian.Uint16(p.RawData[peHeaderOffset+PE_SIGNATURE_SIZE+PE_OPTSIZE_OFFSET:])
+	sectionTableOffset := peHeaderOffset + PE_SIGNATURE_SIZE + PE_FILE_HEADER_SIZE + int64(optionalHeaderSize)
+	sectionTableSize := len(p.Sections) * PE_SECTION_HEADER_SIZE
 	if sectionTableOffset+int64(sectionTableSize) > int64(len(p.RawData)) {
 		sectionTableSize = len(p.RawData) - int(sectionTableOffset)
 	}
@@ -342,38 +342,38 @@ func (p *PEFile) updateSectionTableWithNewSections(newSections []Section) error 
 		p.RawData[sectionTableOffset+int64(i)] = 0
 	}
 	for i, section := range newSections {
-		hdrOff := sectionTableOffset + int64(i*40)
-		if hdrOff+40 > int64(len(p.RawData)) {
+		hdrOff := sectionTableOffset + int64(i*PE_SECTION_HEADER_SIZE)
+		if hdrOff+PE_SECTION_HEADER_SIZE > int64(len(p.RawData)) {
 			break
 		}
-		copy(p.RawData[hdrOff:hdrOff+8], section.Name)
-		binary.LittleEndian.PutUint32(p.RawData[hdrOff+8:], section.VirtualSize)
-		binary.LittleEndian.PutUint32(p.RawData[hdrOff+12:], section.VirtualAddress)
-		binary.LittleEndian.PutUint32(p.RawData[hdrOff+16:], uint32(section.Size))
-		binary.LittleEndian.PutUint32(p.RawData[hdrOff+20:], uint32(section.Offset))
-		binary.LittleEndian.PutUint32(p.RawData[hdrOff+24:], section.PointerToRelocations)
-		binary.LittleEndian.PutUint32(p.RawData[hdrOff+28:], section.PointerToLineNumbers)
-		binary.LittleEndian.PutUint16(p.RawData[hdrOff+32:], section.NumberOfRelocations)
-		binary.LittleEndian.PutUint16(p.RawData[hdrOff+34:], section.NumberOfLineNumbers)
-		binary.LittleEndian.PutUint32(p.RawData[hdrOff+36:], section.Flags)
+		copy(p.RawData[hdrOff:hdrOff+PE_SECTION_NAME_SIZE], section.Name)
+		binary.LittleEndian.PutUint32(p.RawData[hdrOff+PE_SECTION_VIRTUAL_SIZE:], section.VirtualSize)
+		binary.LittleEndian.PutUint32(p.RawData[hdrOff+PE_SECTION_VIRTUAL_ADDR:], section.VirtualAddress)
+		binary.LittleEndian.PutUint32(p.RawData[hdrOff+PE_SECTION_RAW_SIZE:], uint32(section.Size))
+		binary.LittleEndian.PutUint32(p.RawData[hdrOff+PE_SECTION_RAW_OFFSET:], uint32(section.Offset))
+		binary.LittleEndian.PutUint32(p.RawData[hdrOff+PE_SECTION_RELOC_OFFSET:], section.PointerToRelocations)
+		binary.LittleEndian.PutUint32(p.RawData[hdrOff+PE_SECTION_LINENUMBER_OFFSET:], section.PointerToLineNumbers)
+		binary.LittleEndian.PutUint16(p.RawData[hdrOff+PE_SECTION_RELOC_COUNT:], section.NumberOfRelocations)
+		binary.LittleEndian.PutUint16(p.RawData[hdrOff+PE_SECTION_LINENUMBER_COUNT:], section.NumberOfLineNumbers)
+		binary.LittleEndian.PutUint32(p.RawData[hdrOff+PE_SECTION_CHARACTERISTICS:], section.Flags)
 	}
 	return nil
 }
 
 func (p *PEFile) clearDataDirectoriesForRemovedRVAs(removedRVAs map[uint32]bool) error {
-	peHeaderOffset := int64(binary.LittleEndian.Uint32(p.RawData[0x3C:0x40]))
-	coffHeaderOffset := peHeaderOffset + 4
-	optionalHeaderOffset := coffHeaderOffset + 20
+	peHeaderOffset := int64(binary.LittleEndian.Uint32(p.RawData[PE_ELFANEW_OFFSET : PE_ELFANEW_OFFSET+4]))
+	coffHeaderOffset := peHeaderOffset + PE_SIGNATURE_SIZE
+	optionalHeaderOffset := coffHeaderOffset + PE_FILE_HEADER_SIZE
 
 	var dataDirectoryOffset int64
 	if p.Is64Bit {
-		dataDirectoryOffset = optionalHeaderOffset + 112
+		dataDirectoryOffset = optionalHeaderOffset + PE64_DATA_DIRECTORIES
 	} else {
-		dataDirectoryOffset = optionalHeaderOffset + 96
+		dataDirectoryOffset = optionalHeaderOffset + PE32_DATA_DIRECTORIES
 	}
-	for i := 0; i < 16; i++ {
-		entryOffset := dataDirectoryOffset + int64(i*8)
-		if entryOffset+8 > int64(len(p.RawData)) {
+	for i := 0; i < PE_DATA_DIRECTORY_COUNT; i++ {
+		entryOffset := dataDirectoryOffset + int64(i*IMAGE_SIZEOF_DATA_DIRECTORY)
+		if entryOffset+IMAGE_SIZEOF_DATA_DIRECTORY > int64(len(p.RawData)) {
 			break
 		}
 		rva := binary.LittleEndian.Uint32(p.RawData[entryOffset:])
@@ -389,9 +389,9 @@ func (p *PEFile) clearDataDirectoriesForRemovedRVAs(removedRVAs map[uint32]bool)
 }
 
 func (p *PEFile) updateNumberOfSections(newCount int) error {
-	peHeaderOffset := int64(binary.LittleEndian.Uint32(p.RawData[0x3C:0x40]))
-	coffHeaderOffset := peHeaderOffset + 4
-	numberOfSectionsOffset := coffHeaderOffset + 2
+	peHeaderOffset := int64(binary.LittleEndian.Uint32(p.RawData[PE_ELFANEW_OFFSET : PE_ELFANEW_OFFSET+4]))
+	coffHeaderOffset := peHeaderOffset + PE_SIGNATURE_SIZE
+	numberOfSectionsOffset := coffHeaderOffset + 2 // This is part of the COFF File Header, not a separate constant usually
 	if numberOfSectionsOffset+2 > int64(len(p.RawData)) {
 		return fmt.Errorf("NumberOfSections offset out of bounds")
 	}

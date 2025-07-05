@@ -175,6 +175,8 @@ const (
 	IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT   = 13 // Delay Load Import Descriptors
 	IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR = 14 // COM Runtime descriptor
 	IMAGE_DIRECTORY_ENTRY_RESERVED       = 15 // Reserved
+
+	IMAGE_SIZEOF_DATA_DIRECTORY = 8
 )
 
 const (
