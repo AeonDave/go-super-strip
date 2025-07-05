@@ -217,11 +217,6 @@ func (p *PEFile) StripAllDirs() *common.OperationResult {
 		totalCount += result.Count
 	}
 
-	if result := p.StripTlsDirectory(); result != nil && result.Applied {
-		operations = append(operations, result.Message)
-		totalCount += result.Count
-	}
-
 	if totalCount == 0 {
 		return common.NewSkipped("no dirs stripping operations were applied")
 	}
@@ -421,41 +416,6 @@ func (p *PEFile) StripLoadConfigDirectory() *common.OperationResult {
 		return common.NewApplied("removed timestamp and version from load config directory", modifications)
 	}
 	return common.NewSkipped("no load config fields could be stripped")
-}
-
-func (p *PEFile) StripTlsDirectory() *common.OperationResult {
-	offsets, err := p.calculateOffsets()
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to calculate offsets: %v", err))
-	}
-	dirOffset := offsets.OptionalHeader + directoryOffsets.tls[p.Is64Bit]
-	if err := p.validateOffset(dirOffset, 8); err != nil {
-		return common.NewSkipped("TLS directory offset validation failed")
-	}
-	rva := binary.LittleEndian.Uint32(p.RawData[dirOffset:])
-	size := binary.LittleEndian.Uint32(p.RawData[dirOffset+4:])
-	if rva == 0 || size < 0x18 { // TLS directory minima: 0x18 (32bit), 0x28 (64bit)
-		return common.NewSkipped("no valid TLS directory found")
-	}
-	tlsPhysical, err := p.rvaToPhysical(uint64(rva))
-	if err != nil {
-		return common.NewSkipped("failed to convert TLS RVA to physical")
-	}
-	// TimeDateStamp: offset 0x10 (4 byte), MajorVersion: 0x14 (2 byte), MinorVersion: 0x16 (2 byte)
-	if err := p.validateOffset(int64(tlsPhysical+0x10), 8); err != nil {
-		return common.NewSkipped("TLS directory fields not accessible")
-	}
-	modifications := 0
-	if err := p.fillRegion(int64(tlsPhysical+0x10), 4, ZeroFill); err == nil {
-		modifications++
-	}
-	if err := p.fillRegion(int64(tlsPhysical+0x14), 4, ZeroFill); err == nil {
-		modifications++
-	}
-	if modifications > 0 {
-		return common.NewApplied("removed timestamp and version from TLS directory", modifications)
-	}
-	return common.NewSkipped("no TLS directory fields could be stripped")
 }
 
 func (p *PEFile) StripSingleRegexRule(regex string) *common.OperationResult {

@@ -124,7 +124,7 @@ func (p *PEFile) calculateNewSectionProperties(name string, content []byte) (*Se
 	section := Section{
 		Name:           name,
 		Offset:         fileOffset,
-		Size:           int64(rawSize),
+		Size:           rawSize,
 		VirtualAddress: virtualAddress,
 		VirtualSize:    virtualSize,
 		Index:          len(p.Sections),

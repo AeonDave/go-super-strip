@@ -134,6 +134,9 @@ func (e *ELFFile) obfuscateSectionNames() *common.OperationResult {
 		if e.Sections[i].Index == SHT_NULL {
 			continue
 		}
+		if e.Sections[i].Name == ".shstrtab" {
+			continue
+		}
 		oldName := e.Sections[i].Name
 		if oldName == "" {
 			continue
