@@ -102,18 +102,14 @@ const (
 )
 
 const (
-	// PE header offsets (relative to the start of the NT header: "PE\0\0")
-	PE_SIGNATURE_OFFSET = 0
-	PE_FILE_HEADER_SIZE = 20
-
-	// COFF Header fields (relative to NT Header start)
-	PE_MACHINE_OFFSET         = 4  // Offset: 4 + 0
-	PE_SECTIONS_OFFSET        = 6  // Offset: 4 + 2
-	PE_TIMESTAMP_OFFSET       = 8  // Offset: 4 + 4
-	PE_OPTSYMPTR_OFFSET       = 12 // Offset: 4 + 8 (PointerToSymbolTable)
-	PE_OPTSYMNUM_OFFSET       = 16 // Offset: 4 + 12 (NumberOfSymbols)
-	PE_OPTSIZE_OFFSET         = 20 // Offset: 4 + 16 (SizeOfOptionalHeader)
-	PE_CHARACTERISTICS_OFFSET = 22 // Offset: 4 + 18 (Characteristics)
+	// PE header offsets
+	PE_SIGNATURE_OFFSET       = 0  // PE signature offset in NT header
+	PE_FILE_HEADER_SIZE       = 20 // Size of COFF file header
+	PE_MACHINE_OFFSET         = 4  // Machine type offset in file header
+	PE_SECTIONS_OFFSET        = 6  // Number of sections offset
+	PE_TIMESTAMP_OFFSET       = 8  // Timestamp offset
+	PE_OPTSIZE_OFFSET         = 16 // Optional header size offset
+	PE_CHARACTERISTICS_OFFSET = 18 // Characteristics offset
 )
 
 const (
