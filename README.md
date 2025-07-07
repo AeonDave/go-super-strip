@@ -1,57 +1,81 @@
-# go-super-strip
+# Go Super Strip
 
-Advanced executable manipulation tool for PE and ELF binaries with stripping, obfuscation, and section insertion capabilities.
+## Advanced Binary Manipulation Tool
 
-- **File Analysis**: Comprehensive PE/ELF structure inspection
-- **Section Stripping**: Remove debug symbols and unnecessary sections  
-- **File Compaction**: Reduce executable size by removing sections
-- **Obfuscation**: Randomize section names, base addresses, and metadata
-- **Section Insertion**: Add encrypted hex-encoded data sections
-- **Regex Stripping**: Remove bytes matching custom patterns
-- **Encryption**: AES-256-GCM encryption for inserted sections
+Go Super Strip (gosstrip) is a powerful  tool designed for advanced manipulation of PE and ELF binary executables.
 
-**Supported Formats**: PE (.exe, .dll) and ELF (Linux executables, shared libraries)
+### Key Features
+
+- **Binary Analysis**: Deep inspection of PE/ELF file structures, sections, and metadata
+- **Debug Information Removal**: Strip symbols, debug sections, and unnecessary metadata
+- **Size Optimization**: Compact binaries by removing non-essential sections
+- **Binary Hardening**: Apply various obfuscation techniques to protect against reverse engineering
+- **Custom Data Integration**: Insert and encrypt custom data sections or overlays
+- **Pattern Removal**: Strip bytes matching custom regex patterns
+- **Secure Encryption**: AES-256-GCM encryption for sensitive data sections
+
+### Supported File Formats
+
+- **PE Files**: Windows executables (.exe), dynamic-link libraries (.dll)
+- **ELF Files**: Linux executables, shared objects (.so), and other ELF format binaries
 
 ## Installation
 
+### Build from Source
+
 ```bash
-git clone <repository-url>
+# Clone the repository
+git clone this
+# Navigate to the project directory
 cd go-super-strip
-go build -o gosstrip.exe .
+# Build the executable
+go build
 ```
 
-## Usage
+## Usage Guide
+
+The basic command syntax is:
 
 ```
-gosstrip [OPTIONS] <file>
+gosstrip [OPTIONS] <file_path>
 ```
 
 ### Core Operations
 
-| Option | Description |
-|--------|-------------|
-| `-a, --analyze` | Analyze file structure (read-only) |
-| `-s, --strip` | Strip debug and symbol sections |
-| `-c, --compact` | Remove sections to reduce file size |
-| `-o, --obfuscate` | Apply obfuscation techniques |
-| `-i, --insert <spec>` | Insert hex-encoded section |
-| `-r, --regex <pattern>` | Strip bytes matching regex |
-| `-f, --force` | Apply risky operations |
-| `-v` | Verbose output |
+| Option                  | Description                                                |
+|-------------------------|------------------------------------------------------------|
+| `-a, --analyze`         | Analyze file structure (read-only operation)               |
+| `-s, --strip`           | Strip debug symbols and unnecessary sections               |
+| `-c, --compact`         | Reduce file size by removing non-essential sections        |
+| `-o, --obfuscate`       | Apply obfuscation techniques to hinder reverse engineering |
+| `-i, --insert <spec>`   | Insert custom hex-encoded section                          |
+| `-l, --overlay <spec>`  | Add data as overlay                                        |
+| `-r, --regex <pattern>` | Strip bytes matching custom regex pattern                  |
+| `-f, --force`           | Enable risky operations (use with -s, -c, or -o)           |
+| `-v`                    | Enable verbose output                                      |
+| `-h`                    | Display help information                                   |
 
-### Operation Order
-Operations execute in sequence: **insert** → **strip/compact** → **obfuscate** → **regex**
+### Operation Execution Order
+
+Operations are always executed in the following sequence to ensure file integrity:
+
+1. **Stripping** (-s)
+2. **Compaction** (-c)
+3. **Obfuscation** (-o)
+4. **Section/Overlay Insertion** (-i, -l)
+5. **Regex Operations** (-r)
 
 ## Examples
 
 ### File Analysis
+
 ```bash
-# Analyze PE/ELF structure
+# Basic file structure analysis
 gosstrip -a program.exe
-gosstrip -a -v ./binary
 ```
 
-### Basic Operations
+### Binary Optimization
+
 ```bash
 # Strip debug sections
 gosstrip -s program.exe
@@ -59,51 +83,66 @@ gosstrip -s program.exe
 # Compact file size
 gosstrip -c program.exe  
 
-# Apply obfuscation
+# Apply obfuscation techniques
 gosstrip -o program.exe
 
-# Combined operations
+# Full optimization pipeline
 gosstrip -s -c -o program.exe
 
-# With risky operations
+# With risky operations enabled
 gosstrip -s -f program.exe
 ```
 
-### Section Insertion
+### Data Insertion
+
 ```bash
-# Insert file as hex data
+# Insert file content as a new section
 gosstrip -i "data:file.bin" program.exe
 
-# Insert string as hex
+# Insert string data as a new section
 gosstrip -i "msg:HelloWorld" program.exe
 
-# Insert with encryption (string password)
-gosstrip -i "secret:data.bin:password123" program.exe
+# Insert encrypted section with string password
+gosstrip -i ".sec:data.bin:password123" program.exe
 
-# Insert with encryption (hex password)  
+# Insert encrypted section with hex password
 gosstrip -i "payload:config.dat:deadbeef1234" program.exe
+
+# Add file as overlay
+gosstrip -l "data.bin" program.exe
+
+# Add encrypted overlay
+gosstrip -l "data.bin:password123" program.exe
 ```
 
-### Regex Operations
+### Pattern Removal
+
 ```bash
-# Remove specific patterns
+# Remove UPX packer signatures
 gosstrip -r "UPX!" program.exe
+
+# Remove Go compiler artifacts
 gosstrip -r "golang.*" binary
+
+# Combined with other operations
+gosstrip -s -c -r "UPX!" program.exe
 ```
 
-## Section Insertion Format
+## Technical Details
+
+### Section Insertion Format
 
 **Syntax**: `name:data_or_file[:password]`
 
-- **name**: Section name (max 8 chars for PE)
-- **data_or_file**: File path or string data
-- **password**: Optional encryption (string or hex format)
+- **name**: Section name (limited to 8 characters for PE files)
+- **data_or_file**: Either a file path or literal string data
+- **password**: Optional encryption password (string or hex format)
 
-**Password**: Even-length hex strings are treated as hex passwords, others as string passwords.
+**Note**: Even-length hex strings are treated as hex passwords, others as string passwords.
 
-## Security Features
+### Overlay Format
 
-- **AES-256-GCM encryption** for sensitive data
-- **Overlay insertion** for corrupted/packed executables  
-- **Corruption detection** with automatic fallback modes
-- **Safe operation order** to prevent PE structure damage
+**Syntax**: `data_or_file[:password]`
+
+- **data_or_file**: Either a file path or literal string data
+- **password**: Optional encryption password (string or hex format)

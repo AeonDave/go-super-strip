@@ -64,11 +64,14 @@ func (p *PEFile) Analyze() error {
 	p.IsPacked = p.detectPacking()
 	p.printBasicInfo()
 	p.printPEHeaders()
+	p.printDynamicAnalysis()
 	p.printSectionAnalysis()
 	p.printSectionAnomalies()
 	p.printImportsAnalysis()
 	p.printExportAnalysis()
+	p.printSymbolAnalysis()
 	common.PrintSuspiciousStrings(p.RawData)
+	p.printPackingAnalysis()
 	return nil
 }
 
@@ -351,8 +354,6 @@ func (p *PEFile) printPEHeaders() {
 		fmt.Printf("Overall Status:  ❌ Significant issues detected\n")
 	}
 
-	p.printPackingAnalysis()
-
 	fmt.Printf("\n🧠 MEMORY LAYOUT:\n")
 	imageSize := p.sizeOfImage
 	fmt.Printf("Image Size:      %s (0x%X)\n", common.FormatFileSize(int64(imageSize)), imageSize)
@@ -403,23 +404,31 @@ func (p *PEFile) printSectionAnalysis() {
 	fmt.Printf("Total Sections:     %d\nExecutable Secs:    %d\nWritable Secs:      %d\nTotal Size:         %s\n\n",
 		len(p.Sections), executableSections, writableSections, common.FormatFileSize(totalSize))
 	fmt.Println("SECTION TABLE:")
-	fmt.Println("┌──────────────────┬─────────────┬─────────────┬─────────────┬─────────────┬──────────┐")
-	fmt.Println("│ Name             │ Virtual Addr│ File Offset │ Size        │ Permissions │ Entropy  │")
-	fmt.Println("├──────────────────┼─────────────┼─────────────┼─────────────┼─────────────┼──────────┤")
+	fmt.Println("┌──────────────────┬─────────────┬─────────────┬─────────────┬─────────────┬─────────┐")
+	fmt.Println("│ Name             │ Virtual Addr│ File Offset │ Size        │ Permissions │ Entropy │")
+	fmt.Println("├──────────────────┼─────────────┼─────────────┼─────────────┼─────────────┼─────────┤")
 	for _, section := range p.Sections {
 		permissions := common.FormatPermissions(section.IsExecutable, section.IsReadable, section.IsWritable)
 		entropyColor := common.GetEntropyColor(section.Entropy)
-		fmt.Printf("│ %-16s │ 0x%08X  │ 0x%08X  │ %-11s │ %-11s │ %s%.2f%s     │\n",
+		entropyStr := fmt.Sprintf("%.2f", section.Entropy)
+		if section.Entropy > 7.5 {
+			entropyStr += "🔺"
+		} else if section.Entropy < 1.0 {
+			entropyStr += "🔻"
+		} else {
+			entropyStr += "🔹"
+		}
+		fmt.Printf("│ %-16s │ 0x%08X  │ 0x%08X  │ %-11s │ %-11s │ %s%-6s%s │\n",
 			common.TruncateString(section.Name, 16),
 			section.VirtualAddress,
 			section.FileOffset,
 			common.FormatFileSize(section.Size),
 			permissions,
 			entropyColor,
-			section.Entropy,
+			entropyStr,
 			"\033[0m")
 	}
-	fmt.Println("└──────────────────┴─────────────┴─────────────┴─────────────┴─────────────┴──────────┘")
+	fmt.Println("└──────────────────┴─────────────┴─────────────┴─────────────┴─────────────┴─────────┘")
 	fmt.Println()
 }
 
@@ -636,11 +645,151 @@ func (p *PEFile) detectLanguageAndCompiler() (language, compiler string) {
 	return "", ""
 }
 
+func (p *PEFile) printSymbolAnalysis() {
+	fmt.Println("🔤 SYMBOL ANALYSIS")
+	fmt.Println("══════════════════")
+
+	// In PE files, symbols are primarily imports and exports
+	totalSymbols := len(p.Imports) + len(p.Exports)
+
+	// Count total functions
+	totalFunctions := 0
+	for _, imp := range p.Imports {
+		totalFunctions += len(imp.Functions)
+	}
+
+	if totalSymbols == 0 && totalFunctions == 0 {
+		fmt.Printf("❌ No symbols found\n")
+		fmt.Println()
+		return
+	}
+
+	fmt.Printf("Total Symbols: %d\n\n", totalFunctions+len(p.Exports))
+
+	// Categorize symbols
+	importedSymbols := totalFunctions
+	exportedSymbols := len(p.Exports)
+
+	// Estimate function vs data symbols (heuristic)
+	functionSymbols := 0
+	objectSymbols := 0
+
+	for _, exp := range p.Exports {
+		if strings.HasPrefix(exp.Name, "?") || // C++ mangled names
+			strings.Contains(exp.Name, "Proc") ||
+			strings.Contains(exp.Name, "Func") ||
+			strings.Contains(exp.Name, "Call") {
+			functionSymbols++
+		} else {
+			objectSymbols++
+		}
+	}
+
+	// Add imported functions
+	functionSymbols += importedSymbols
+
+	fmt.Printf("SYMBOL STATISTICS:\n")
+	fmt.Printf("  Exported symbols: %d\n", exportedSymbols)
+	fmt.Printf("  Imported symbols: %d\n", importedSymbols)
+	fmt.Printf("  Function symbols: %d\n", functionSymbols)
+	fmt.Printf("  Object symbols:   %d\n", objectSymbols)
+	fmt.Println()
+}
+
+func (p *PEFile) printDynamicAnalysis() {
+	fmt.Println("🔗 DYNAMIC LINKING ANALYSIS")
+	fmt.Println("═══════════════════════════")
+
+	// PE files are typically dynamically linked
+	fmt.Printf("Dynamic Binary:   ✅ YES\n")
+
+	// Check for import directory
+	hasImportDir := false
+	hasExportDir := false
+	hasRelocDir := false
+	hasTlsDir := false
+	hasResourceDir := false
+	hasDebugDir := false
+
+	for _, dir := range p.directories {
+		switch dir.Type {
+		case IMAGE_DIRECTORY_ENTRY_IMPORT:
+			hasImportDir = true
+		case IMAGE_DIRECTORY_ENTRY_EXPORT:
+			hasExportDir = true
+		case IMAGE_DIRECTORY_ENTRY_BASERELOC:
+			hasRelocDir = true
+		case IMAGE_DIRECTORY_ENTRY_TLS:
+			hasTlsDir = true
+		case IMAGE_DIRECTORY_ENTRY_RESOURCE:
+			hasResourceDir = true
+		case IMAGE_DIRECTORY_ENTRY_DEBUG:
+			hasDebugDir = true
+		}
+	}
+
+	fmt.Printf("\n🔧 DYNAMIC SECTIONS ANALYSIS:\n")
+	fmt.Printf("Import Table:     %s\n", formatPresence(hasImportDir))
+	fmt.Printf("Export Table:     %s\n", formatPresence(hasExportDir))
+	fmt.Printf("Relocation:       %s\n", formatPresence(hasRelocDir))
+	fmt.Printf("TLS Directory:    %s\n", formatPresence(hasTlsDir))
+	fmt.Printf("Resources:        %s\n", formatPresence(hasResourceDir))
+	fmt.Printf("Debug Info:       %s\n", formatPresence(hasDebugDir))
+
+	// Security analysis
+	fmt.Printf("\n🛡️  SECURITY FEATURES:\n")
+
+	// ASLR support
+	aslrStatus := "❌ NO ASLR"
+	if p.dllCharacteristics&0x0040 != 0 { // IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE
+		aslrStatus = "✅ ASLR enabled"
+	}
+	fmt.Printf("ASLR:             %s\n", aslrStatus)
+
+	// DEP/NX support
+	depStatus := "❌ NO DEP/NX"
+	if p.dllCharacteristics&0x0100 != 0 { // IMAGE_DLLCHARACTERISTICS_NX_COMPAT
+		depStatus = "✅ DEP/NX enabled"
+	}
+	fmt.Printf("DEP/NX:           %s\n", depStatus)
+
+	// Control Flow Guard
+	cfgStatus := "❌ NO CFG"
+	if p.dllCharacteristics&0x4000 != 0 { // IMAGE_DLLCHARACTERISTICS_GUARD_CF
+		cfgStatus = "✅ CFG enabled"
+	}
+	fmt.Printf("CFG:              %s\n", cfgStatus)
+
+	// SafeSEH
+	sehStatus := "❓ Unknown (64-bit doesn't use SEH)"
+	if !p.Is64Bit {
+		if p.dllCharacteristics&0x0400 != 0 { // IMAGE_DLLCHARACTERISTICS_NO_SEH
+			sehStatus = "❌ NO SafeSEH"
+		} else {
+			// This is a heuristic, not 100% accurate
+			sehStatus = "🤔 Possibly enabled"
+		}
+	}
+	fmt.Printf("SafeSEH:          %s\n", sehStatus)
+
+	fmt.Println()
+}
+
+// Helper function to format presence indicators
+func formatPresence(present bool) string {
+	if present {
+		return "✅ Present"
+	}
+	return "❌ Missing"
+}
+
 func (p *PEFile) printPackingAnalysis() {
-	fmt.Printf("\n📦 PACKING ASSESSMENT:\n")
+	fmt.Println("📦 PACKING ANALYSIS")
+	fmt.Println("═══════════════════")
 
 	if len(p.Sections) == 0 {
 		fmt.Printf("Status:          ❓ No sections available for analysis\n")
+		fmt.Println()
 		return
 	}
 
@@ -693,10 +842,12 @@ func (p *PEFile) printPackingAnalysis() {
 	}
 
 	if p.IsPacked {
-		fmt.Printf("Status:          📦 PACKED executable detected\n")
+		fmt.Printf("Status:          ❌ PACKED executable detected\n")
 	} else {
 		fmt.Printf("Status:          ✅ Normal executable\n")
 	}
+
+	fmt.Println()
 }
 
 func analyzeSectionAnomalies(sections []SectionInfo) []string {

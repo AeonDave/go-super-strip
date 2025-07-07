@@ -657,8 +657,8 @@ func (e *ELFFile) printSectionHeaders() {
 			perms += "-"
 		}
 
-		entropyStr := ""
-		entropyStr = fmt.Sprintf("%.2f", section.Entropy)
+		entropyStr := fmt.Sprintf("%.2f", section.Entropy)
+		entropyColor := common.GetEntropyColor(section.Entropy)
 		if section.Entropy > 7.5 {
 			entropyStr += "🔺"
 		} else if section.Entropy < 1.0 {
@@ -667,14 +667,16 @@ func (e *ELFFile) printSectionHeaders() {
 			entropyStr += "🔹"
 		}
 
-		fmt.Printf("│%2d │ %-19s │ %-11s │ 0x%08X  │ %-11s │ %-4s │ %-6s │\n",
+		fmt.Printf("│%2d │ %-19s │ %-11s │ 0x%08X  │ %-11s │ %-4s │ %s%-6s%s │\n",
 			i,
 			truncatedName,
 			typeStr,
 			section.Offset,
 			common.FormatFileSize(section.Size),
 			perms,
-			entropyStr)
+			entropyColor,
+			entropyStr,
+			"\033[0m")
 	}
 	fmt.Printf("└───┴─────────────────────┴─────────────┴─────────────┴─────────────┴──────┴─────────┘\n")
 	fmt.Println()
@@ -1278,11 +1280,64 @@ func (e *ELFFile) printPackingAnalysis() {
 	fmt.Println("📦 PACKING ANALYSIS")
 	fmt.Println("═══════════════════")
 
-	fmt.Printf("File appears to be packed: %t\n", e.IsPacked)
+	if len(e.Sections) == 0 {
+		fmt.Printf("Status:          ❓ No sections available for analysis\n")
+		fmt.Println()
+		return
+	}
+
+	highEntropyCount := 0
+	anomalousCount := 0
+	totalValidSections := 0
+	emptyCount := 0
+	debugCount := 0
+
+	var totalValidBytes int64
+	var highEntropyBytes int64
+
+	for _, section := range e.Sections {
+		if e.isDebugSection(section.Name) {
+			debugCount++
+			continue
+		}
+
+		if section.Size == 0 {
+			emptyCount++
+			continue
+		}
+
+		totalValidSections++
+		totalValidBytes += section.Size
+
+		if section.Entropy > 7.0 {
+			highEntropyCount++
+			highEntropyBytes += section.Size
+		}
+
+		if section.IsExecutable && section.IsWritable {
+			anomalousCount++
+		}
+	}
+
+	fmt.Printf("Valid Sections:  %d (filtered %d debug, %d empty)\n",
+		totalValidSections, debugCount, emptyCount)
+
+	if totalValidSections > 0 {
+		sectionRatio := float64(highEntropyCount) / float64(totalValidSections)
+		dataRatio := float64(highEntropyBytes) / float64(totalValidBytes)
+
+		fmt.Printf("High Entropy:    %d/%d sections (%.0f%% sections, %.0f%% data >7.0 entropy)\n",
+			highEntropyCount, totalValidSections, sectionRatio*100, dataRatio*100)
+	}
+
+	if anomalousCount > 0 {
+		fmt.Printf("RWX Sections:    %d sections with execute+write permissions\n", anomalousCount)
+	}
+
 	if e.IsPacked {
-		fmt.Printf("❌ Packing detected\n")
+		fmt.Printf("Status:          ❌ PACKED executable detected\n")
 	} else {
-		fmt.Printf("✅ No packing detected\n")
+		fmt.Printf("Status:          ✅ Normal executable\n")
 	}
 
 	fmt.Println()
