@@ -29,22 +29,13 @@ func isHexString(s string) bool {
 	return true
 }
 
-func fileToByte(filePath string) ([]byte, error) {
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return nil, fmt.Errorf("error reading file: %w", err)
-	}
-	return data, nil
-}
-
-func deriveKey(password []byte) []byte {
-	hash := sha256.Sum256(password)
-	return hash[:]
+func deriveKey(password []byte) [32]byte {
+	return sha256.Sum256(password)
 }
 
 func EncryptAES256GCM(data, password []byte) ([]byte, error) {
 	key := deriveKey(password)
-	block, err := aes.NewCipher(key)
+	block, err := aes.NewCipher(key[:])
 	if err != nil {
 		return nil, fmt.Errorf("cipher creation failed: %w", err)
 	}
@@ -71,7 +62,15 @@ func ProcessFileForInsertion(filePath, password string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("data encryption failed: %w", err)
 	}
-	return []byte(hex.EncodeToString(encryptedData)), nil
+	return encryptedData, nil
+}
+
+func fileToByte(filePath string) ([]byte, error) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("error reading file: %w", err)
+	}
+	return data, nil
 }
 
 func ProcessStringForInsertion(data, password string) ([]byte, error) {
