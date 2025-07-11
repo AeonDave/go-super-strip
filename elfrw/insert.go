@@ -6,7 +6,7 @@ import (
 	"os"
 )
 
-func (e *ELFFile) AddHexSection(sectionName string, dataOrFile string, password string) *common.OperationResult {
+func (e *ELFFile) AddSection(sectionName string, dataOrFile string, password string) *common.OperationResult {
 	fileStat, err := os.Stat(dataOrFile)
 	isFile := err == nil && !fileStat.IsDir()
 

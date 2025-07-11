@@ -65,7 +65,7 @@ func ObfuscatePE(filePath string, force bool) *common.OperationResult {
 
 func InsertPE(filePath, sectionName, dataOrFile, password string) *common.OperationResult {
 	return processPE(filePath, os.O_RDWR, func(peFile *PEFile) *common.OperationResult {
-		return peFile.AddHexSection(sectionName, dataOrFile, password)
+		return peFile.AddSection(sectionName, dataOrFile, password)
 	})
 }
 

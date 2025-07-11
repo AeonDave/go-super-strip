@@ -29,12 +29,12 @@ func isHexString(s string) bool {
 	return true
 }
 
-func fileToHex(filePath string) ([]byte, error) {
+func fileToByte(filePath string) ([]byte, error) {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("error reading file: %w", err)
 	}
-	return []byte(hex.EncodeToString(data)), nil
+	return data, nil
 }
 
 func deriveKey(password []byte) []byte {
@@ -60,14 +60,14 @@ func EncryptAES256GCM(data, password []byte) ([]byte, error) {
 }
 
 func ProcessFileForInsertion(filePath, password string) ([]byte, error) {
-	hexData, err := fileToHex(filePath)
+	byteData, err := fileToByte(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("file to hex conversion failed: %w", err)
 	}
 	if password == "" {
-		return hexData, nil
+		return byteData, nil
 	}
-	encryptedData, err := EncryptAES256GCM(hexData, parsePassword(password))
+	encryptedData, err := EncryptAES256GCM(byteData, parsePassword(password))
 	if err != nil {
 		return nil, fmt.Errorf("data encryption failed: %w", err)
 	}
@@ -75,11 +75,11 @@ func ProcessFileForInsertion(filePath, password string) ([]byte, error) {
 }
 
 func ProcessStringForInsertion(data, password string) ([]byte, error) {
-	hexData := []byte(hex.EncodeToString([]byte(data)))
+	byteData := []byte(data)
 	if password == "" {
-		return hexData, nil
+		return byteData, nil
 	}
-	encryptedData, err := EncryptAES256GCM(hexData, parsePassword(password))
+	encryptedData, err := EncryptAES256GCM(byteData, parsePassword(password))
 	if err != nil {
 		return nil, fmt.Errorf("failed to encrypt data: %w", err)
 	}

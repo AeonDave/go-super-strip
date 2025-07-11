@@ -66,7 +66,7 @@ func ObfuscateELF(filePath string, force bool) *common.OperationResult {
 
 func InsertELF(filePath, sectionName, dataOrFile, password string) *common.OperationResult {
 	return processELF(filePath, os.O_RDWR, func(elfFile *ELFFile) *common.OperationResult {
-		return elfFile.AddHexSection(sectionName, dataOrFile, password)
+		return elfFile.AddSection(sectionName, dataOrFile, password)
 	})
 }
 

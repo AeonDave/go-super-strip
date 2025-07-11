@@ -8,7 +8,7 @@ import (
 	"os"
 )
 
-func (p *PEFile) AddHexSection(sectionName string, dataOrFile string, password string) *common.OperationResult {
+func (p *PEFile) AddSection(sectionName string, dataOrFile string, password string) *common.OperationResult {
 	fileStat, err := os.Stat(dataOrFile)
 	isFile := err == nil && !fileStat.IsDir()
 
