@@ -228,6 +228,19 @@ func GetRegexStripRules() []RegexStripRule {
 			Fill:        ZeroFill,
 			IsRisky:     false,
 		},
+		// Packer signatures and markers
+		{
+			Patterns: []string{
+				`[0-9]\.[0-9]{2}\s+UPX!`,                                       // UPX version signature (e.g., 5.02 UPX!)
+				`UPX![0-9\.\x00-\x20]{1,10}`,                                   // UPX magic blocks with padding
+				`\$UPX: [a-zA-Z0-9._\-\s]{5,}\$`,                               // UPX metadata marker
+				`(?i)Info: This file is packed with the UPX executable packer`, // Informational banner
+				`(?i)\b(UPX|PECompact|ASPack|themida|vmprotect)\b`,             // Common packer names
+			},
+			Description: "Known packer signatures",
+			Fill:        ZeroFill,
+			IsRisky:     false,
+		},
 		// Common library markers
 		{
 			Patterns: []string{

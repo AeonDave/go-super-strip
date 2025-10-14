@@ -164,3 +164,44 @@ func TestRegexPE_RemovesMatches(t *testing.T) {
 		t.Fatalf("expected marker %q to be removed after regex", marker)
 	}
 }
+
+func TestStripPE_RemovesUPXMarkers(t *testing.T) {
+	pePath := copyPEFixture(t, "simple.exe")
+	sectionName := common.SanitizeSectionName(".upx")
+	upxBanner := "UPX! Info: This file is packed with the UPX executable packer http://upx.sf.net $"
+
+	insertResult := InsertPE(pePath, sectionName, upxBanner, "")
+	if insertResult == nil || !insertResult.Applied {
+		t.Fatalf("expected insert operation to apply: %#v", insertResult)
+	}
+
+	dataBefore, err := os.ReadFile(pePath)
+	if err != nil {
+		t.Fatalf("failed to read PE after insert: %v", err)
+	}
+	if !bytes.Contains(dataBefore, []byte("UPX!")) {
+		t.Fatalf("expected UPX marker to be present before stripping")
+	}
+	if !bytes.Contains(dataBefore, []byte("Info: This file is packed")) {
+		t.Fatalf("expected UPX banner to be present before stripping")
+	}
+
+	stripResult := StripPE(pePath, false)
+	if stripResult == nil {
+		t.Fatal("expected result from StripPE, got nil")
+	}
+	if !stripResult.Applied {
+		t.Fatalf("expected strip operation to apply, message: %s", stripResult.Message)
+	}
+
+	dataAfter, err := os.ReadFile(pePath)
+	if err != nil {
+		t.Fatalf("failed to read PE after strip: %v", err)
+	}
+	if bytes.Contains(dataAfter, []byte("UPX!")) {
+		t.Fatalf("expected UPX marker to be removed after stripping")
+	}
+	if bytes.Contains(dataAfter, []byte("Info: This file is packed")) {
+		t.Fatalf("expected UPX banner to be removed after stripping")
+	}
+}

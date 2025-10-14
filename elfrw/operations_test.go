@@ -160,3 +160,44 @@ func TestRegexELF_RemovesMatches(t *testing.T) {
 		t.Fatalf("expected marker %q to be removed after regex", marker)
 	}
 }
+
+func TestStripELF_RemovesUPXMarkers(t *testing.T) {
+	elfPath := copyELFFixture(t, "simple_c")
+	sectionName := common.SanitizeSectionName(".upx")
+	upxBanner := "UPX! Info: This file is packed with the UPX executable packer http://upx.sf.net $"
+
+	insertResult := InsertELF(elfPath, sectionName, upxBanner, "")
+	if insertResult == nil || !insertResult.Applied {
+		t.Fatalf("expected insert operation to apply: %#v", insertResult)
+	}
+
+	dataBefore, err := os.ReadFile(elfPath)
+	if err != nil {
+		t.Fatalf("failed to read ELF after insert: %v", err)
+	}
+	if !bytes.Contains(dataBefore, []byte("UPX!")) {
+		t.Fatalf("expected UPX marker to be present before stripping")
+	}
+	if !bytes.Contains(dataBefore, []byte("Info: This file is packed")) {
+		t.Fatalf("expected UPX banner to be present before stripping")
+	}
+
+	stripResult := StripELF(elfPath, false)
+	if stripResult == nil {
+		t.Fatal("expected result from StripELF, got nil")
+	}
+	if !stripResult.Applied {
+		t.Fatalf("expected strip operation to apply, message: %s", stripResult.Message)
+	}
+
+	dataAfter, err := os.ReadFile(elfPath)
+	if err != nil {
+		t.Fatalf("failed to read ELF after strip: %v", err)
+	}
+	if bytes.Contains(dataAfter, []byte("UPX!")) {
+		t.Fatalf("expected UPX marker to be removed after stripping")
+	}
+	if bytes.Contains(dataAfter, []byte("Info: This file is packed")) {
+		t.Fatalf("expected UPX banner to be removed after stripping")
+	}
+}
