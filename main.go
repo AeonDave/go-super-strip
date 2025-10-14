@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"gosstrip/common"
 	"gosstrip/elfrw"
+	"gosstrip/pack"
 	"gosstrip/perw"
 	"os"
 	"regexp"
@@ -22,6 +23,7 @@ type Configuration struct {
 	Insert    string // -i: Add section (format: name:filepath[:password])
 	Overlay   string // -l: Add overlay (format: filepath[:password])
 	Regex     string // -r: Strip bytes matching regex pattern
+	Pack      string // -p: Pack with compression and polymorphic stub (format: opt1=val1,opt2=val2)
 	Force     bool   // -f: Apply risky operations for -s, -c, -o
 }
 
@@ -46,6 +48,9 @@ var (
 
 	regexFlag     = flag.String("r", "", "StripAll bytes matching regex pattern")
 	regexFlagLong = flag.String("regex", "", "StripAll bytes matching regex pattern")
+
+	packFlag     = flag.String("p", "", "Pack executable with compression and polymorphic stub (format: opt1=val1,opt2=val2)")
+	packFlagLong = flag.String("pack", "", "Pack executable with compression and polymorphic stub (format: opt1=val1,opt2=val2)")
 
 	// Modifiers
 	forceFlag     = flag.Bool("f", false, "Apply risky operations to -s, -c, or -o")
@@ -100,18 +105,34 @@ func parseArgs() (*Configuration, error) {
 		Regex:     common.FirstNonEmpty(*regexFlag, *regexFlagLong),
 		Insert:    common.FirstNonEmpty(*insertFlag, *insertFlagLong),
 		Overlay:   common.FirstNonEmpty(*overlayFlag, *overlayFlagLong),
+		Pack:      common.FirstNonEmpty(*packFlag, *packFlagLong),
 	}
 	if _, err := os.Stat(config.FilePath); os.IsNotExist(err) {
 		return nil, fmt.Errorf("file does not exist: %s", config.FilePath)
 	}
-	if config.Analyze && (config.Strip || config.Obfuscate || config.Compact || config.Regex != "" || config.Insert != "" || config.Overlay != "" || config.Force) {
+	if config.Analyze && (config.Strip || config.Obfuscate || config.Compact || config.Regex != "" || config.Insert != "" || config.Overlay != "" || config.Pack != "" || config.Force) {
 		return nil, fmt.Errorf("analyze (-a) must be used alone")
 	}
+	// Se `-p` o `--pack` è stato specificato (anche con stringa vuota), segna come attivo
+	for i, arg := range os.Args {
+		if arg == "-p" || arg == "--pack" || strings.HasPrefix(arg, "-p=") || strings.HasPrefix(arg, "--pack=") {
+			if arg == "-p" || arg == "--pack" {
+				// Flag senza valore: usa default
+				config.Pack = "default"
+			} else if config.Pack == "" {
+				// Flag con = ma nessun valore: usa default
+				config.Pack = "default"
+			}
+			break
+		}
+		_ = i
+	}
+
 	if config.Force && !(config.Strip || config.Compact || config.Obfuscate) {
 		return nil, fmt.Errorf("force (-f) can only be used with strip (-s), compact (-c), or obfuscate (-o)")
 	}
-	if !(config.Analyze || config.Strip || config.Obfuscate || config.Compact || config.Regex != "" || config.Insert != "" || config.Overlay != "") {
-		return nil, fmt.Errorf("at least one operation required (-s, -o, -c, -i, -l, or -r)")
+	if !(config.Analyze || config.Strip || config.Obfuscate || config.Compact || config.Regex != "" || config.Insert != "" || config.Overlay != "" || config.Pack != "") {
+		return nil, fmt.Errorf("at least one operation required (-a, -s, -o, -c, -i, -l, -r, or -p)")
 	}
 	if config.Regex != "" {
 		if _, err := regexp.Compile(config.Regex); err != nil {
@@ -160,6 +181,11 @@ func runOperations(config *Configuration) error {
 
 	if config.Analyze {
 		return runAnalysis(config, isPE)
+	}
+
+	// Pack operation è standalone (non si combina con altre)
+	if config.Pack != "" {
+		return runPack(config)
 	}
 
 	var operations []string
@@ -262,6 +288,14 @@ func runRegex(config *Configuration, isPE bool) error {
 		result = elfrw.RegexELF(config.FilePath, config.Regex)
 	}
 	printOperationResult(getFileType(isPE), "Regex", result)
+	return nil
+}
+
+func runPack(config *Configuration) error {
+	fmt.Println("\n=== Pack Operations ===")
+	if err := pack.Pack(config.FilePath, config.Pack); err != nil {
+		return fmt.Errorf("pack operation failed: %v", err)
+	}
 	return nil
 }
 
@@ -406,6 +440,19 @@ OPTIONS:
 	                     - HelloWorld (string without password)  
 	                     - file.txt:password123 (file with string password)
 	                     - HelloWorld:deadbeef (string with hex password)
+	-p, --pack <options> Pack executable with compression and polymorphic stub
+	                     Options format: opt1=val1,opt2=val2
+	                     Available options:
+	                       compression=xz|lzma|none (default: xz)
+	                       level=0-9 (default: 6)
+	                       encryption=xor|aes-256-gcm|chacha20|none (default: aes-256-gcm)
+	                       polymorphic=true|false (default: true)
+	                       junkdensity=0.0-1.0 (default: 0.2)
+	                       padding=true|false (default: true)
+	                       inmemory=true|false (default: false)
+	                       antidebug=true|false (default: false)
+	                       antivm=true|false (default: false)
+	                       verbose=true|false (default: false)
 	-v                   Enable verbose output
 	-h                   Show this help
 
@@ -415,6 +462,9 @@ EXAMPLES:
 	%[1]s -s bin                 		  		# StripAll debug sections
 	%[1]s -c bin              					# Compact file (remove sections)
 	%[1]s -o bin              		  		# Apply obfuscation techniques
+	%[1]s -p bin              		  		# Pack with default options
+	%[1]s -p=compression=xz,level=9,encryption=aes-256-gcm bin  # Pack with custom options
+	%[1]s -p=polymorphic=true,junkdensity=0.5,inmemory=true bin # Pack with polymorphism
 	%[1]s -s -c -o bin        			    		# StripAll, compact, and obfuscate (full pipeline)
 	%[1]s -s -f bin            		    		# StripAll with risky operations (relocations, etc.)
 	%[1]s -c -f bin               				# Compact with risky operations
