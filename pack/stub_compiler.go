@@ -87,6 +87,10 @@ require (
 		return nil, fmt.Errorf("failed to read compiled stub: %w", err)
 	}
 
+	// NON applichiamo più trasformazioni polimorfiche a livello binario
+	// perché possono corrompere il binario ELF/PE compilato.
+	// Le trasformazioni vengono applicate solo in GenerateStub (aggiungendo dati dopo il codice).
+
 	// Serializza metadata
 	metadataBytes := serializeMetadataForStub(metadata, config)
 

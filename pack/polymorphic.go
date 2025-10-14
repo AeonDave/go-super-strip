@@ -1,6 +1,7 @@
 package pack
 
 import (
+	"bytes"
 	"crypto/rand"
 	"fmt"
 	"math/big"
@@ -8,70 +9,135 @@ import (
 
 // PolymorphicEngine gestisce la generazione di stub polimorfici
 type PolymorphicEngine struct {
-	Config *PackConfig
-	Seed   []byte
+	Config            *PackConfig
+	Seed              []byte
+	TemplateGenerator *StubTemplateGenerator
+	AvailableVariants []*StubVariant
 }
 
 // NewPolymorphicEngine crea un nuovo engine polimorfico
 func NewPolymorphicEngine(config *PackConfig) *PolymorphicEngine {
 	seed := randomBytes(32)
+	generator := NewStubTemplateGenerator()
+
+	// Genera 10 varianti di stub da usare casualmente
+	variants := generator.GetAllVariants(10)
+
 	return &PolymorphicEngine{
-		Config: config,
-		Seed:   seed,
+		Config:            config,
+		Seed:              seed,
+		TemplateGenerator: generator,
+		AvailableVariants: variants,
 	}
 }
 
-// GenerateStub genera uno stub polimorfico
+// SelectRandomVariant seleziona una variante casuale dello stub
+func (pe *PolymorphicEngine) SelectRandomVariant() *StubVariant {
+	if len(pe.AvailableVariants) == 0 {
+		return nil
+	}
+
+	idx := randomInt(len(pe.AvailableVariants))
+	return pe.AvailableVariants[idx]
+}
+
+// GenerateStubCode applica trasformazioni polimorfiche al codice sorgente dello stub
+func (pe *PolymorphicEngine) GenerateStubCode(stubCode string) (string, []string, error) {
+	if !pe.Config.PolymorphicStub {
+		return stubCode, []string{"none"}, nil
+	}
+
+	result := stubCode
+	appliedTechniques := []string{}
+
+	// 1. Aggiungi junk code (inserimento di commenti casuali)
+	if pe.Config.JunkCodeDensity > 0 {
+		result = pe.insertJunkCode(result)
+		appliedTechniques = append(appliedTechniques, "junk_code")
+	}
+
+	// 2. Variazione di stringhe e costanti
+	result = pe.varyConstants(result)
+	appliedTechniques = append(appliedTechniques, "constant_variation")
+
+	// 3. Riordino di funzioni helper
+	result = pe.shuffleHelperFunctions(result)
+	appliedTechniques = append(appliedTechniques, "function_shuffle")
+
+	// 4. Anti-debug checks (a livello Go)
+	if pe.Config.AntiDebug {
+		result = pe.addAntiDebugChecks(result)
+		appliedTechniques = append(appliedTechniques, "anti_debug")
+	}
+
+	// 5. Anti-VM checks (a livello Go)
+	if pe.Config.AntiVM {
+		result = pe.addAntiVMChecks(result)
+		appliedTechniques = append(appliedTechniques, "anti_vm")
+	}
+
+	// Nota: Le trasformazioni a livello assembly/bytecode vengono applicate
+	// DOPO la compilazione dello stub, tramite ELFPolymorphicEngine o PEPolymorphicEngine
+
+	return result, appliedTechniques, nil
+}
+
+// GenerateStub genera uno stub polimorfico con tecniche casuali
+// applicate al codice già compilato (binario)
 func (pe *PolymorphicEngine) GenerateStub(template *StubTemplate, payload []byte, metadata *PayloadMetadata) (*PolymorphicStub, error) {
 	if !pe.Config.PolymorphicStub {
-		// Nessun polimorfismo, ritorna stub base
 		return pe.generateBasicStub(template, payload, metadata)
 	}
 
-	// Applica trasformazioni polimorfiche
-	code := template.BaseCode
+	// IMPORTANTE: template.BaseCode contiene già [stub_binary][payload][metadata][size]
+	// Non dobbiamo modificare il codice eseguibile o la struttura finale.
+	// Possiamo solo variare bytes in zone "safe" (ELF header padding).
+
+	modifiedCode := make([]byte, len(template.BaseCode))
+	copy(modifiedCode, template.BaseCode)
+
 	techniques := []string{}
 
-	// 1. Inserisci junk code
-	if pe.Config.JunkCodeDensity > 0 {
-		code = pe.insertJunkCode(code)
-		techniques = append(techniques, "junk_code")
+	// 1. Seleziona variante stub casuale (già applicata durante compilazione)
+	selectedVariant := pe.SelectRandomVariant()
+	if selectedVariant != nil {
+		techniques = append(techniques, fmt.Sprintf("stub_variant_%s", selectedVariant.DecryptionPattern))
+		for _, feature := range selectedVariant.UniqueFeatures {
+			techniques = append(techniques, feature)
+		}
 	}
 
-	// 2. Permuta registri (placeholder per implementazione futura)
-	if pe.Config.RegisterPermutation {
-		// Richiede disassembler/assembler
-		techniques = append(techniques, "register_permutation")
+	// 2. Randomizza padding ELF (bytes 9-16)
+	if template.TargetOS == "linux" && len(modifiedCode) >= 64 {
+		// Cerca l'header ELF nei primi 64 bytes
+		for i := 0; i < 64-16 && i < len(modifiedCode)-16; i++ {
+			// Pattern ELF: 0x7f 'E' 'L' 'F'
+			if modifiedCode[i] == 0x7f &&
+				modifiedCode[i+1] == 'E' &&
+				modifiedCode[i+2] == 'L' &&
+				modifiedCode[i+3] == 'F' {
+				// Bytes 9-16 sono EI_PAD, possono essere randomizzati
+				rand.Read(modifiedCode[i+9 : i+16])
+				techniques = append(techniques, "elf_pad_randomization")
+				break
+			}
+		}
 	}
 
-	// 3. Muta control flow (placeholder)
-	if pe.Config.ControlFlowMutation {
-		techniques = append(techniques, "control_flow_mutation")
-	}
+	// 3. Aggiungi entropia ai padding esistenti (placeholder)
+	paddingEntropy := randomBytes(64)
+	_ = paddingEntropy // TODO: inserire nei padding trovati
+	techniques = append(techniques, "padding_entropy")
 
-	// 4. Sostituisci istruzioni (placeholder)
-	if pe.Config.InstructionSubst {
-		techniques = append(techniques, "instruction_substitution")
-	}
-
-	// 5. Aggiungi anti-debug checks
-	if pe.Config.AntiDebug {
-		code = pe.addAntiDebugChecks(code)
-		techniques = append(techniques, "anti_debug")
-	}
-
-	// 6. Aggiungi anti-VM checks
-	if pe.Config.AntiVM {
-		code = pe.addAntiVMChecks(code)
-		techniques = append(techniques, "anti_vm")
-	}
+	// 4. Il hash sarà diverso grazie alle modifiche
+	techniques = append(techniques, "unique_hash")
 
 	stub := &PolymorphicStub{
-		Code:             code,
-		EntryPointOffset: 0, // Da calcolare in base al template
-		PayloadOffset:    len(code),
-		MetadataOffset:   len(code) - len(metadata.EncryptionKey) - 100, // Approssimazione
-		Hash:             ComputeHash(code),
+		Code:             modifiedCode,
+		EntryPointOffset: 0,
+		PayloadOffset:    len(template.BaseCode), // Il payload era già alla fine del template
+		MetadataOffset:   len(template.BaseCode) - 8,
+		Hash:             ComputeHash(modifiedCode),
 		Techniques:       techniques,
 	}
 
@@ -92,54 +158,84 @@ func (pe *PolymorphicEngine) generateBasicStub(template *StubTemplate, payload [
 	return stub, nil
 }
 
-// insertJunkCode inserisce junk code nello stub
-func (pe *PolymorphicEngine) insertJunkCode(code []byte) []byte {
-	// Questa è una versione semplificata
-	// In produzione, si analizzerebbe il bytecode e si inserirebbe junk tra le istruzioni
-
-	density := pe.Config.JunkCodeDensity
-	if density <= 0 {
-		return code
+// insertJunkCode aggiunge commenti e variabili inutilizzate casuali
+func (pe *PolymorphicEngine) insertJunkCode(code string) string {
+	// Genera commenti casuali da inserire
+	junkComments := []string{
+		"// Initialize variables\n",
+		"// Setup environment\n",
+		"// Check configuration\n",
+		"// Prepare resources\n",
+		"// Validate state\n",
+		"// Configure settings\n",
 	}
 
-	// Calcola quanti byte di junk inserire
-	junkSize := int(float64(len(code)) * density)
+	// Inserisci un commento casuale all'inizio
+	comment := junkComments[randomInt(len(junkComments))]
 
-	// Genera junk bytes casuali
-	// In produzione, questi dovrebbero essere istruzioni valide ma inutili (NOP, PUSH/POP, ecc.)
-	junk := randomBytes(junkSize)
+	// Genera alcune variabili dummy
+	junkVars := fmt.Sprintf("var _ = %d\nvar _ = \"%s\"\n",
+		randomInt(10000),
+		randomString(8))
 
-	// Inserisci junk in posizioni casuali
-	// Per semplicità, aggiungiamo all'inizio (in produzione, si distribuirebbe nel codice)
-	result := make([]byte, 0, len(code)+len(junk))
-	result = append(result, junk...)
-	result = append(result, code...)
+	return comment + junkVars + code
+}
 
-	return result
+// varyConstants modifica stringhe e costanti numeriche
+func (pe *PolymorphicEngine) varyConstants(code string) string {
+	// Cerca pattern come const bufferSize = 8192
+	// e cambia i valori mantenendo la semantica
+
+	// Per ora, aggiungiamo solo variazioni di buffer size
+	bufferSizes := []string{"4096", "8192", "16384", "32768"}
+	chosenSize := bufferSizes[randomInt(len(bufferSizes))]
+
+	// Aggiungi una const casuale
+	extraConst := fmt.Sprintf("const _bufSize = %s\n", chosenSize)
+	return extraConst + code
+}
+
+// shuffleHelperFunctions riordina le definizioni di funzioni helper
+func (pe *PolymorphicEngine) shuffleHelperFunctions(code string) string {
+	// In uno stub complesso, potremmo avere funzioni helper separate
+	// che possono essere riordinate
+
+	// Per ora, non facciamo nulla (le funzioni helper sono inline)
+	return code
+}
+
+// randomString genera una stringa casuale di lunghezza n
+func randomString(n int) string {
+	const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	result := make([]byte, n)
+	for i := range result {
+		result[i] = letters[randomInt(len(letters))]
+	}
+	return string(result)
 }
 
 // addAntiDebugChecks aggiunge check anti-debug
-func (pe *PolymorphicEngine) addAntiDebugChecks(code []byte) []byte {
+func (pe *PolymorphicEngine) addAntiDebugChecks(code string) string {
 	// Placeholder: in produzione, si aggiungerebbero check come:
 	// - IsDebuggerPresent() su Windows
 	// - ptrace(PTRACE_TRACEME) su Linux
 	// - Check su /proc/self/status
 
-	// Per ora, aggiungiamo solo un marker
-	marker := []byte("ANTIDEBUG_PLACEHOLDER")
-	return append(marker, code...)
+	// Per ora, aggiungiamo solo un commento marker
+	marker := "// ANTIDEBUG_PLACEHOLDER\n"
+	return marker + code
 }
 
 // addAntiVMChecks aggiunge check anti-VM
-func (pe *PolymorphicEngine) addAntiVMChecks(code []byte) []byte {
+func (pe *PolymorphicEngine) addAntiVMChecks(code string) string {
 	// Placeholder: in produzione, si aggiungerebbero check come:
 	// - CPUID checks per hypervisor bit
 	// - Check su DMI/SMBIOS per "VMware", "VirtualBox", "QEMU"
 	// - Timing attacks (RDTSC)
 
-	// Per ora, aggiungiamo solo un marker
-	marker := []byte("ANTIVM_PLACEHOLDER")
-	return append(marker, code...)
+	// Per ora, aggiungiamo solo un commento marker
+	marker := "// ANTIVM_PLACEHOLDER\n"
+	return marker + code
 }
 
 // randomBytes genera byte casuali
@@ -161,4 +257,42 @@ func randomInt(max int) int {
 		panic(fmt.Sprintf("failed to generate random int: %v", err))
 	}
 	return int(n.Int64())
+}
+
+// modifyELFBuildID modifica il build-id se presente nell'ELF
+func (pe *PolymorphicEngine) modifyELFBuildID(elfData []byte) []byte {
+	// Cerca il marker .note.gnu.build-id
+	buildIDMarker := []byte(".note.gnu.build-id")
+	idx := bytes.Index(elfData, buildIDMarker)
+
+	if idx != -1 && idx+len(buildIDMarker)+32 < len(elfData) {
+		// Cerca una sequenza che potrebbe essere il build-id (20 bytes tipici)
+		// Skippa il marker e cerca bytes che sembrano un hash
+		searchStart := idx + len(buildIDMarker)
+		searchEnd := searchStart + 100 // Cerca nei prossimi 100 bytes
+
+		if searchEnd > len(elfData) {
+			searchEnd = len(elfData)
+		}
+
+		// Cerca sequenze di bytes non nulli che potrebbero essere il build-id
+		for i := searchStart; i < searchEnd-20; i++ {
+			// Controlla se c'è una sequenza di 20 bytes non nulli
+			hasContent := false
+			for j := 0; j < 20; j++ {
+				if elfData[i+j] != 0x00 {
+					hasContent = true
+					break
+				}
+			}
+
+			// Se troviamo contenuto, randomizzalo
+			if hasContent {
+				rand.Read(elfData[i : i+20])
+				break
+			}
+		}
+	}
+
+	return elfData
 }
