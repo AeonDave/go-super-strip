@@ -3,7 +3,6 @@ package elfrw
 import (
 	"fmt"
 	"gosstrip/common"
-	"io"
 	"os"
 )
 
@@ -24,14 +23,15 @@ func (e *ELFFile) AddOverlay(dataOrFile string, password string) *common.Operati
 		}
 	}
 
-	// Append data directly to the file
-	if _, err := e.File.Seek(0, io.SeekEnd); err != nil {
-		return common.NewSkipped(fmt.Sprintf("Failed to seek to end of file: %v", err))
+	if len(finalContent) == 0 {
+		return common.NewSkipped("Overlay content is empty")
 	}
 
-	if _, err := e.File.Write(finalContent); err != nil {
-		return common.NewSkipped(fmt.Sprintf("Failed to write overlay data: %v", err))
-	}
+	overlayOffset := int64(len(e.RawData))
+	e.RawData = append(e.RawData, finalContent...)
+	e.HasOverlay = true
+	e.OverlayOffset = overlayOffset
+	e.OverlaySize = int64(len(finalContent))
 
 	message := "Added overlay data"
 	if password != "" {

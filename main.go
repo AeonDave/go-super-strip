@@ -9,6 +9,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 type Configuration struct {
@@ -264,21 +265,81 @@ func runRegex(config *Configuration, isPE bool) error {
 	return nil
 }
 
+func parseInsertSpec(spec string) (string, string, string, error) {
+	idx := strings.Index(spec, ":")
+	if idx == -1 {
+		return "", "", "", fmt.Errorf("invalid format, expected name:data_or_file[:password]")
+	}
+	sectionName := spec[:idx]
+	remainder := spec[idx+1:]
+	if strings.TrimSpace(sectionName) == "" || remainder == "" {
+		return "", "", "", fmt.Errorf("invalid format, expected name:data_or_file[:password]")
+	}
+	dataOrFile, password, err := splitValueAndPassword(remainder)
+	if err != nil {
+		return "", "", "", err
+	}
+	return sectionName, dataOrFile, password, nil
+}
+
+func parseOverlaySpec(spec string) (string, string, error) {
+	if strings.TrimSpace(spec) == "" {
+		return "", "", fmt.Errorf("invalid format, expected data_or_file[:password]")
+	}
+	return splitValueAndPassword(spec)
+}
+
+func splitValueAndPassword(value string) (string, string, error) {
+	if strings.TrimSpace(value) == "" {
+		return "", "", fmt.Errorf("invalid format, expected data_or_file[:password]")
+	}
+	separatorIdx := findPasswordSeparator(value)
+	if separatorIdx == -1 {
+		return value, "", nil
+	}
+	data := value[:separatorIdx]
+	password := value[separatorIdx+1:]
+	if data == "" || password == "" {
+		return "", "", fmt.Errorf("invalid format, expected data_or_file[:password]")
+	}
+	return data, password, nil
+}
+
+func findPasswordSeparator(value string) int {
+	for i := len(value) - 1; i >= 0; i-- {
+		if value[i] != ':' {
+			continue
+		}
+		if isWindowsDriveSpec(value, i) {
+			continue
+		}
+		return i
+	}
+	return -1
+}
+
+func isWindowsDriveSpec(value string, colonIndex int) bool {
+	if colonIndex != 1 {
+		return false
+	}
+	if colonIndex >= len(value)-1 {
+		return false
+	}
+	r := rune(value[0])
+	if !unicode.IsLetter(r) {
+		return false
+	}
+	next := value[colonIndex+1]
+	return next == '\\' || next == '/'
+}
+
 func runInsert(config *Configuration, isPE bool) error {
 	fmt.Println("\n=== Insert Operations ===")
 	fmt.Printf("Inserting section: %s\n", config.Insert)
-
-	parts := strings.Split(config.Insert, ":")
-	if len(parts) < 2 {
-		return fmt.Errorf("invalid format, expected name:data_or_file[:password]")
+	sectionName, dataOrFile, password, err := parseInsertSpec(config.Insert)
+	if err != nil {
+		return err
 	}
-
-	sectionName, dataOrFile := parts[0], parts[1]
-	password := ""
-	if len(parts) > 2 {
-		password = parts[2]
-	}
-
 	var result *common.OperationResult
 	if isPE {
 		result = perw.InsertPE(config.FilePath, sectionName, dataOrFile, password)
@@ -286,25 +347,17 @@ func runInsert(config *Configuration, isPE bool) error {
 		result = elfrw.InsertELF(config.FilePath, sectionName, dataOrFile, password)
 	}
 
-	printOperationResult(getFileType(isPE), "Sector insertion", result)
+	printOperationResult(getFileType(isPE), "Section insertion", result)
 	return nil
 }
 
 func runOverlay(config *Configuration, isPE bool) error {
 	fmt.Println("\n=== Overlay Operations ===")
 	fmt.Printf("Adding overlay: %s\n", config.Overlay)
-
-	parts := strings.Split(config.Overlay, ":")
-	if len(parts) < 1 {
-		return fmt.Errorf("invalid format, expected data_or_file[:password]")
+	dataOrFile, password, err := parseOverlaySpec(config.Overlay)
+	if err != nil {
+		return err
 	}
-
-	dataOrFile := parts[0]
-	password := ""
-	if len(parts) > 1 {
-		password = parts[1]
-	}
-
 	var result *common.OperationResult
 	if isPE {
 		result = perw.OverlayPE(config.FilePath, dataOrFile, password)
@@ -325,14 +378,15 @@ func printOperationResult(fileType, operation string, result *common.OperationRe
 }
 
 func printUsage() {
+	prog := os.Args[0]
 	fmt.Printf(`go-super-strip - Advanced Executable Stripping and Obfuscation Tool
 
 USAGE:
-	%s [OPTIONS] <file>
+	%[1]s [OPTIONS] <file>
 
 DESCRIPTION:
 	Process PE/ELF executables with stripping, obfuscation, and analysis capabilities.
-	Operations are performed in strict order: insert/overlay -> strip -> compact -> obfuscate -> regex
+	Operations are performed in strict order: strip -> compact -> obfuscate -> insert/overlay -> regex
 
 OPTIONS:
 	-a, --analyze        Analyze executable file structure and exit
@@ -355,21 +409,22 @@ OPTIONS:
 	-v                   Enable verbose output
 	-h                   Show this help
 
-EXAMPLES:
-	%s -a bin                		  		# Analyze PE file structure
-	%s -s bin                		  		# StripAll debug sections
-	%s -c bin              					# Compact file (remove sections)
-	%s -o bin              		 			# Apply obfuscation techniques
-	%s -s -c -o bin        		 	   		# StripAll, compact, and obfuscate (full pipeline)
-	%s -s -f bin            		   		# StripAll with risky operations (relocations, etc.)
-	%s -c -f bin               				# Compact with risky operations
-	%s -s -r 'UPX!' bin        				# StripAll built-in rules, then custom regex 'UPX!'
-	%s -i '.custom:data.bin' bin 			# Add hex section from file
-	%s -i '.custom:HelloWorld' bin 			# Add hex section from string
-	%s -i '.secret:data.bin:pass123' bin 	# Add encrypted hex section
-	%s -l 'data.bin' bin 					# Add overlay from file
-	%s -l 'HelloWorld' bin 					# Add overlay from string
-	%s -l 'data.bin:pass123' bin 			# Add encrypted overlay
 
-`, os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0])
+EXAMPLES:
+	%[1]s -a bin                 		  		# Analyze PE file structure
+	%[1]s -s bin                 		  		# StripAll debug sections
+	%[1]s -c bin              					# Compact file (remove sections)
+	%[1]s -o bin              		  		# Apply obfuscation techniques
+	%[1]s -s -c -o bin        			    		# StripAll, compact, and obfuscate (full pipeline)
+	%[1]s -s -f bin            		    		# StripAll with risky operations (relocations, etc.)
+	%[1]s -c -f bin               				# Compact with risky operations
+	%[1]s -s -r 'UPX!' bin        				# StripAll built-in rules, then custom regex 'UPX!'
+	%[1]s -i '.custom:data.bin' bin 			# Add hex section from file
+	%[1]s -i '.custom:HelloWorld' bin 			# Add hex section from string
+	%[1]s -i '.secret:data.bin:pass123' bin 	# Add encrypted hex section
+	%[1]s -l 'data.bin' bin 				# Add overlay from file
+	%[1]s -l 'HelloWorld' bin 				# Add overlay from string
+	%[1]s -l 'data.bin:pass123' bin 			# Add encrypted overlay
+
+`, prog)
 }

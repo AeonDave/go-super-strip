@@ -36,6 +36,9 @@ func AnalyzeELF(file string) error {
 	if err != nil {
 		return err
 	}
+	defer func() {
+		_ = elfFile.Close()
+	}()
 
 	return elfFile.Analyze()
 }

@@ -3,7 +3,6 @@ package perw
 import (
 	"fmt"
 	"gosstrip/common"
-	"io"
 	"os"
 )
 
@@ -24,24 +23,15 @@ func (p *PEFile) AddOverlay(dataOrFile string, password string) *common.Operatio
 		}
 	}
 
-	err = p.appendDataToFileDirectly(finalContent)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("Failed to add overlay: %v", err))
+	if len(finalContent) == 0 {
+		return common.NewSkipped("Overlay content is empty")
 	}
+
+	p.RawData = append(p.RawData, finalContent...)
 
 	message := "Added overlay data"
 	if password != "" {
 		message += " (encrypted)"
 	}
 	return common.NewApplied(message, 1)
-}
-
-func (p *PEFile) appendDataToFileDirectly(content []byte) error {
-	if _, err := p.File.Seek(0, io.SeekEnd); err != nil {
-		return fmt.Errorf("impossibile posizionarsi alla fine del file: %w", err)
-	}
-	if _, err := p.File.Write(content); err != nil {
-		return fmt.Errorf("impossibile scrivere il contenuto nel file: %w", err)
-	}
-	return nil
 }

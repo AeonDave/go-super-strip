@@ -36,6 +36,9 @@ func AnalyzePE(filePath string) error {
 	if err != nil {
 		return err
 	}
+	defer func() {
+		_ = peFile.Close()
+	}()
 	return peFile.Analyze()
 }
 
