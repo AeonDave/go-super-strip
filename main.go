@@ -453,6 +453,9 @@ OPTIONS:
 	                       antidebug=true|false (default: false)
 	                       antivm=true|false (default: false)
 	                       verbose=true|false (default: false)
+	                     Note (Windows/PowerShell): quote the -p value to avoid shell parsing issues with commas.
+	                       Example: gosstrip.exe -p="compression=lzma,level=9,encryption=chacha20" file.exe
+	                       Or use stop-parsing operator: gosstrip.exe --% -p=compression=lzma,level=9,encryption=chacha20 file.exe
 	-v                   Enable verbose output
 	-h                   Show this help
 

@@ -14,13 +14,12 @@ A comprehensive binary manipulation toolkit for ELF and PE executables with adva
 - **Pattern Removal**: Strip bytes matching custom regex patterns
 - **Polymorphic Packing**: Generate unique executable variants with identical functionality
 
-### Polymorphic Packing System
-- **7 Stub Variants**: Multiple decryption algorithms (XOR, additive feedback, multi-pass, block cipher, control flow obfuscation)
-- **Block Cipher Randomization**: 6 different cipher operations per build
-- **Variable Name Randomization**: 72 combinations per identifier
-- **Garbage Code Injection**: Strategic dead code insertion
-- **100% Unique Builds**: Every build produces a unique SHA256 hash
-- **Zero Overhead**: <0.2% size increase, <10ms runtime impact
+### Polymorphic Packing
+
+Status
+- Advanced multi-variant polymorphism is integrated: a random stub variant is injected into the compiled stub at build time and anchored via init(), producing per-build unique binaries. Safe post-compile tweaks (e.g., ELF EI_PAD entropy) are also applied where applicable.
+- In-memory execution is available (Linux: memfd_create; Windows: process hollowing) with automatic fallbacks to temporary files when needed.
+- The packer prints the exact polymorphic technique tags it applied in the output details, so you can verify what was used for each build.
 
 ## Installation
 
@@ -57,6 +56,11 @@ gosstrip [OPTIONS] <file>
 ### Pack Options
 
 When using `-p` or `--pack`, you can specify options in `key=value` format separated by commas:
+
+Note for Windows/PowerShell users:
+- Always quote the -p value to avoid shell parsing issues with commas.
+  Example: gosstrip.exe -p="compression=lzma,level=9,encryption=chacha20" file.exe
+- Alternatively, use the stop-parsing operator: gosstrip.exe --% -p=compression=lzma,level=9,encryption=chacha20 file.exe
 
 | Option | Values | Default | Description |
 |--------|--------|---------|-------------|
@@ -184,6 +188,8 @@ gosstrip -p=compression=lzma,level=9,encryption=chacha20 binary.stripped
 The polymorphic engine implements seven core stub generation patterns, each producing unlimited variations through randomization:
 
 ### 1. Forward XOR Decryption
+Tags: stub_variant_forward_xor, forward_iteration, simple_xor, instruction_subst
+
 Standard XOR cipher with forward iteration. Simple and fast.
 
 ```
@@ -193,6 +199,8 @@ for i := 0; i < length; i++ {
 ```
 
 ### 2. Reverse XOR Decryption
+Tags: stub_variant_reverse_xor, reverse_iteration, simple_xor, instruction_subst
+
 XOR cipher with reverse iteration, different memory access pattern.
 
 ```
@@ -202,6 +210,8 @@ for i := length - 1; i >= 0; i-- {
 ```
 
 ### 3. Additive Feedback Cipher
+Tags: stub_variant_additive_feedback, forward_iteration, feedback_loop, additive_cipher
+
 XOR with cumulative feedback mechanism, creates byte interdependencies.
 
 ```
@@ -214,6 +224,8 @@ for i := 0; i < length; i++ {
 ```
 
 ### 4. XOR with Rotation
+Tags: stub_variant_xor_rotate, forward_iteration, bit_rotation, xor
+
 Combines XOR with bit rotation for additional complexity.
 
 ```
@@ -225,6 +237,8 @@ for i := 0; i < length; i++ {
 ```
 
 ### 5. Multi-Pass Decryption
+Tags: stub_variant_multi_pass, multi_pass_decrypt, xor, additive
+
 Three-stage decryption with different keys per pass.
 
 ```
@@ -243,6 +257,8 @@ for i := 0; i < length; i++ {
 ```
 
 ### 6. Block Cipher with Randomized Operations
+Tags: stub_variant_block_cipher_random, block_cipher, random_ops, multi_operation
+
 Processes data in 16-byte blocks with random cipher operations selected per build.
 
 Available operations:
@@ -256,6 +272,8 @@ Available operations:
 Each block randomly uses different operation combinations, creating millions of unique cipher sequences.
 
 ### 7. Control Flow Obfuscated
+Tags: stub_variant_control_flow_obf, control_flow_obf, switch_based, complex_flow
+
 Combines decryption with randomized control flow patterns.
 
 Features:
@@ -264,6 +282,12 @@ Features:
 - Random storage variants (array/slice/pointer/direct)
 - Switch-based control flow
 - Variable increment patterns
+
+### Global tags (reported where applicable)
+
+- padding_entropy
+- unique_hash
+- elf_pad_randomization (ELF only)
 
 ### Variable Name Randomization
 
@@ -486,14 +510,6 @@ ResumeThread(pi.Thread)
 - ✅ Proper CONTEXT structure (1232 bytes)
 - ✅ Validated based on [fistfulofhummus/Process-Hollowing-in-Go](https://github.com/fistfulofhummus/Process-Hollowing-in-Go)
 
-````
-```
-
-**Performance**:
-- Overhead: ~50ms for process creation + hollowing
-- Memory: 2x payload size (host + hollowed process)
-- Zero I/O wait time
-
 **Compatibility**:
 - ✅ Windows 7, 8, 10, 11
 - ✅ x86 and x64 architectures
@@ -645,37 +661,6 @@ cat hash_*.txt | sort | uniq | wc -l  # Should equal 5
 
 ## Architecture
 
-### Package Structure
-
-```
-go-super-strip/
-├── main.go                 # CLI entry point
-├── common/                 # Shared utilities
-│   ├── types.go           # Common data structures
-│   ├── crypto.go          # Encryption functions
-│   ├── format.go          # Output formatting
-│   └── utils.go           # Utility functions
-├── elfrw/                 # ELF file operations
-│   ├── read.go            # ELF parsing
-│   ├── write.go           # ELF generation
-│   ├── analyze.go         # Section analysis
-│   ├── strip.go           # Symbol stripping
-│   ├── compact.go         # Binary compaction
-│   ├── obfuscate.go       # Symbol obfuscation
-│   ├── insert.go          # Section injection
-│   └── overlay.go         # Overlay operations
-├── perw/                  # PE file operations (mirrors elfrw)
-└── pack/                  # Polymorphic packing
-    ├── polymorphic.go            # Main packing engine
-    ├── stub_templates.go         # 7 stub generators
-    ├── instruction_substitution.go  # Block cipher randomization
-    ├── pack_elf.go               # ELF packing
-    ├── pack_pe.go                # PE packing
-    ├── encryption.go             # Encryption algorithms
-    ├── compression.go            # Compression algorithms
-    └── stub_compiler.go          # Stub compilation
-```
-
 ### Execution Flow
 
 **Packing Process**:
@@ -686,8 +671,8 @@ go-super-strip/
 5. Apply block cipher randomization (6 operations)
 6. Randomize variable names (72 combinations)
 7. Inject garbage code (2-5 insertions)
-8. Generate Go stub source code
-9. Compile stub with embedded encrypted payload
+8. Generate Go stub source code and inject a random stub variant (anchored via init())
+9. Compile stub and append [Encrypted Payload]Metadata Size (8B LE) to the stub trailer
 10. Write final packed binary
 
 **Unpacking Process (Runtime)**:

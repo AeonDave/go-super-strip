@@ -1,198 +1,185 @@
 # Pack Module
 
-Il modulo `pack` fornisce funzionalità avanzate di packing eseguibili con compressione, cifratura e stub polimorfici.
+The `pack` package provides executable packing with compression, encryption, and a simple polymorphic stub for ELF and PE binaries.
 
-## Struttura dei File
+Note on current status:
+- Compression supports xz, lzma, or none.
+- Encryption supports xor, aes-256-gcm, chacha20, or none.
+- Advanced multi-variant polymorphism is integrated: a random stub variant is injected into the compiled stub at build time and anchored via init(), producing per-build unique binaries. Light post-compile tweaks (e.g., ELF EI_PAD entropy) are also applied where safe.
+- In-memory execution is available (memfd_create on Linux, process hollowing on Windows) with automatic fallbacks to temporary files.
 
-### File Principali
+## File Structure
 
-- **`pack.go`**: Entry point principale per le operazioni di packing
-- **`config.go`**: Gestione configurazione e parsing opzioni
-- **`common.go`**: Tipi e strutture comuni (PackResult, PayloadMetadata, etc.)
-- **`helpers.go`**: Funzioni helper generiche (hash, serializzazione, etc.)
+### Core Files
 
-### Compressione e Cifratura
+- `pack.go`: CLI-facing entry point to perform packing via Pack(filePath, optionsString)
+- `config.go`: Options parsing, defaults, and validation
+- `common.go`: Shared types (PackResult, PayloadMetadata, etc.)
+- `helpers.go`: Utility helpers (hashes, formatting)
 
-- **`compression.go`**: Algoritmi di compressione (XZ, LZMA, zlib)
-- **`encryption.go`**: Algoritmi di cifratura (XOR, AES-256-GCM, ChaCha20-Poly1305)
+### Compression and Encryption
 
-### Packing per Formato
+- `compression.go`: Compression algorithms (XZ, LZMA)
+- `encryption.go`: Encryption algorithms (XOR, AES-256-GCM, ChaCha20-Poly1305)
 
-- **`pack_elf.go`**: Packer per eseguibili ELF (Linux)
-- **`pack_pe.go`**: Packer per eseguibili PE (Windows)
+### Per-Format Packers
+
+- `pack_elf.go`: ELF packer (Linux)
+- `pack_pe.go`: PE packer (Windows)
 
 ### Stub Templates
 
-- **`stub_template_elf.go`**: Template Go per stub ELF (self-extracting)
-- **`stub_template_pe.go`**: Template Go per stub PE (self-extracting)
-- **`stub_compiler.go`**: Compilazione stub e embedding metadata
+- `stub_template_elf.go`: Go stub for ELF (self-extracting)
+- `stub_template_pe.go`: Go stub for PE (self-extracting)
+- `stub_compiler.go`: Stub compilation and metadata embedding
 
-### Polimorfismo
+### Polymorphism
 
-- **`polymorphic.go`**: Engine per generare stub polimorfici con hash unici
+- `polymorphic.go`: Engine that aggregates technique tags and applies safe post-compile tweaks (e.g., ELF EI_PAD entropy)
+- `stub_templates.go`: Advanced multi-variant stub generator (integrated into compiled stubs)
+- `instruction_substitution.go`: Helpers used by the variant generator
 
-### Test
+### Tests
 
-- **`config_test.go`**: Test per parsing configurazione
-- **`pack_test.go`**: Test per compressione, cifratura, polimorfismo
+- `config_test.go`: Options parsing and validation tests
+- `pack_test.go`: Basic packing tests (compression/encryption paths)
 
-## Utilizzo
+## Usage
 
-### Opzioni Disponibili
+You can call the packer from the CLI via gosstrip -p, or programmatically.
 
-```go
-config, err := pack.ParseOptions("comp=xz,encr=chacha20,level=9,poly=true")
-```
+### CLI (recommended)
 
-**Compressione:**
-- `comp=xz` - XZ compression (default)
-- `comp=lzma` - LZMA compression (raw stream)
-- `comp=none` - No compression
+- Options are specified as: key=value pairs separated by commas.
+- Full option names are preferred; some shorthands are also accepted.
 
-**Cifratura:**
-- `encr=xor` - XOR encryption (semplice, veloce)
-- `encr=aes` - AES-256-GCM (sicuro, alias: aes-256-gcm)
-- `encr=chacha20` - ChaCha20-Poly1305 (sicuro, veloce)
-- `encr=none` - No encryption
+Supported options and defaults:
+- compression=xz|lzma|none (default: xz)
+- level=0-9 (default: 6)
+- encryption=xor|aes-256-gcm|chacha20|none (default: aes-256-gcm)
+- polymorphic=true|false (default: true)  [alias: poly]
+- junkdensity=0.0-1.0 (default: 0.2)
+- padding=true|false (default: true)
+- inmemory=true|false (default: false)  [alias: inmem]
+- antidebug=true|false (default: false)
+- antivm=true|false (default: false)
+- verbose=true|false (default: false)  [alias: v]
 
-**Livello Compressione:**
-- `level=0` - Veloce, poca compressione
-- `level=9` - Lento, massima compressione
-- `level=6` - Default (bilanciato)
+Examples:
+- gosstrip -p target_binary
+- gosstrip -p="compression=lzma,level=9,encryption=chacha20" target_binary
+- gosstrip -p=polymorphic=true,junkdensity=0.5 target_binary
+- gosstrip -p=inmemory=true target_binary
 
-**Polimorfismo:**
-- `poly=true` - Abilita stub polimorfico (hash unico per build)
-- `poly=false` - Stub statico
-- `junkdensity=0.5` - Densità junk code (0.0-1.0)
+### Programmatic
 
-**Esecuzione:**
-- `inmemory=true` - Esecuzione in-memory (memfd_create/process hollowing)
-- `inmemory=false` - Esecuzione da file temporaneo (default)
-
-**Anti-Analysis:**
-- `antidebug=true` - Check anti-debug
-- `antivm=true` - Check anti-VM
-
-**Padding:**
-- `padding=true` - Aggiunge padding casuale (default)
-- `padding=false` - Nessun padding
-
-**Verbose:**
-- `verbose=true` - Output dettagliato
-
-### Esempio Completo
+Simple example using the high-level Pack function:
 
 ```go
 package main
 
 import (
-    "fmt"
+    "log"
     "gosstrip/pack"
 )
 
 func main() {
-    // Parse opzioni
-    config, err := pack.ParseOptions("comp=lzma,encr=chacha20,level=9,poly=true,verbose=true")
-    if err != nil {
-        panic(err)
+    // Options string (same format as CLI)
+    opts := "compression=xz,level=6,encryption=aes-256-gcm,polymorphic=true"
+
+    if err := pack.Pack("input_binary", opts); err != nil {
+        log.Fatalf("pack failed: %v", err)
     }
-    
-    // Valida configurazione
-    if err := config.Validate(); err != nil {
-        panic(err)
-    }
-    
-    // Pack file
-    result, err := pack.Pack("input.elf", config)
-    if err != nil {
-        panic(err)
-    }
-    
-    fmt.Println(result.String())
 }
 ```
 
-## Architettura
+If you need more control, you can parse/validate options first and then call Pack:
 
-### Flusso di Packing
+```go
+cfg, err := pack.ParseOptions("comp=lzma,encr=chacha20,level=9,poly=true")
+if err != nil { /* handle */ }
+if err := cfg.Validate(); err != nil { /* handle */ }
+// Then run pack via the CLI entry point:
+if err := pack.Pack("input_binary", "comp=lzma,encr=chacha20,level=9,poly=true"); err != nil { /* handle */ }
+```
 
-1. **Lettura**: Legge il file originale
-2. **Padding**: (Opzionale) Aggiunge padding casuale
-3. **Compressione**: Comprime il payload
-4. **Cifratura**: Cifra il payload compresso
-5. **Metadata**: Crea metadata structure (algoritmi, chiavi, dimensioni)
-6. **Stub Compilation**: Compila stub Go self-extracting
-7. **Polimorfismo**: (Opzionale) Applica tecniche polimorfiche al binario
-8. **Assembly**: Appende payload + metadata al stub
-9. **Output**: Scrive il file packed finale
+## Architecture
 
-### Formato File Packed
+### Packing Flow
+
+1. Read original file
+2. Optional random padding
+3. Compress payload (xz/lzma/none)
+4. Encrypt payload (xor/aes-256-gcm/chacha20/none)
+5. Create metadata block (algorithms, sizes, keys, nonce)
+6. Compile a self-extracting Go stub
+7. Apply light polymorphism (e.g., header/padding randomization)
+8. Append payload + metadata to stub
+9. Write final packed file
+
+### Packed File Layout
 
 ```
 [ Stub Binary ]
 [ Encrypted Payload ]
-[ Metadata (algoritmi, chiavi, nonce, etc.) ]
+[ Metadata (algorithms, keys, nonce, sizes) ]
 [ Metadata Size (8 bytes, little-endian) ]
 ```
 
-Lo stub legge gli ultimi 8 bytes per determinare la dimensione del metadata, poi legge il metadata e il payload dalla fine del file.
+The stub reads the trailing 8 bytes to get the metadata size, then reads metadata and payload from the end of the file.
 
-### Stub Self-Extracting
+### Self-Extracting Stub
 
-Lo stub compilato:
-1. Legge se stesso per trovare metadata e payload
-2. Decifra il payload usando la chiave embedded
-3. Decomprime il payload
-4. Esegue il payload originale:
-   - **Linux**: `memfd_create` (in-memory) o file temporaneo
-   - **Windows**: Process hollowing o file temporaneo
+At runtime the stub:
+1. Locates and parses its embedded metadata and payload
+2. Decrypts the payload using the embedded key/nonce
+3. Decompresses the payload
+4. Executes the original payload
+   - Linux: tries memfd_create-based in-memory execution; falls back to temp file
+   - Windows: uses a simplified process hollowing routine; falls back to temp file
 
-## Test Coverage
+## Testing
 
-I test coprono:
-- ✅ Parsing configurazione e validazione
-- ✅ Compressione/decompressione (XZ, LZMA)
-- ✅ Cifratura/decifratura (XOR, AES, ChaCha20)
-- ✅ Generazione stub polimorfico
-- ✅ Hash unici per ogni build
-- ✅ PackResult formatting
-
-Per eseguire i test:
+Run tests for the pack module:
 
 ```bash
-go test ./pack/... -v
+go test ./pack -v
 ```
 
-## Dipendenze
+## Implementation Notes
 
-- `github.com/ulikunitz/xz` - XZ/LZMA compression
-- `golang.org/x/crypto/chacha20poly1305` - ChaCha20-Poly1305 encryption
+- Polymorphism now includes an advanced multi-variant stub generator injected at build time (anchored via init()), plus safe post-compile tweaks where applicable (e.g., ELF EI_PAD entropy). The packer prints the exact technique tags used in the output details.
+- In-memory execution paths are implemented and include automatic fallbacks (Linux: memfd_create; Windows: process hollowing).
 
-## Note di Implementazione
+## Dependencies
 
-### Polimorfismo
+- github.com/ulikunitz/xz — XZ/LZMA compression
+- golang.org/x/crypto/chacha20poly1305 — ChaCha20-Poly1305 encryption
 
-Il polimorfismo attuale inserisce junk code casuale nel binario per variare l'hash. Implementazioni avanzate future potrebbero includere:
-- Permutazione registri a livello assembly
-- Sostituzione istruzioni equivalenti
-- Mutazione control flow
 
-### In-Memory Execution
+## Polymorphic technique tags
 
-L'esecuzione in-memory è implementata come placeholder:
-- **Linux**: `memfd_create` syscall per FD anonimo in memoria
-- **Windows**: Process hollowing (crea processo sospeso, unmap, inject)
+When polymorphic=true, the packer prints the exact techniques it applied in the result details. These are the tags you may see:
 
-Per implementazioni complete, vedere:
-- [goffloader](https://github.com/Praetorian-Labs/goffloader) - Manual PE mapping
-- [Process-Hollowing-in-Go](https://github.com/D3Ext/Process-Hollowing-in-Go) - Process hollowing
+- Variant tags (one per build):
+  - stub_variant_forward_xor
+  - stub_variant_reverse_xor
+  - stub_variant_additive_feedback
+  - stub_variant_xor_rotate
+  - stub_variant_multi_pass
+  - stub_variant_block_cipher_random
+  - stub_variant_control_flow_obf
 
-## TODO
+- Feature tags (depending on the selected variant):
+  - forward_iteration, reverse_iteration, feedback_loop, additive_cipher, bit_rotation,
+    multi_pass_decrypt, block_cipher, random_ops, multi_operation, control_flow_obf,
+    switch_based, complex_flow, instruction_subst
 
-- [ ] Assembly-level polymorphism con capstone/keystone
-- [ ] Real anti-debug/anti-VM checks
-- [ ] Complete memfd_create implementation
-- [ ] Complete process hollowing implementation
-- [ ] Supporto ARM64/ARM32
-- [ ] Obfuscation stringhe nello stub
-- [ ] Code signing preservation
+- Global tags:
+  - padding_entropy
+  - unique_hash
+  - elf_pad_randomization (ELF only)
+
+Example output excerpt:
+
+  Polymorphic techniques: [stub_variant_multi_pass multi_pass_decrypt xor additive padding_entropy unique_hash]

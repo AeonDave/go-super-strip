@@ -67,6 +67,10 @@ func PackPE(inputPath string, config *PackConfig) (*PackResult, error) {
 	}
 
 	// 6. Compila stub con metadata embedded
+	// Assicura che il compilatore selezioni correttamente il target Windows impostando OutputPath di default prima della compilazione
+	if config.OutputPath == "" {
+		config.OutputPath = inputPath + ".packed.exe"
+	}
 	stubBinary, err := CompileStub(config, metadata, encrypted)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compile stub: %w", err)
@@ -126,7 +130,7 @@ func PackPE(inputPath string, config *PackConfig) (*PackResult, error) {
 	result := NewPackResult(originalSize, packedSize, originalHash, packedHash, stubHash)
 	result.AddDetail(fmt.Sprintf("Compression: %s (level %d)", config.CompressionAlgorithm, config.CompressionLevel))
 	result.AddDetail(fmt.Sprintf("Encryption: %s", config.EncryptionAlgorithm))
-	result.AddDetail(fmt.Sprintf("Execution mode: %s", executionModeString(config)))
+	result.AddDetail(fmt.Sprintf("Execution mode: %s", executionModeStringPE(config)))
 	result.AddDetail(fmt.Sprintf("Polymorphic techniques: %v", techniques))
 	result.AddDetail(fmt.Sprintf("Output: %s", outputPath))
 
@@ -135,4 +139,11 @@ func PackPE(inputPath string, config *PackConfig) (*PackResult, error) {
 	}
 
 	return result, nil
+}
+
+func executionModeStringPE(config *PackConfig) string {
+	if config.InMemoryExecution {
+		return "in-memory (process hollowing)"
+	}
+	return "temporary file"
 }
