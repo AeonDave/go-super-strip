@@ -2,6 +2,7 @@ package pack
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/sha256"
 	"testing"
 )
@@ -308,13 +309,6 @@ func TestPolymorphicEngine_UniqueHashes(t *testing.T) {
 	config.PolymorphicStub = true
 	config.JunkCodeDensity = 0.5
 
-	template := &StubTemplate{
-		Name:       "Test",
-		TargetArch: "amd64",
-		TargetOS:   "linux",
-		BaseCode:   []byte("test code"),
-	}
-
 	payload := []byte("payload")
 	metadata := &PayloadMetadata{
 		OriginalSize:   100,
@@ -324,7 +318,27 @@ func TestPolymorphicEngine_UniqueHashes(t *testing.T) {
 
 	hashes := make(map[[32]byte]bool)
 
+	// Simulate ELF headers for realistic test
+	elfHeader := []byte{
+		0x7f, 'E', 'L', 'F', // ELF magic
+		2, 1, 1, 0, // 64-bit, little-endian, version
+		0, 0, 0, 0, 0, 0, 0, 0, // EI_PAD (bytes 9-16) - will be randomized
+	}
+
 	for i := 0; i < 10; i++ {
+		// Each iteration gets a different BaseCode with ELF header
+		baseCode := make([]byte, 64)
+		copy(baseCode, elfHeader)
+		// Add some random data after header to simulate compiled stub
+		rand.Read(baseCode[16:])
+
+		template := &StubTemplate{
+			Name:       "Test",
+			TargetArch: "amd64",
+			TargetOS:   "linux",
+			BaseCode:   baseCode,
+		}
+
 		engine := NewPolymorphicEngine(config)
 		stub, err := engine.GenerateStub(template, payload, metadata)
 		if err != nil {
