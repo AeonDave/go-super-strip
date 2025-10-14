@@ -13,6 +13,8 @@ import (
 	"unicode"
 )
 
+const defaultPackOptions = "compression=lzma,level=9,encryption=chacha20"
+
 type Configuration struct {
 	FilePath  string
 	Verbose   bool
@@ -69,6 +71,9 @@ func main() {
 		}
 	}
 
+	// Preprocess -p/--pack flags with no value so they won't consume the file path
+	preprocessPackFlags()
+
 	config, err := parseArgs()
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
@@ -82,6 +87,31 @@ func main() {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func preprocessPackFlags() {
+	if len(os.Args) == 0 {
+		return
+	}
+	args := os.Args[:0]
+	for _, a := range os.Args {
+		switch a {
+		case "-p":
+			args = append(args, "-p="+defaultPackOptions)
+			continue
+		case "--pack":
+			args = append(args, "--pack="+defaultPackOptions)
+			continue
+		case "-p=":
+			args = append(args, "-p="+defaultPackOptions)
+			continue
+		case "--pack=":
+			args = append(args, "--pack="+defaultPackOptions)
+			continue
+		}
+		args = append(args, a)
+	}
+	os.Args = args
 }
 
 func parseArgs() (*Configuration, error) {
@@ -118,10 +148,10 @@ func parseArgs() (*Configuration, error) {
 		if arg == "-p" || arg == "--pack" || strings.HasPrefix(arg, "-p=") || strings.HasPrefix(arg, "--pack=") {
 			if arg == "-p" || arg == "--pack" {
 				// Flag senza valore: usa default
-				config.Pack = "default"
+				config.Pack = defaultPackOptions
 			} else if config.Pack == "" {
 				// Flag con = ma nessun valore: usa default
-				config.Pack = "default"
+				config.Pack = defaultPackOptions
 			}
 			break
 		}
