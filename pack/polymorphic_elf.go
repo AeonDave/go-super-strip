@@ -11,20 +11,13 @@ type ELFPolymorphicEngine struct {
 	*PolymorphicEngine
 }
 
-// NewELFPolymorphicEngine crea un engine specifico per ELF
-func NewELFPolymorphicEngine(config *PackConfig) *ELFPolymorphicEngine {
-	return &ELFPolymorphicEngine{
-		PolymorphicEngine: NewPolymorphicEngine(config),
-	}
-}
-
 // TransformELF applica trasformazioni polimorfiche a un binario ELF
 func (epe *ELFPolymorphicEngine) TransformELF(elfData []byte) ([]byte, []string, error) {
 	if !epe.Config.PolymorphicStub {
 		return elfData, []string{"none"}, nil
 	}
 
-	techniques := []string{}
+	var techniques []string
 	result := make([]byte, len(elfData))
 	copy(result, elfData)
 
@@ -170,7 +163,7 @@ func (epe *ELFPolymorphicEngine) randomizePadding(elfData []byte) []byte {
 	// ELF header ha padding bytes a offset 9-15 (e_ident[EI_PAD])
 	// Questi possono essere randomizzati senza invalidare il binario
 	if len(result) >= 16 {
-		rand.Read(result[9:16])
+		_, _ = rand.Read(result[9:16])
 	}
 
 	return result
@@ -284,7 +277,7 @@ func (epe *ELFPolymorphicEngine) ModifyTimestamps(elfData []byte) []byte {
 		// Modifica i 20 bytes dopo il marker (possibile build-id)
 		start := idx + len(buildIDMarker) + 8 // skip marker + alcuni bytes di header
 		if start+20 < len(result) {
-			rand.Read(result[start : start+20])
+			_, _ = rand.Read(result[start : start+20])
 		}
 	}
 
@@ -335,26 +328,10 @@ func (epe *ELFPolymorphicEngine) GetMetadata() *PolymorphicMetadata {
 	}
 }
 
-// Helper: legge uint16 little-endian
-func readUint16LE(data []byte, offset int) uint16 {
-	if offset+2 > len(data) {
-		return 0
-	}
-	return binary.LittleEndian.Uint16(data[offset : offset+2])
-}
-
 // Helper: legge uint32 little-endian
 func readUint32LE(data []byte, offset int) uint32 {
 	if offset+4 > len(data) {
 		return 0
 	}
 	return binary.LittleEndian.Uint32(data[offset : offset+4])
-}
-
-// Helper: legge uint64 little-endian
-func readUint64LE(data []byte, offset int) uint64 {
-	if offset+8 > len(data) {
-		return 0
-	}
-	return binary.LittleEndian.Uint64(data[offset : offset+8])
 }

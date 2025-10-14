@@ -165,7 +165,9 @@ func decompressZlib(data []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create zlib reader: %w", err)
 	}
-	defer r.Close()
+	defer func(r io.ReadCloser) {
+		_ = r.Close()
+	}(r)
 
 	decompressed, err := io.ReadAll(r)
 	if err != nil {
@@ -202,29 +204,4 @@ func AddRandomPadding(data []byte, config *PackConfig) ([]byte, []int, error) {
 	result = append(result, padding[paddingSize/2:]...)
 
 	return result, paddingOffsets, nil
-}
-
-// RemovePadding rimuove il padding casuale
-func RemovePadding(data []byte, offsets []int) []byte {
-	if len(offsets) == 0 {
-		return data
-	}
-
-	// Rimuovi padding dall'inizio e dalla fine
-	// Questo è un esempio semplificato
-	// In produzione, usare i marker degli offset
-
-	// Per ora, assumiamo che il padding sia equamente distribuito
-	// all'inizio e alla fine
-	if len(offsets) == 2 {
-		paddingStart := offsets[0]
-		dataStart := paddingStart
-		dataEnd := offsets[1]
-
-		if dataStart > 0 && dataEnd < len(data) {
-			return data[dataStart:dataEnd]
-		}
-	}
-
-	return data
 }
