@@ -62,6 +62,7 @@ func PackPE(inputPath string, config *PackConfig) (*PackResult, error) {
 		EncryptionKey:   key,
 		EncryptionNonce: nonce,
 		PaddingOffsets:  paddingOffsets,
+		UseInMemory:     config.InMemoryExecution,
 		Checksum:        originalHash,
 	}
 
@@ -134,36 +135,4 @@ func PackPE(inputPath string, config *PackConfig) (*PackResult, error) {
 	}
 
 	return result, nil
-}
-
-// getPEStubTemplate ritorna il template stub per PE
-func getPEStubTemplate(config *PackConfig) *StubTemplate {
-	// Questo è un placeholder - il template vero verrebbe caricato da templates/pe_stub.go
-	return &StubTemplate{
-		Name:       "PE_Stub_v1",
-		TargetArch: "amd64",
-		TargetOS:   "windows",
-		BaseCode:   []byte("PE_STUB_PLACEHOLDER"), // Sostituito dal vero codice
-		PlaceholderOffset: map[string]int{
-			"PAYLOAD_OFFSET":   0,
-			"PAYLOAD_SIZE":     8,
-			"ENCRYPTION_KEY":   16,
-			"ENCRYPTION_NONCE": 48,
-		},
-	}
-}
-
-// assemblePackedPE assembla lo stub + payload + metadata in un PE packed
-func assemblePackedPE(stub *PolymorphicStub, payload []byte, metadata *PayloadMetadata) []byte {
-	// Header: Stub code
-	result := stub.Code
-
-	// Metadata section
-	metadataBytes := serializeMetadata(metadata)
-	result = append(result, metadataBytes...)
-
-	// Payload section
-	result = append(result, payload...)
-
-	return result
 }

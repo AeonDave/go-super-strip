@@ -62,6 +62,7 @@ func PackELF(inputPath string, config *PackConfig) (*PackResult, error) {
 		EncryptionKey:   key,
 		EncryptionNonce: nonce,
 		PaddingOffsets:  paddingOffsets,
+		UseInMemory:     config.InMemoryExecution,
 		Checksum:        originalHash,
 	}
 
@@ -134,75 +135,6 @@ func PackELF(inputPath string, config *PackConfig) (*PackResult, error) {
 	}
 
 	return result, nil
-}
-
-// getELFStubTemplate ritorna il template stub per ELF
-func getELFStubTemplate(config *PackConfig) *StubTemplate {
-	// Questo è un placeholder - il template vero verrebbe caricato da templates/elf_stub.go
-	return &StubTemplate{
-		Name:       "ELF_Stub_v1",
-		TargetArch: "amd64",
-		TargetOS:   "linux",
-		BaseCode:   []byte("ELF_STUB_PLACEHOLDER"), // Sostituito dal vero codice
-		PlaceholderOffset: map[string]int{
-			"PAYLOAD_OFFSET":   0,
-			"PAYLOAD_SIZE":     8,
-			"ENCRYPTION_KEY":   16,
-			"ENCRYPTION_NONCE": 48,
-		},
-	}
-}
-
-// assemblePackedELF assembla lo stub + payload + metadata in un ELF packed
-func assemblePackedELF(stub *PolymorphicStub, payload []byte, metadata *PayloadMetadata) []byte {
-	// Header: Stub code
-	result := stub.Code
-
-	// Metadata section
-	metadataBytes := serializeMetadata(metadata)
-	result = append(result, metadataBytes...)
-
-	// Payload section
-	result = append(result, payload...)
-
-	return result
-}
-
-// serializeMetadata serializza i metadata in byte
-func serializeMetadata(m *PayloadMetadata) []byte {
-	// Formato semplificato:
-	// [8 bytes: OriginalSize]
-	// [8 bytes: CompressedSize]
-	// [8 bytes: EncryptedSize]
-	// [16 bytes: CompressionAlgo name]
-	// [16 bytes: EncryptionAlgo name]
-	// [N bytes: EncryptionKey]
-	// [M bytes: EncryptionNonce]
-	// [32 bytes: Checksum]
-
-	result := make([]byte, 0, 128)
-
-	// Sizes
-	result = appendUint64(result, m.OriginalSize)
-	result = appendUint64(result, m.CompressedSize)
-	result = appendUint64(result, m.EncryptedSize)
-
-	// Algorithms (fixed 16 bytes each)
-	result = appendFixedString(result, m.CompressionAlgo, 16)
-	result = appendFixedString(result, m.EncryptionAlgo, 16)
-
-	// Key size + key
-	result = appendUint32(result, uint32(len(m.EncryptionKey)))
-	result = append(result, m.EncryptionKey...)
-
-	// Nonce size + nonce
-	result = appendUint32(result, uint32(len(m.EncryptionNonce)))
-	result = append(result, m.EncryptionNonce...)
-
-	// Checksum
-	result = append(result, m.Checksum[:]...)
-
-	return result
 }
 
 func executionModeString(config *PackConfig) string {

