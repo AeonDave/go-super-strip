@@ -94,9 +94,13 @@ func analyzeSectionAnomalies(sections []SectionInfo, fileSize int64) []string {
 			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' has invalid file offset")
 		}
 
-		// Check for non-aligned file offsets
-		if s.Offset > 0 && s.Offset%0x10 != 0 {
-			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' has non-aligned file offset (0x"+fmt.Sprintf("%X", s.Offset)+")")
+		// Check for non-aligned file offsets (respect section alignment)
+		// Only applies when the section has content and requires alignment > 1
+		if s.Size > 0 && s.Alignment > 1 && s.Offset > 0 {
+			align := int64(s.Alignment)
+			if s.Offset%align != 0 {
+				issues = append(issues, fmt.Sprintf("%s Section '%s' has non-aligned file offset (0x%X, requires %d-byte alignment)", common.SymbolWarn, s.Name, s.Offset, s.Alignment))
+			}
 		}
 
 		// Check for executable sections with unexpected names
@@ -166,7 +170,20 @@ func isExpectedExecutableSectionELF(name string) bool {
 }
 
 func isExpectedWritableSectionELF(name string) bool {
-	writableSections := []string{".data", ".bss", ".got", ".dynamic", ".tdata", ".tbss"}
+	writableSections := []string{
+		".data",
+		".bss",
+		".got",
+		".got.plt",
+		".dynamic",
+		".tdata",
+		".tbss",
+		".init_array",
+		".fini_array",
+		".preinit_array",
+		".ctors",
+		".dtors",
+	}
 	name = strings.ToLower(name)
 	for _, expected := range writableSections {
 		if strings.HasPrefix(name, strings.ToLower(expected)) {
@@ -331,7 +348,7 @@ func (e *ELFFile) isDebugSection(name string) bool {
 }
 
 func (e *ELFFile) printBasicInfo() {
-	fmt.Println("� BINARY INFORMATION")
+	fmt.Println("📁 BINARY INFORMATION")
 	fmt.Println("═════════════════════")
 
 	// Basic file information
@@ -388,29 +405,24 @@ func (e *ELFFile) printBasicInfo() {
 
 	// Overlay analysis
 	fmt.Printf("\n🗂️  OVERLAY ANALYSIS:\n")
-	if len(e.Sections) > 0 && e.RawData != nil {
-		var lastSectionEnd int64
-		for _, section := range e.Sections {
-			if section.Type != SHT_NOBITS { // Skip NOBITS
-				sectionEnd := section.Offset + section.Size
-				if sectionEnd > lastSectionEnd {
-					lastSectionEnd = sectionEnd
-				}
+	if e.RawData != nil {
+		if e.HasOverlay && e.OverlayOffset >= 0 && e.OverlayOffset+e.OverlaySize <= e.FileSize {
+			start := e.OverlayOffset
+			size := e.OverlaySize
+			var entropy float64
+			if start >= 0 && size > 0 && int(start+size) <= len(e.RawData) {
+				entropy = common.CalculateEntropy(e.RawData[start : start+size])
 			}
-		}
-
-		overlaySize := e.FileSize - lastSectionEnd
-		if overlaySize > 0 {
-			overlayPercent := float64(overlaySize) / float64(e.FileSize) * 100
-			fmt.Printf("Overlay Present:    YES (%s, %.1f%%)\n", common.FormatFileSize(overlaySize), overlayPercent)
-			if overlaySize > 1024 {
-				fmt.Printf("Overlay Warning:    ⚠️  Large overlay detected - possible embedded data\n")
+			fmt.Printf("Overlay Status:     %s Present at 0x%X\n", common.SymbolWarn, uint64(start))
+			fmt.Printf("Overlay Size:       %s\n", common.FormatFileSize(size))
+			if entropy > 0 {
+				fmt.Printf("Overlay Entropy:    %.2f\n", entropy)
 			}
 		} else {
-			fmt.Printf("Overlay Present:    NO\n")
+			fmt.Printf("Overlay Status:     %s No overlay detected\n", common.SymbolCheck)
 		}
 	} else {
-		fmt.Printf("Overlay Present:    Cannot determine\n")
+		fmt.Printf("Overlay Status:     ❓ Unable to analyze (no file data)\n")
 	}
 
 	fmt.Println()
@@ -431,7 +443,6 @@ func (e *ELFFile) printELFHeaders() {
 	fmt.Printf("File Type:       %s (0x%X)\n", e.getFileTypeName(), e.getFileType())
 	fmt.Printf("Machine:         %s\n", e.machineType)
 	fmt.Printf("Entry Point:     0x%016X\n", e.entryPoint)
-	fmt.Printf("Sections:        %d total\n", len(e.Sections))
 	fmt.Printf("Segments:        %d total\n", len(e.Segments))
 	fmt.Printf("Packed Status:   %s\n", map[bool]string{true: "📦 Likely PACKED", false: "✅ Not packed"}[e.IsPacked])
 
@@ -480,60 +491,145 @@ func (e *ELFFile) printELFHeaders() {
 	fmt.Printf("\n🔧 FILE INTEGRITY & COMPLIANCE:\n")
 	var issues []string
 	var warnings []string
-	complianceChecks := 0
-	complianceViolations := 0
+	checks := 0
+	failures := 0
 
-	// Check 1: Valid ELF magic
-	complianceChecks++
+	// Check 1: ELF parsed
+	checks++
 	if len(e.RawData) < 4 || string(e.RawData[0:4]) != "\x7fELF" {
-		issues = append(issues, "Invalid ELF magic signature")
-		complianceViolations++
+		issues = append(issues, "ELF Parser:        ❌ Invalid ELF magic signature")
+		failures++
 	}
 
-	// Check 2: Entry point validation
-	complianceChecks++
-	if e.entryPoint == 0 && e.getFileType() != ET_DYN { // Not a shared object
-		warnings = append(warnings, "Entry point is zero for executable")
+	// Check 2: Sections present
+	checks++
+	if len(e.Sections) == 0 {
+		issues = append(issues, "Sections:         ❌ No sections present")
+		failures++
 	}
 
-	// Check 3: Section/segment consistency
-	complianceChecks++
-	if len(e.Sections) == 0 && len(e.Segments) == 0 {
-		issues = append(issues, "No sections or segments found")
-		complianceViolations++
+	// Check 3: Segment/file bounds sanity
+	checks++
+	if len(e.Segments) > 0 {
+		// Check each segment bounds and overlaps
+		type rng struct{ start, end int64 }
+		var ranges []rng
+		for _, seg := range e.Segments {
+			if seg.FileSize == 0 {
+				continue
+			}
+			start := int64(seg.Offset)
+			end := int64(seg.Offset + seg.FileSize)
+			if end > e.FileSize {
+				issues = append(issues, fmt.Sprintf("Segment Bounds:   ❌ %s exceeds file size", getSegmentTypeName(seg.Type)))
+				failures++
+			}
+			ranges = append(ranges, rng{start, end})
+		}
+		if len(ranges) > 1 {
+			for i := 1; i < len(ranges); i++ {
+				if ranges[i].start < ranges[i-1].end {
+					warnings = append(warnings, "Segments:         ⚠️ Overlapping file ranges detected")
+					failures++
+					break
+				}
+			}
+		}
 	}
 
-	// Check 4: Dynamic linking consistency
-	complianceChecks++
-	if e.isDynamic && !e.hasInterpreter && e.getFileType() == ET_EXEC { // ET_EXEC
-		warnings = append(warnings, "Dynamic executable without interpreter")
+	// Check 4: Entry point validity
+	checks++
+	if e.entryPoint == 0 && e.getFileType() != ET_DYN {
+		warnings = append(warnings, "Entry Point:      ⚠️ Not set for executable")
+		failures++
+	} else {
+		epInExecSeg := false
+		for _, seg := range e.Segments {
+			if seg.Type == PT_LOAD && seg.IsExecutable {
+				if e.entryPoint >= seg.VirtualAddr && e.entryPoint < seg.VirtualAddr+seg.MemSize {
+					epInExecSeg = true
+					break
+				}
+			}
+		}
+		if !epInExecSeg && e.getFileType() != ET_DYN {
+			issues = append(issues, fmt.Sprintf("Entry Point:      ❌ 0x%X not inside any executable LOAD segment", e.entryPoint))
+			failures++
+		}
 	}
 
+	// Check 5: Sections order/overlap and bounds
+	checks++
+	if len(e.Sections) > 0 {
+		prevEnd := int64(0)
+		for _, s := range e.Sections {
+			end := s.Offset + s.Size
+			if s.Type != SHT_NOBITS && s.Size > 0 {
+				if s.Offset < prevEnd {
+					issues = append(issues, fmt.Sprintf("Sections:         ❌ Overlap at section '%s' (file offsets)", s.Name))
+					failures++
+				}
+				prevEnd = end
+			}
+			if s.Type != SHT_NOBITS && end > e.FileSize {
+				issues = append(issues, fmt.Sprintf("Section Bounds:   ❌ Section '%s' exceeds file size", s.Name))
+				failures++
+			}
+		}
+	}
+
+	// Check 6: Dynamic ranges within image
+	checks++
+	if idx, ok := e.findSectionByName(".dynamic"); ok {
+		sec := e.Sections[idx]
+		if sec.Offset < 0 || sec.Offset+sec.Size > e.FileSize {
+			warnings = append(warnings, "Dynamic Section:  ⚠️ .dynamic out of file bounds")
+			failures++
+		}
+	}
+	if idx, ok := e.findSectionByName(".dynstr"); ok {
+		sec := e.Sections[idx]
+		if sec.Offset < 0 || sec.Offset+sec.Size > e.FileSize {
+			warnings = append(warnings, "Dynamic Strings:  ⚠️ .dynstr out of file bounds")
+			failures++
+		}
+	}
+
+	// Check 7: Suspicious RWX sections/segments
+	checks++
+	for _, s := range e.Sections {
+		if s.IsExecutable && s.IsWritable {
+			warnings = append(warnings, fmt.Sprintf("Section Flags:    ⚠️ Section '%s' is executable and writable", s.Name))
+			failures++
+		}
+	}
+	for _, seg := range e.Segments {
+		if seg.IsExecutable && seg.IsWritable {
+			warnings = append(warnings, "Segment Flags:    ⚠️ LOAD segment has execute+write permissions")
+			failures++
+		}
+	}
+
+	// Summarize
 	if len(issues) == 0 && len(warnings) == 0 {
-		fmt.Printf("File Status:     ✅ No issues detected\n")
+		fmt.Printf("Structure:       ✅ No integrity issues found\n")
 	} else {
-		if len(issues) > 0 {
-			fmt.Printf("Critical Issues: ❌ %d found\n", len(issues))
-			for _, issue := range issues {
-				fmt.Printf("  • %s\n", issue)
-			}
+		for _, msg := range issues {
+			fmt.Println(msg)
 		}
-		if len(warnings) > 0 {
-			fmt.Printf("Warnings:        ⚠️  %d found\n", len(warnings))
-			for _, warning := range warnings {
-				fmt.Printf("  • %s\n", warning)
-			}
+		for _, msg := range warnings {
+			fmt.Println(msg)
 		}
 	}
 
-	fmt.Printf("ELF Compliance:  %d/%d checks passed\n", complianceChecks-complianceViolations, complianceChecks)
+	fmt.Printf("ELF Compliance:  %d/%d checks passed\n", checks-failures, checks)
 
-	if complianceViolations == 0 {
-		fmt.Printf("Compliance:      ✅ EXCELLENT\n")
-	} else if complianceViolations <= 2 {
-		fmt.Printf("Compliance:      ⚠️  PARTIAL\n")
+	if failures == 0 {
+		fmt.Printf("Overall Status:  ✅ Fully compliant ELF file\n")
+	} else if failures <= 2 {
+		fmt.Printf("Overall Status:  ⚠️ Minor issues detected\n")
 	} else {
-		fmt.Printf("Compliance:      ❌ POOR\n")
+		fmt.Printf("Overall Status:  ❌ Significant issues detected\n")
 	}
 
 	// Memory layout analysis
@@ -692,6 +788,7 @@ func (e *ELFFile) printSectionAnomalies() {
 			Name:              s.Name,
 			Offset:            s.Offset,
 			Size:              s.Size,
+			Alignment:         s.Alignment,
 			CommonSectionInfo: s.CommonSectionInfo,
 		}
 	}

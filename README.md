@@ -39,19 +39,19 @@ gosstrip [OPTIONS] <file>
 
 ### Options
 
-| Option | Long Form | Description |
-|--------|-----------|-------------|
-| `-a` | `--analyze` | Analyze file structure only (standalone) |
-| `-s` | `--strip` | Strip debug symbols and metadata |
-| `-c` | `--compact` | Reduce file size by removing sections |
-| `-o` | `--obfuscate` | Apply obfuscation techniques |
-| `-f` | `--force` | Apply risky operations for -s, -c, -o |
-| `-r <pattern>` | `--regex <pattern>` | Strip bytes matching regex pattern |
-| `-i <spec>` | `--insert <spec>` | Insert section (format: `name:data_or_file[:password]`) |
-| `-l <spec>` | `--overlay <spec>` | Add overlay (format: `data_or_file[:password]`) |
-| `-p [opts]` | `--pack [opts]` | Pack with polymorphic stub (format: `opt1=val1,opt2=val2`) |
-| `-v` | | Enable verbose output |
-| `-h` | | Show help |
+| Option         | Long Form           | Description                                                |
+|----------------|---------------------|------------------------------------------------------------|
+| `-a`           | `--analyze`         | Analyze file structure only (standalone)                   |
+| `-s`           | `--strip`           | Strip debug symbols and metadata                           |
+| `-c`           | `--compact`         | Reduce file size by removing sections                      |
+| `-o`           | `--obfuscate`       | Apply obfuscation techniques                               |
+| `-f`           | `--force`           | Apply risky operations for -s, -c, -o                      |
+| `-r <pattern>` | `--regex <pattern>` | Strip bytes matching regex pattern                         |
+| `-i <spec>`    | `--insert <spec>`   | Insert section (format: `name:data_or_file[:password]`)    |
+| `-l <spec>`    | `--overlay <spec>`  | Add overlay (format: `data_or_file[:password]`)            |
+| `-p [opts]`    | `--pack [opts]`     | Pack with polymorphic stub (format: `opt1=val1,opt2=val2`) |
+| `-v`           |                     | Enable verbose output                                      |
+| `-h`           |                     | Show help                                                  |
 
 ### Pack Options
 
@@ -62,18 +62,18 @@ Note for Windows/PowerShell users:
   Example: gosstrip.exe -p="compression=lzma,level=9,encryption=chacha20" file.exe
 - Alternatively, use the stop-parsing operator: gosstrip.exe --% -p=compression=lzma,level=9,encryption=chacha20 file.exe
 
-| Option | Values | Default | Description |
-|--------|--------|---------|-------------|
-| `compression` | `xz`, `lzma`, `none` | `xz` | Compression algorithm |
-| `level` | `0-9` | `6` | Compression level (0=fast, 9=best) |
-| `encryption` | `xor`, `aes-256-gcm`, `chacha20`, `none` | `aes-256-gcm` | Encryption algorithm |
-| `polymorphic` | `true`, `false` | `true` | Enable polymorphic stub generation |
-| `junkdensity` | `0.0-1.0` | `0.2` | Density of garbage code injection |
-| `padding` | `true`, `false` | `true` | Add random padding to stub |
-| `inmemory` | `true`, `false` | `false` | Execute payload in-memory without disk writes |
-| `antidebug` | `true`, `false` | `false` | Add anti-debugging checks |
-| `antivm` | `true`, `false` | `false` | Add anti-VM detection |
-| `verbose` | `true`, `false` | `false` | Detailed packing output |
+| Option        | Values                                   | Default       | Description                                   |
+|---------------|------------------------------------------|---------------|-----------------------------------------------|
+| `compression` | `xz`, `lzma`, `none`                     | `xz`          | Compression algorithm                         |
+| `level`       | `0-9`                                    | `6`           | Compression level (0=fast, 9=best)            |
+| `encryption`  | `xor`, `aes-256-gcm`, `chacha20`, `none` | `aes-256-gcm` | Encryption algorithm                          |
+| `polymorphic` | `true`, `false`                          | `true`        | Enable polymorphic stub generation            |
+| `junkdensity` | `0.0-1.0`                                | `0.2`         | Density of garbage code injection             |
+| `padding`     | `true`, `false`                          | `true`        | Add random padding to stub                    |
+| `inmemory`    | `true`, `false`                          | `false`       | Execute payload in-memory without disk writes |
+| `antidebug`   | `true`, `false`                          | `false`       | Add anti-debugging checks [Not Implemented]   |
+| `antivm`      | `true`, `false`                          | `false`       | Add anti-VM detection [Not Implemented]                        |
+| `verbose`     | `true`, `false`                          | `false`       | Detailed packing output                       |
 
 ## Examples
 

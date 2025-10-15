@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"gosstrip/common"
 	"os"
+	"sort"
 	"strings"
 	"time"
 )
@@ -416,12 +417,142 @@ func (p *PEFile) parseHeaders() error {
 }
 
 func (p *PEFile) parseDirectories() error {
-	p.directories = make([]DirectoryEntry, 0)
+	p.directories = make([]DirectoryEntry, 0, PE_DATA_DIRECTORY_COUNT)
+
+	if p.PE == nil || p.PE.OptionalHeader == nil {
+		return nil
+	}
+
+	switch oh := p.PE.OptionalHeader.(type) {
+	case *pe.OptionalHeader32:
+		for i := 0; i < len(oh.DataDirectory); i++ {
+			dd := oh.DataDirectory[i]
+			p.directories = append(p.directories, DirectoryEntry{Type: uint16(i), RVA: dd.VirtualAddress, Size: dd.Size})
+		}
+	case *pe.OptionalHeader64:
+		for i := 0; i < len(oh.DataDirectory); i++ {
+			dd := oh.DataDirectory[i]
+			p.directories = append(p.directories, DirectoryEntry{Type: uint16(i), RVA: dd.VirtualAddress, Size: dd.Size})
+		}
+	default:
+		// Unsupported optional header type; leave directories empty
+	}
 	return nil
 }
 
 func (p *PEFile) parseExports() error {
 	p.Exports = make([]ExportInfo, 0)
+
+	// Locate Export Directory entry
+	var expDir *DirectoryEntry
+	for i := range p.directories {
+		d := &p.directories[i]
+		if d.Type == IMAGE_DIRECTORY_ENTRY_EXPORT {
+			expDir = d
+			break
+		}
+	}
+	if expDir == nil || expDir.RVA == 0 || expDir.Size < 40 {
+		return nil
+	}
+
+	// Convert export directory RVA to physical offset
+	off, err := p.rvaToPhysical(uint64(expDir.RVA))
+	if err != nil {
+		return nil // Graceful fallback
+	}
+	if int(off)+40 > len(p.RawData) {
+		return nil
+	}
+
+	data := p.RawData
+	// Parse IMAGE_EXPORT_DIRECTORY (40 bytes)
+	// DWORD Characteristics
+	// DWORD TimeDateStamp
+	// WORD  MajorVersion
+	// WORD  MinorVersion
+	// DWORD Name
+	// DWORD Base
+	// DWORD NumberOfFunctions
+	// DWORD NumberOfNames
+	// DWORD AddressOfFunctions
+	// DWORD AddressOfNames
+	// DWORD AddressOfNameOrdinals
+
+	base := binary.LittleEndian.Uint32(data[off+16 : off+20])
+	numFunctions := binary.LittleEndian.Uint32(data[off+20 : off+24])
+	numNames := binary.LittleEndian.Uint32(data[off+24 : off+28])
+	addrFuncsRVA := binary.LittleEndian.Uint32(data[off+28 : off+32])
+	addrNamesRVA := binary.LittleEndian.Uint32(data[off+32 : off+36])
+	addrOrdinalsRVA := binary.LittleEndian.Uint32(data[off+36 : off+40])
+
+	if numNames == 0 || addrNamesRVA == 0 || addrOrdinalsRVA == 0 || addrFuncsRVA == 0 {
+		return nil
+	}
+
+	namesOff, err := p.rvaToPhysical(uint64(addrNamesRVA))
+	if err != nil {
+		return nil
+	}
+	ordsOff, err := p.rvaToPhysical(uint64(addrOrdinalsRVA))
+	if err != nil {
+		return nil
+	}
+	funcsOff, err := p.rvaToPhysical(uint64(addrFuncsRVA))
+	if err != nil {
+		return nil
+	}
+
+	// Helper to read ASCII null-terminated string at physical offset
+	readCString := func(start uint64) (string, bool) {
+		if int(start) >= len(data) {
+			return "", false
+		}
+		end := int(start)
+		for end < len(data) && data[end] != 0 {
+			end++
+		}
+		return string(data[int(start):end]), true
+	}
+
+	maxNames := int(numNames)
+	// Cap iteration to avoid pathological sizes
+	if maxNames > 10000 {
+		maxNames = 10000
+	}
+
+	for i := 0; i < maxNames; i++ {
+		entryOff := int(namesOff) + i*4
+		ordOff := int(ordsOff) + i*2
+		if entryOff+4 > len(data) || ordOff+2 > len(data) {
+			break
+		}
+		nameRVA := binary.LittleEndian.Uint32(data[entryOff : entryOff+4])
+		namePhys, err := p.rvaToPhysical(uint64(nameRVA))
+		if err != nil {
+			continue
+		}
+		name, ok := readCString(namePhys)
+		if !ok || name == "" {
+			continue
+		}
+		ordinalIndex := uint32(binary.LittleEndian.Uint16(data[ordOff : ordOff+2]))
+		if ordinalIndex >= numFunctions {
+			// Out of range, skip
+			continue
+		}
+		funcRva := binary.LittleEndian.Uint32(data[int(funcsOff)+int(ordinalIndex)*4 : int(funcsOff)+int(ordinalIndex)*4+4])
+		p.Exports = append(p.Exports, ExportInfo{
+			Name:    name,
+			Ordinal: uint16(base + ordinalIndex),
+			RVA:     funcRva,
+		})
+	}
+
+	// Sort exports by name for stable output
+	if len(p.Exports) > 1 {
+		sort.Slice(p.Exports, func(i, j int) bool { return p.Exports[i].Name < p.Exports[j].Name })
+	}
 	return nil
 }
 

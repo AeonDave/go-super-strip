@@ -156,9 +156,6 @@ func (p *PEFile) printBasicInfo() {
 	if p.Machine != "" {
 		fmt.Printf("Machine Type:    %s\n", p.Machine)
 	}
-	if p.TimeDateStamp != "" {
-		fmt.Printf("Compile Time:    %s\n", p.TimeDateStamp)
-	}
 
 	language, compiler := p.detectLanguageAndCompiler()
 	if language != "" {
@@ -202,7 +199,6 @@ func (p *PEFile) printPEHeaders() {
 	fmt.Println("🏗️  PE HEADER INFORMATION")
 	fmt.Println("═══════════════════════════")
 
-	fmt.Printf("Sections:        %d total\n", len(p.Sections))
 	fmt.Printf("Packed Status:   %s\n", map[bool]string{true: "📦 Likely PACKED", false: "✅ Not packed"}[p.IsPacked])
 	fmt.Printf("Image Base:      0x%X\n", p.imageBase)
 	fmt.Printf("Entry Point:     0x%X (RVA)\n", p.entryPoint)
@@ -315,40 +311,138 @@ func (p *PEFile) printPEHeaders() {
 	fmt.Printf("\n🔧 FILE INTEGRITY & COMPLIANCE:\n")
 	var issues []string
 	var warnings []string
-	complianceChecks := 0
-	complianceViolations := 0
+	checks := 0
+	failures := 0
 
-	if p.PE != nil {
-		complianceChecks++
+	// Check 1: PE parsed
+	checks++
+	if p.PE == nil {
+		issues = append(issues, "PE Parser:        ❌ PE headers not parsed")
+		failures++
 	}
+
+	// Check 2: Sections present
+	checks++
+	if len(p.Sections) == 0 {
+		issues = append(issues, "Sections:         ❌ No sections present")
+		failures++
+	}
+
+	// Check 3: SizeOfImage sanity
+	checks++
+	if p.sizeOfImage == 0 {
+		issues = append(issues, "SizeOfImage:      ❌ Not set")
+		failures++
+	} else {
+		// Max end of sections should not exceed SizeOfImage
+		var maxEnd uint32
+		for _, s := range p.Sections {
+			end := s.VirtualAddress + s.VirtualSize
+			if end > maxEnd {
+				maxEnd = end
+			}
+		}
+		if maxEnd != 0 && maxEnd > p.sizeOfImage {
+			warnings = append(warnings, fmt.Sprintf("SizeOfImage:      ⚠️ Smaller than sections (max end 0x%X)", maxEnd))
+			failures++
+		}
+	}
+
+	// Check 4: Entry point validity
+	checks++
+	if p.entryPoint == 0 {
+		warnings = append(warnings, "Entry Point:      ⚠️ Not set")
+		failures++
+	} else {
+		var epSection *Section
+		for i := range p.Sections {
+			s := &p.Sections[i]
+			start := s.VirtualAddress
+			end := s.VirtualAddress + max32(s.VirtualSize, uint32(s.Size))
+			if p.entryPoint >= start && p.entryPoint < end {
+				epSection = s
+				break
+			}
+		}
+		if epSection == nil {
+			issues = append(issues, fmt.Sprintf("Entry Point:      ❌ RVA 0x%X not inside any section", p.entryPoint))
+			failures++
+		} else if !epSection.IsExecutable {
+			warnings = append(warnings, fmt.Sprintf("Entry Point:      ⚠️ In non-executable section '%s'", epSection.Name))
+			failures++
+		}
+	}
+
+	// Check 5: Sections order and overlap in file
+	checks++
 	if len(p.Sections) > 0 {
-		complianceChecks++
-	}
-	if p.sizeOfImage > 0 {
-		complianceChecks++
-	}
-	if p.entryPoint > 0 {
-		complianceChecks++
+		prevEnd := int64(0)
+		firstOffset := int64(-1)
+		for idx, s := range p.Sections {
+			if idx == 0 {
+				firstOffset = int64(s.FileOffset)
+			}
+			end := int64(s.FileOffset) + s.Size
+			if s.Size > 0 {
+				if int64(s.FileOffset) < prevEnd {
+					issues = append(issues, fmt.Sprintf("Sections:         ❌ Overlap at section '%s' (file offsets)", s.Name))
+					failures++
+				}
+				prevEnd = end
+			}
+			if end > p.FileSize {
+				issues = append(issues, fmt.Sprintf("Section Bounds:   ❌ Section '%s' exceeds file size", s.Name))
+				failures++
+			}
+		}
+		// Header size should not exceed first section offset
+		if firstOffset >= 0 && p.sizeOfHeaders > 0 && int64(p.sizeOfHeaders) > firstOffset {
+			warnings = append(warnings, fmt.Sprintf("SizeOfHeaders:    ⚠️ Larger (0x%X) than first section offset (0x%X)", p.sizeOfHeaders, uint32(firstOffset)))
+			failures++
+		}
 	}
 
+	// Check 6: Data directories within image
+	checks++
+	if len(p.directories) > 0 && p.sizeOfImage > 0 {
+		for _, d := range p.directories {
+			if d.RVA == 0 || d.Size == 0 {
+				continue
+			}
+			end := d.RVA + d.Size
+			if end > p.sizeOfImage {
+				warnings = append(warnings, fmt.Sprintf("Data Directory:   ⚠️ Type %d out of image (end 0x%X > SizeOfImage 0x%X)", d.Type, end, p.sizeOfImage))
+				failures++
+			}
+		}
+	}
+
+	// Check 7: Suspicious RWX sections
+	checks++
+	for _, s := range p.Sections {
+		if s.IsExecutable && s.IsWritable {
+			warnings = append(warnings, fmt.Sprintf("Section Flags:    ⚠️ Section '%s' is executable and writable", s.Name))
+			failures++
+		}
+	}
+
+	// Summarize
 	if len(issues) == 0 && len(warnings) == 0 {
 		fmt.Printf("Structure:       ✅ No integrity issues found\n")
 	} else {
-		if len(issues) > 0 {
-			fmt.Printf("Issues:          ❌ %d critical problems found\n", len(issues))
-			complianceViolations += len(issues)
+		for _, msg := range issues {
+			fmt.Println(msg)
 		}
-		if len(warnings) > 0 {
-			fmt.Printf("Warnings:        ⚠️ %d potential issues found\n", len(warnings))
-			complianceViolations += len(warnings)
+		for _, msg := range warnings {
+			fmt.Println(msg)
 		}
 	}
 
-	fmt.Printf("PE Compliance:   %d/%d checks passed\n", complianceChecks-complianceViolations, complianceChecks)
+	fmt.Printf("PE Compliance:   %d/%d checks passed\n", checks-failures, checks)
 
-	if complianceViolations == 0 {
+	if failures == 0 {
 		fmt.Printf("Overall Status:  ✅ Fully compliant PE file\n")
-	} else if complianceViolations <= 2 {
+	} else if failures <= 2 {
 		fmt.Printf("Overall Status:  ⚠️ Minor issues detected\n")
 	} else {
 		fmt.Printf("Overall Status:  ❌ Significant issues detected\n")
@@ -710,6 +804,8 @@ func (p *PEFile) printDynamicAnalysis() {
 	hasTlsDir := false
 	hasResourceDir := false
 	hasDebugDir := false
+	hasSecurityDir := false
+	hasClrDir := false
 
 	for _, dir := range p.directories {
 		switch dir.Type {
@@ -725,16 +821,30 @@ func (p *PEFile) printDynamicAnalysis() {
 			hasResourceDir = true
 		case IMAGE_DIRECTORY_ENTRY_DEBUG:
 			hasDebugDir = true
+		case IMAGE_DIRECTORY_ENTRY_SECURITY:
+			hasSecurityDir = true
+		case IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR:
+			hasClrDir = true
 		}
 	}
 
 	fmt.Printf("\n🔧 DYNAMIC SECTIONS ANALYSIS:\n")
 	fmt.Printf("Import Table:     %s\n", formatPresence(hasImportDir))
-	fmt.Printf("Export Table:     %s\n", formatPresence(hasExportDir))
+	if hasExportDir {
+		if len(p.Exports) > 0 {
+			fmt.Printf("Export Table:     ✅ Present (%d functions)\n", len(p.Exports))
+		} else {
+			fmt.Printf("Export Table:     ✅ Present (0 functions)\n")
+		}
+	} else {
+		fmt.Printf("Export Table:     ❌ Missing\n")
+	}
 	fmt.Printf("Relocation:       %s\n", formatPresence(hasRelocDir))
 	fmt.Printf("TLS Directory:    %s\n", formatPresence(hasTlsDir))
 	fmt.Printf("Resources:        %s\n", formatPresence(hasResourceDir))
 	fmt.Printf("Debug Info:       %s\n", formatPresence(hasDebugDir))
+	fmt.Printf("Security/Signature: %s\n", formatPresence(hasSecurityDir))
+	fmt.Printf("CLR/.NET:         %s\n", formatPresence(hasClrDir))
 
 	// Security analysis
 	fmt.Printf("\n🛡️  SECURITY FEATURES:\n")
@@ -781,6 +891,14 @@ func formatPresence(present bool) string {
 		return "✅ Present"
 	}
 	return "❌ Missing"
+}
+
+// max32 returns the maximum of two uint32 values.
+func max32(a, b uint32) uint32 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func (p *PEFile) printPackingAnalysis() {

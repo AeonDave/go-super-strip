@@ -2,9 +2,10 @@ package elfrw
 
 import (
 	"fmt"
-	"github.com/yalue/elf_reader"
 	"gosstrip/common"
 	"os"
+
+	"github.com/yalue/elf_reader"
 )
 
 type ELFFile struct {
@@ -66,9 +67,10 @@ type Segment struct {
 }
 
 type SectionInfo struct {
-	Name   string
-	Offset int64
-	Size   int64
+	Name      string
+	Offset    int64
+	Size      int64
+	Alignment uint64
 	common.CommonSectionInfo
 }
 
@@ -97,6 +99,8 @@ const (
 )
 
 // ELF header field positions - consolidated and cleaned up
+//
+//goland:noinspection GoSnakeCaseUsage
 const (
 	// ELF64 header offsets
 	ELF64_E_ENTRY     = 24 // Entry point address
@@ -118,6 +122,7 @@ const (
 	ELF32_E_SHSTRNDX  = 50 // Section header string table index
 )
 
+//goland:noinspection GoSnakeCaseUsage,GoUnusedConst
 const (
 	// Section header types
 	SHT_NULL        = 0
@@ -138,6 +143,7 @@ const (
 	SHT_GNU_VERSYM  = 0x6fffffff
 )
 
+//goland:noinspection GoSnakeCaseUsage,GoUnusedConst
 const (
 	// Section header flags
 	SHF_WRITE     = 0x1
@@ -146,6 +152,7 @@ const (
 	SHF_STRINGS   = 0x20
 )
 
+//goland:noinspection GoSnakeCaseUsage,GoUnusedConst
 const (
 	// Program header types
 	PT_NULL    = 0
@@ -158,6 +165,7 @@ const (
 	PT_TLS     = 7
 )
 
+//goland:noinspection GoSnakeCaseUsage,GoUnusedConst
 const (
 	// ELF file types
 	ET_NONE = 0 // No file type
@@ -167,12 +175,14 @@ const (
 	ET_CORE = 4 // Core file
 )
 
+//goland:noinspection GoSnakeCaseUsage
 const (
 	// Symbol table entry sizes
 	ELF32_SYM_SIZE = 16 // sizeof(Elf32_Sym)
 	ELF64_SYM_SIZE = 24 // sizeof(Elf64_Sym)
 )
 
+//goland:noinspection GoSnakeCaseUsage,GoUnusedConst
 const (
 	// Symbol binding types
 	STB_LOCAL  = 0 // Local symbols
@@ -180,6 +190,7 @@ const (
 	STB_WEAK   = 2 // Weak symbols
 )
 
+//goland:noinspection GoSnakeCaseUsage,GoUnusedConst
 const (
 	// Symbol types
 	STT_NOTYPE  = 0 // Symbol type is not specified
@@ -189,6 +200,7 @@ const (
 	STT_FILE    = 4 // Symbol's name is file name
 )
 
+//goland:noinspection GoSnakeCaseUsage
 const (
 	// Dynamic table tags
 	DT_NULL     = 0 // Marks end of dynamic section
@@ -200,12 +212,14 @@ const (
 	DT_SYMTAB   = 6 // Address of symbol table
 )
 
+//goland:noinspection GoSnakeCaseUsage
 const (
 	// Special GNU program header types for security
 	PT_GNU_STACK = 0x6474e551 // Indicates stack executability
 	PT_GNU_RELRO = 0x6474e552 // Read-only after relocation
 )
 
+//goland:noinspection GoSnakeCaseUsage
 const (
 	// Header sizes
 	ELF32_EHDR_SIZE = 52
@@ -214,6 +228,7 @@ const (
 	ELF64_SHDR_SIZE = 64
 )
 
+//goland:noinspection GoSnakeCaseUsage
 const (
 	// Program/Section header field offsets and sizes
 	ELF64_P_OFFSET = 8
