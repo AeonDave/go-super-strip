@@ -34,7 +34,7 @@ func main() {
 	// Test HTTP client
 	fmt.Println("\n=== HTTP Test ===")
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get("https://httpbin.org/user-agent")
+	resp, err := client.Get("https://useragents.io/")
 	if err != nil {
 		fmt.Printf("HTTP request failed: %v\n", err)
 	} else {

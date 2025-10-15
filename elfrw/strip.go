@@ -9,15 +9,17 @@ import (
 )
 
 func (e *ELFFile) StripAll(force bool) *common.OperationResult {
+	// Start with a PE-like summary title (bytes processed) for consistency
+	originalSize := uint64(len(e.RawData))
 	totalCount := 0
-	result := common.NewApplied(fmt.Sprintf("ELF strip completed: %d operations applied", 0), 0)
+	result := common.NewApplied(fmt.Sprintf("ELF strip completed: %d bytes processed", originalSize), 0)
 
 	sectionRules := getSectionStripRule()
 	for sectionType, rule := range sectionRules {
 		if rule.IsRisky && !force {
 			continue
 		}
-		isSharedObject := e.IsDynamic()
+		isSharedObject := e.IsSharedObject()
 		if (isSharedObject && !rule.StripForSO) || (!isSharedObject && !rule.StripForBIN) {
 			continue
 		}
@@ -165,13 +167,23 @@ func (e *ELFFile) stripSectionsByType(sectionType SectionType, useRandom bool) *
 		return common.NewSkipped(fmt.Sprintf("unknown section type: %v", sectionType))
 	}
 
+	// Guard: Do NOT strip relocation sections for dynamically linked binaries (PIE or with interpreter).
+	// These sections are required by the dynamic loader (ld.so) at runtime and removing them breaks execution.
+	if sectionType == RelocationSections && (e.isDynamic || e.hasInterpreter) {
+		return common.NewSkipped("relocation sections are required for dynamically linked binaries; skipping to preserve runtime")
+	}
+
 	var strippedSections []string
 	for i, section := range e.Sections {
 		if common.MatchesPattern(section.Name, rule.ExactNames, rule.PrefixNames) {
+			// Only count sections that actually contain data and haven't been stripped yet
+			changed := section.Offset > 0 && section.Size > 0
 			if err := e.stripSectionData(i, useRandom); err != nil {
 				return common.NewSkipped(fmt.Sprintf("failed to strip section %s: %v", section.Name, err))
 			}
-			strippedSections = append(strippedSections, section.Name)
+			if changed {
+				strippedSections = append(strippedSections, section.Name)
+			}
 		}
 	}
 
@@ -184,7 +196,7 @@ func (e *ELFFile) stripSectionsByType(sectionType SectionType, useRandom bool) *
 		return common.NewSkipped(fmt.Sprintf("failed to update section headers: %v", err))
 	}
 
-	message := fmt.Sprintf("stripped %s sections: %s", rule.Description, strings.Join(strippedSections, ", "))
+	message := fmt.Sprintf("stripped %d %s sections (%s)", len(strippedSections), rule.Description, strings.Join(strippedSections, ", "))
 	result := common.NewApplied(message, len(strippedSections))
 	result.SetCategory("SECTIONS")
 	return result
@@ -247,12 +259,8 @@ func (e *ELFFile) stripELFHeaderFields() *common.OperationResult {
 	totalCount := 0
 	result := common.NewApplied("stripped ELF header fields", 0)
 
-	// Zero out e_version (not critical for execution)
-	versionOffset := 6 // Same position in both 32-bit and 64-bit ELF
-	if err := e.writeAtOffset(versionOffset, uint32(0)); err == nil {
-		result.AddDetail("removed ELF version field", 1, false)
-		totalCount++
-	}
+	// Do NOT zero EI_VERSION (e_ident[6]) or OSABI (e_ident[7]) to preserve validity.
+	// Safely clear ELF flags (often toolchain-specific) and non-essential identity bytes.
 
 	// Zero out e_flags (often contains compiler-specific flags)
 	var flagsOffset int
@@ -266,10 +274,19 @@ func (e *ELFFile) stripELFHeaderFields() *common.OperationResult {
 		totalCount++
 	}
 
-	// Zero out e_ident[EI_ABIVERSION] (ABI version, often safe to remove)
-	if err := e.writeAtOffset(8, byte(0)); err == nil {
+	// Zero out e_ident[EI_ABIVERSION] (ABI version, typically safe)
+	if err := e.writeAtOffset(8, uint8(0)); err == nil {
 		result.AddDetail("removed ABI version field", 1, false)
 		totalCount++
+	}
+
+	// Clear e_ident padding (EI_PAD: bytes 9..15)
+	if len(e.RawData) >= 16 {
+		padZeros := make([]byte, 7)
+		if err := e.writeAtOffset(9, padZeros); err == nil {
+			result.AddDetail("removed 7 bytes from ELF header padding (EI_PAD)", 1, false)
+			totalCount++
+		}
 	}
 
 	if totalCount == 0 {

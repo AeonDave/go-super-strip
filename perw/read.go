@@ -47,52 +47,76 @@ func newPEFileFromDisk(file *os.File) (*PEFile, error) {
 	}
 	peLibFile, err := pe.NewFile(bytes.NewReader(rawData))
 	if err != nil {
-
-		var reason string
-
-		var packed bool
-
-		tempPF := &PEFile{
-			File:     file,
-			FileName: file.Name(),
-			RawData:  rawData,
-		}
-		_ = tempPF.parseBasicSectionsFromRaw()
-		packed = isLikelyPacked(tempPF.Sections)
-		if packed {
-			reason = "File appears to be packed/compressed (high entropy)"
-		} else if strings.Contains(err.Error(), "string table") {
-			reason = "Corrupted or modified PE structure"
-		} else {
-			reason = "Non-standard PE format"
-		}
-
-		fmt.Printf("⚠️  %s (%s)\n", reason, err.Error())
-
-		pf := &PEFile{
-			File:     file,
-			PE:       nil,
-			FileName: file.Name(),
-			RawData:  rawData,
-			Is64Bit:  false,
-			CommonFileInfo: common.CommonFileInfo{
-				FileSize: fileInfo.Size(),
-			},
-		}
-
-		if len(rawData) > PE_DOS_HEADER_SIZE {
-
-			dosHeaderOffset := int(rawData[PE_ELFANEW_OFFSET]) | int(rawData[PE_ELFANEW_OFFSET+1])<<8 | int(rawData[PE_ELFANEW_OFFSET+2])<<16 | int(rawData[PE_ELFANEW_OFFSET+3])<<24
-			if dosHeaderOffset > 0 && dosHeaderOffset+PE_FILE_HEADER_SIZE+4 < len(rawData) {
-				magic := rawData[dosHeaderOffset+PE_FILE_HEADER_SIZE+4 : dosHeaderOffset+PE_FILE_HEADER_SIZE+6]
-				if len(magic) >= 2 {
-					magicValue := uint16(magic[0]) | uint16(magic[1])<<8
-					pf.Is64Bit = magicValue == PE64_MAGIC
+		// If the PE parser fails, try a targeted self-heal for COFF symbol table issues
+		if strings.Contains(err.Error(), "string table") {
+			// Attempt to zero the COFF PointerToSymbolTable and NumberOfSymbols to avoid invalid string table parsing
+			if len(rawData) >= PE_DOS_HEADER_SIZE {
+				peHeaderOffset := int64(binary.LittleEndian.Uint32(rawData[PE_ELFANEW_OFFSET : PE_ELFANEW_OFFSET+4]))
+				coffHeaderOffset := peHeaderOffset + PE_SIGNATURE_SIZE
+				if peHeaderOffset >= 0 && coffHeaderOffset+16 <= int64(len(rawData)) {
+					ptrSym := binary.LittleEndian.Uint32(rawData[coffHeaderOffset+8 : coffHeaderOffset+12])
+					nSym := binary.LittleEndian.Uint32(rawData[coffHeaderOffset+12 : coffHeaderOffset+16])
+					if ptrSym != 0 || nSym != 0 {
+						_ = WriteAtOffset(rawData, coffHeaderOffset+8, uint32(0))
+						_ = WriteAtOffset(rawData, coffHeaderOffset+12, uint32(0))
+						// Retry parsing after sanitizing the COFF symbol table fields
+						if peRetry, retryErr := pe.NewFile(bytes.NewReader(rawData)); retryErr == nil {
+							peLibFile = peRetry
+							err = nil
+						}
+					}
 				}
 			}
 		}
 
-		return pf, nil
+		if err != nil { // still failing after optional retry
+			var reason string
+			var packed bool
+
+			tempPF := &PEFile{
+				File:     file,
+				FileName: file.Name(),
+				RawData:  rawData,
+			}
+			_ = tempPF.parseBasicSectionsFromRaw()
+			packed = isLikelyPacked(tempPF.Sections)
+			if packed {
+				reason = "File appears to be packed/compressed (high entropy)"
+			} else if strings.Contains(err.Error(), "string table") {
+				reason = "COFF symbol table inconsistent (string table)"
+			} else {
+				reason = "Non-standard PE format"
+			}
+
+			// Print detailed warning only in verbose mode to avoid noisy output during strip operations
+			if os.Getenv("GOSSTRIP_VERBOSE") == "1" {
+				fmt.Printf("⚠️  %s (%s)\n", reason, err.Error())
+			}
+
+			pf := &PEFile{
+				File:     file,
+				PE:       nil,
+				FileName: file.Name(),
+				RawData:  rawData,
+				Is64Bit:  false,
+				CommonFileInfo: common.CommonFileInfo{
+					FileSize: fileInfo.Size(),
+				},
+			}
+
+			if len(rawData) > PE_DOS_HEADER_SIZE {
+				dosHeaderOffset := int(rawData[PE_ELFANEW_OFFSET]) | int(rawData[PE_ELFANEW_OFFSET+1])<<8 | int(rawData[PE_ELFANEW_OFFSET+2])<<16 | int(rawData[PE_ELFANEW_OFFSET+3])<<24
+				if dosHeaderOffset > 0 && dosHeaderOffset+PE_FILE_HEADER_SIZE+4 < len(rawData) {
+					magic := rawData[dosHeaderOffset+PE_FILE_HEADER_SIZE+4 : dosHeaderOffset+PE_FILE_HEADER_SIZE+6]
+					if len(magic) >= 2 {
+						magicValue := uint16(magic[0]) | uint16(magic[1])<<8
+						pf.Is64Bit = magicValue == PE64_MAGIC
+					}
+				}
+			}
+
+			return pf, nil
+		}
 	}
 
 	pf := &PEFile{

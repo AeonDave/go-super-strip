@@ -60,7 +60,7 @@ func getSectionStripRule() map[SectionType]SectionStripRule {
 		},
 		RelocationSections: {
 			ExactNames:  []string{},
-			PrefixNames: []string{".rel."},
+			PrefixNames: []string{".rel.", ".rela."},
 			Description: "relocation information",
 			StripForSO:  false, // Very risky for shared objects
 			StripForBIN: true,  // Can be risky for executables too

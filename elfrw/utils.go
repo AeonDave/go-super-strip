@@ -72,7 +72,17 @@ func formatPresence(present bool) string {
 }
 
 func (e *ELFFile) IsDynamic() bool {
+	// Returns true for ET_DYN (shared objects and PIE executables)
 	return e.ELF != nil && e.ELF.GetFileType() == 3 // ET_DYN
+}
+
+// IsSharedObject returns true only for shared libraries (.so), not PIE executables.
+// PIE executables are ET_DYN too, but they carry an interpreter (PT_INTERP).
+func (e *ELFFile) IsSharedObject() bool {
+	if e.ELF == nil {
+		return false
+	}
+	return e.ELF.GetFileType() == 3 && !e.hasInterpreter
 }
 
 func (e *ELFFile) getFileTypeName() string {

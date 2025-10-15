@@ -77,9 +77,9 @@ func GetSectionStripRule() map[SectionType]SectionStripRule {
 			Fill:        ZeroFill,
 		},
 		NonEssentialSections: {
-			ExactNames:  []string{".comment", ".note", ".drectve", ".shared", ".cormeta", ".sxdata", ".edata", ".rsrc", ".gcc_except_table", ".note.gnu.build-id", ".note.ABI-tag", ".note.gnu.gold-version", ".gnu_debuglink", ".gnu_debugaltlink"},
+			ExactNames:  []string{".comment", ".note", ".drectve", ".shared", ".sxdata", ".gcc_except_table", ".note.gnu.build-id", ".note.ABI-tag", ".note.gnu.gold-version", ".gnu_debuglink", ".gnu_debugaltlink"},
 			PrefixNames: []string{".note.", ".gnu.warning.", ".mdebug."},
-			Description: "non-essential metadata",
+			Description: "non-essential metadata (safe)",
 			StripForDLL: true,
 			StripForEXE: true,
 			IsRisky:     false,
