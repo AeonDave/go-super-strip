@@ -37,7 +37,7 @@ go build -o gosstrip
 gosstrip [OPTIONS] <file>
 ```
 
-Note: Operations are executed in strict order: strip -> compact -> obfuscate -> insert/overlay -> regex
+Note: Operations are executed in strict order: strip -> compact -> obfuscate -> insert/overlay -> regex -> pack (if enabled)
 
 ### Options
 

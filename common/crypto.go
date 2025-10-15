@@ -84,3 +84,28 @@ func ProcessStringForInsertion(data, password string) ([]byte, error) {
 	}
 	return []byte(hex.EncodeToString(encryptedData)), nil
 }
+
+// DecryptAES256GCM decrypts data previously encrypted by EncryptAES256GCM.
+// The input data must be nonce||ciphertext where nonce has size gcm.NonceSize().
+func DecryptAES256GCM(data, password []byte) ([]byte, error) {
+	key := deriveKey(password)
+	block, err := aes.NewCipher(key[:])
+	if err != nil {
+		return nil, fmt.Errorf("cipher creation failed: %w", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("GCM creation failed: %w", err)
+	}
+	ns := gcm.NonceSize()
+	if len(data) < ns {
+		return nil, fmt.Errorf("ciphertext too short: %d < %d", len(data), ns)
+	}
+	nonce := data[:ns]
+	ciphertext := data[ns:]
+	pt, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return nil, fmt.Errorf("decryption failed: %w", err)
+	}
+	return pt, nil
+}

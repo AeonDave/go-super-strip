@@ -22,12 +22,12 @@ type Configuration struct {
 	Strip          bool   // -s: Strip info, metadata and sections
 	Obfuscate      bool   // -o: Apply obfuscation techniques
 	Compact        bool   // -c: Apply file size reduction
-	CompactForce   bool   // -c=force: enable risky compaction operations
 	Insert         string // -i: Add section (format: name:filepath[:password])
 	Overlay        string // -l: Add overlay (format: filepath[:password])
 	Regex          string // -r: Strip bytes matching regex pattern
 	Pack           string // -p: Pack with compression and polymorphic stub (format: opt1=val1,opt2=val2)
 	StripForce     bool   // -s=force: risky strip operations for -s
+	CompactForce   bool   // -c=force: enable risky compaction operations
 	ObfuscateForce bool   // -o=force: risky obfuscation operations for -o
 }
 
@@ -264,6 +264,32 @@ func getFileType(isPE bool) string {
 	return "ELF"
 }
 
+func plannedOperations(config *Configuration) []string {
+	var ops []string
+	if config.Strip {
+		ops = append(ops, "strip")
+	}
+	if config.Compact {
+		ops = append(ops, "compact")
+	}
+	if config.Obfuscate {
+		ops = append(ops, "obfuscate")
+	}
+	if config.Insert != "" {
+		ops = append(ops, "insert")
+	}
+	if config.Overlay != "" {
+		ops = append(ops, "overlay")
+	}
+	if config.Regex != "" {
+		ops = append(ops, "regex")
+	}
+	if config.Pack != "" {
+		ops = append(ops, "pack")
+	}
+	return ops
+}
+
 func runOperations(config *Configuration) error {
 	fmt.Printf("Processing file: %s\n", config.FilePath)
 
@@ -280,10 +306,8 @@ func runOperations(config *Configuration) error {
 		return runAnalysis(config, isPE)
 	}
 
-	// Pack operation è standalone (non si combina con altre)
-	if config.Pack != "" {
-		return runPack(config)
-	}
+	// Pack operation: must run LAST if enabled (cannot apply anything after packing)
+	// Do not early-return here; we will invoke pack at the end of the pipeline.
 
 	var operations []string
 	if config.Strip {
@@ -321,6 +345,13 @@ func runOperations(config *Configuration) error {
 			return err
 		}
 		operations = append(operations, "regex")
+	}
+	// Pack must always be executed last if enabled
+	if config.Pack != "" {
+		if err := runPack(config); err != nil {
+			return err
+		}
+		operations = append(operations, "pack")
 	}
 	if len(operations) > 0 {
 		fmt.Printf("\nCompleted operations: %s\n", strings.Join(operations, ", "))
@@ -517,7 +548,7 @@ USAGE:
 
 DESCRIPTION:
 	Process PE/ELF executables with stripping, obfuscation, and analysis capabilities.
-	Operations are performed in strict order: strip -> compact -> obfuscate -> insert/overlay -> regex
+	Operations are performed in strict order: strip -> compact -> obfuscate -> insert/overlay -> regex -> pack
 
 OPTIONS:
 	-a, --analyze            Analyze executable file structure and exit
