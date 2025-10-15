@@ -17,7 +17,7 @@ func (p *PEFile) StripSectionsByType(sectionType SectionType, fillMode FillMode,
 	}
 
 	if matcher.IsRisky && !force {
-		return common.NewSkipped(fmt.Sprintf("%s skipped (risky operation, use -f to force)", matcher.Description))
+		return common.NewSkipped(fmt.Sprintf("%s skipped (risky operation, enable with -s=force=true)", matcher.Description))
 	}
 
 	if !p.shouldStripForFileType(sectionType) {

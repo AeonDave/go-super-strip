@@ -64,15 +64,62 @@ func (e *ELFFile) Compact(force bool) *common.OperationResult {
 		return common.NewSkipped(fmt.Sprintf("failed to update ELF header section count: %v", err))
 	}
 
+	// Optional aggressive step: remove Section Header Table (SHT) under force
+	// This keeps the binary runnable (loader uses Program Headers), but disables tools relying on sections.
+	if force {
+		shoffPos, shnumPos, shstrPos := e.getHeaderPositions()
+		var shoff uint64
+		if e.Is64Bit {
+			shoff = e.readUint64(shoffPos)
+		} else {
+			shoff = uint64(e.readUint32(shoffPos))
+		}
+		shentsize := uint64(e.readUint16(func() int {
+			if e.Is64Bit {
+				return ELF64_E_SHENTSIZE
+			}
+			return ELF32_E_SHENTSIZE
+		}()))
+		shnum := uint64(e.readUint16(func() int {
+			if e.Is64Bit {
+				return ELF64_E_SHNUM
+			}
+			return ELF32_E_SHNUM
+		}()))
+		if shoff > 0 && shentsize > 0 && shnum > 0 {
+			shtSize := shentsize * shnum
+			// Zero the SHT pointers in header first
+			_ = e.writeAtOffset(shoffPos, uint64(0))
+			_ = e.writeAtOffset(shnumPos, uint16(0))
+			_ = e.writeAtOffset(shstrPos, uint16(0))
+			// If SHT is at EOF tail, truncate it physically for best size win
+			if shoff+shtSize == uint64(len(e.RawData)) && shoff <= uint64(len(e.RawData)) {
+				removed := int64(uint64(len(e.RawData)) - shoff)
+				e.RawData = e.RawData[:shoff]
+				result.AddDetail(fmt.Sprintf("removed Section Header Table (SHT): %d bytes", removed), 1, true)
+			} else {
+				result.AddDetail("disabled Section Header Table (SHT) via headers", 1, true)
+			}
+		}
+	}
+
 	newSize := int64(len(e.RawData))
-	percent := float64(totalRemoved) / float64(originalSize) * 100
+	// Report actual on-disk reduction to avoid misleading percentages
+	removedBytes := originalSize - newSize
+	if removedBytes < 0 {
+		removedBytes = 0
+	}
+	percent := 0.0
+	if originalSize > 0 {
+		percent = float64(removedBytes) / float64(originalSize) * 100.0
+	}
 
 	// Add details to result
 	for _, name := range removedNames {
 		result.AddDetail(fmt.Sprintf("removed section: %s", name), 1, false)
 	}
 	result.AddDetail(fmt.Sprintf("size reduced: %d -> %d bytes (%d bytes removed, %.1f%% reduction)",
-		originalSize, newSize, totalRemoved, percent), 1, false)
+		originalSize, newSize, removedBytes, percent), 1, false)
 
 	// Add any warnings
 	for _, warning := range warnings {

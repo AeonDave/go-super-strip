@@ -245,11 +245,154 @@ func (p *PEFile) sectionRemoval(force bool) (*common.OperationResult, error) {
 		return nil, fmt.Errorf("failed to clear data directories: %w", err)
 	}
 	p.Sections = newSections
+	// Recalculate PE header sizes and optionally trim overlay before reporting final size
+	// 1) Recalculate SizeOfImage and SizeOfHeaders
+	// 2) Zero CheckSum (unsigned binaries) and trim overlay if no Security directory is present
+	alignUp32 := func(v, a uint32) uint32 {
+		if a == 0 {
+			return v
+		}
+		r := v % a
+		if r == 0 {
+			return v
+		}
+		return v + (a - r)
+	}
+
+	// Extract SectionAlignment
+	extractSectionAlignment := func() uint32 {
+		offsets, err := p.calculateOffsets()
+		if err != nil {
+			return PE_SECTION_ALIGNMENT_DEFAULT
+		}
+		is64 := p.Is64Bit
+		var secAlignOffset int64
+		if is64 {
+			secAlignOffset = offsets.OptionalHeader + PE64_SECTION_ALIGN
+		} else {
+			secAlignOffset = offsets.OptionalHeader + PE32_SECTION_ALIGN
+		}
+		if secAlignOffset+4 > int64(len(p.RawData)) {
+			return PE_SECTION_ALIGNMENT_DEFAULT
+		}
+		return binary.LittleEndian.Uint32(p.RawData[secAlignOffset:])
+	}
+	sectionAlignment := extractSectionAlignment()
+	if sectionAlignment == 0 {
+		sectionAlignment = PE_SECTION_ALIGNMENT_DEFAULT
+	}
+
+	// Compute SizeOfImage as max end of sections (VA + aligned size)
+	var maxEndVA uint32
+	for _, s := range p.Sections {
+		if s.VirtualSize == 0 && s.Size == 0 {
+			continue
+		}
+		// Use the larger between VirtualSize and raw Size projected to VA
+		vs := s.VirtualSize
+		if vs < uint32(s.Size) {
+			vs = uint32(s.Size)
+		}
+		end := s.VirtualAddress + alignUp32(vs, sectionAlignment)
+		if end > maxEndVA {
+			maxEndVA = end
+		}
+	}
+	// Compute SizeOfHeaders: align up to FileAlignment the first section raw offset (or end of section headers)
+	var firstRaw uint32 = 0xFFFFFFFF
+	for _, s := range p.Sections {
+		if s.FileOffset > 0 && (uint32(s.FileOffset) < firstRaw) {
+			firstRaw = uint32(s.FileOffset)
+		}
+	}
+	offsets, err2 := p.calculateOffsets()
+	var headersEnd uint32
+	if err2 == nil {
+		headersEnd = uint32(offsets.FirstSectionHdr + int64(len(p.Sections))*PE_SECTION_HEADER_SIZE)
+	}
+	var sizeOfHeaders uint32
+	if firstRaw != 0xFFFFFFFF {
+		sizeOfHeaders = alignUp32(firstRaw, fileAlignment)
+	} else if headersEnd > 0 {
+		sizeOfHeaders = alignUp32(headersEnd, fileAlignment)
+	} else {
+		sizeOfHeaders = alignUp32(1024, fileAlignment) // conservative fallback
+	}
+
+	// Write SizeOfImage, SizeOfHeaders, and zero CheckSum
+	if err2 == nil {
+		is64 := p.Is64Bit
+		var sizeOfImageOff, sizeOfHeadersOff, checkSumOff int64
+		if is64 {
+			sizeOfImageOff = offsets.OptionalHeader + PE64_SIZE_OF_IMAGE
+			sizeOfHeadersOff = offsets.OptionalHeader + PE64_SIZE_OF_HEADERS
+			checkSumOff = offsets.OptionalHeader + PE64_CHECKSUM
+		} else {
+			sizeOfImageOff = offsets.OptionalHeader + PE32_SIZE_OF_IMAGE
+			sizeOfHeadersOff = offsets.OptionalHeader + PE32_SIZE_OF_HEADERS
+			checkSumOff = offsets.OptionalHeader + PE32_CHECKSUM
+		}
+		_ = WriteAtOffset(p.RawData, sizeOfImageOff, maxEndVA)
+		_ = WriteAtOffset(p.RawData, sizeOfHeadersOff, sizeOfHeaders)
+		_ = WriteAtOffset(p.RawData, checkSumOff, uint32(0))
+	}
+
+	// Optionally trim overlay if there is no Authenticode (Security Directory empty)
+	trimmedOverlay := int64(0)
+	if err2 == nil {
+		// Read Security directory entry (index 4)
+		var dataDirsBase int64
+		if p.Is64Bit {
+			dataDirsBase = offsets.OptionalHeader + PE64_DATA_DIRECTORIES
+		} else {
+			dataDirsBase = offsets.OptionalHeader + PE32_DATA_DIRECTORIES
+		}
+		secDirOff := dataDirsBase + int64(IMAGE_DIRECTORY_ENTRY_SECURITY)*IMAGE_SIZEOF_DATA_DIRECTORY
+		if secDirOff+8 <= int64(len(p.RawData)) {
+			secVA := binary.LittleEndian.Uint32(p.RawData[secDirOff:])
+			secSz := binary.LittleEndian.Uint32(p.RawData[secDirOff+4:])
+			// If no signature, we can safely trim overlay tail
+			if secVA == 0 && secSz == 0 {
+				// Minimal file size: max end of sections vs headers
+				var maxEndFile int64 = int64(sizeOfHeaders)
+				for _, s := range p.Sections {
+					if s.Size > 0 {
+						end := s.Offset + s.Size
+						if end > maxEndFile {
+							maxEndFile = end
+						}
+					}
+				}
+				if int64(len(p.RawData)) > maxEndFile {
+					trimmedOverlay = int64(len(p.RawData)) - maxEndFile
+					p.RawData = p.RawData[:maxEndFile]
+				}
+			}
+		}
+	}
+
 	newSize := uint64(len(p.RawData))
-	percentage := float64(originalSize-newSize) * 100.0 / float64(originalSize)
-	message := fmt.Sprintf("rimozione sezioni: %d -> %d byte (riduzione del %.1f%%), rimosse %d sezioni: %s",
-		originalSize, newSize, percentage, len(removableSectionIndices), strings.Join(removedNames, ", "))
-	return common.NewApplied(message, len(removableSectionIndices)), nil
+	removedBytes := int64(originalSize) - int64(newSize)
+	if removedBytes < 0 {
+		removedBytes = 0
+	}
+	percent := 0.0
+	if originalSize > 0 {
+		percent = float64(uint64(removedBytes)) / float64(originalSize) * 100.0
+	}
+
+	// Build a detailed, categorized result similar to ELF
+	result := common.NewApplied(fmt.Sprintf("removed %d sections", len(removableSectionIndices)), len(removableSectionIndices))
+	result.SetCategory("SECTIONS")
+	for _, name := range removedNames {
+		result.AddDetail(fmt.Sprintf("removed section: %s", name), 1, false)
+	}
+	result.AddDetail(fmt.Sprintf("size reduced: %d -> %d bytes (%d bytes removed, %.1f%% reduction)", originalSize, newSize, removedBytes, percent), 1, false)
+	if trimmedOverlay > 0 {
+		result.AddDetail(fmt.Sprintf("trimmed overlay: %d bytes removed (no Authenticode)", trimmedOverlay), 1, false)
+	}
+	result.AddDetail("updated PE headers: SizeOfImage/SizeOfHeaders recalculated; CheckSum cleared", 1, false)
+	return result, nil
 }
 
 func (p *PEFile) extractFileAlignment() (uint32, error) {

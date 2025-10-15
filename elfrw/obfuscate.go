@@ -319,13 +319,15 @@ func (e *ELFFile) obfuscateSectionPadding() *common.OperationResult {
 func (e *ELFFile) obfuscateReservedHeaderFields() *common.OperationResult {
 	var modifiedFields []string
 
-	// Randomize e_ident[9:16] (padding)
+	// Randomize e_ident[9:16] (padding) — safe to alter.
 	randBytes, err := common.GenerateRandomBytes(7)
 	if err != nil {
 		return common.NewSkipped(fmt.Sprintf("failed to generate random header bytes: %v", err))
 	}
 	copy(e.RawData[9:16], randBytes)
 	modifiedFields = append(modifiedFields, "header padding")
+
+	// Normalize e_flags to 0 (do not randomize). Randomizing processor flags can break loaders.
 	var flagsOffset int
 	if e.Is64Bit {
 		flagsOffset = ELF64_E_FLAGS
@@ -333,13 +335,11 @@ func (e *ELFFile) obfuscateReservedHeaderFields() *common.OperationResult {
 		flagsOffset = ELF32_E_FLAGS
 	}
 	if flagsOffset+4 <= len(e.RawData) {
-		randFlags, err := common.GenerateRandomBytes(4)
-		if err != nil {
-			return common.NewSkipped(fmt.Sprintf("failed to generate random flags: %v", err))
-		}
-		copy(e.RawData[flagsOffset:flagsOffset+4], randFlags)
-		modifiedFields = append(modifiedFields, "processor flags")
+		zeros := []byte{0, 0, 0, 0}
+		copy(e.RawData[flagsOffset:flagsOffset+4], zeros)
+		modifiedFields = append(modifiedFields, "processor flags (zeroed)")
 	}
+
 	if len(modifiedFields) == 0 {
 		return common.NewSkipped("no header fields available for obfuscation")
 	}
@@ -360,9 +360,14 @@ func (e *ELFFile) obfuscateRuntimeStrings() *common.OperationResult {
 	modifications := 0
 	var modifiedSections []string
 	for _, section := range e.Sections {
-		if !strings.Contains(strings.ToLower(section.Name), "data") &&
-			!strings.Contains(strings.ToLower(section.Name), "rodata") &&
-			!strings.Contains(strings.ToLower(section.Name), ".str") {
+		lowName := strings.ToLower(section.Name)
+		// Never touch dynamic or static string tables used by the linker/loader
+		if lowName == ".dynstr" || lowName == ".strtab" {
+			continue
+		}
+		if !strings.Contains(lowName, "data") &&
+			!strings.Contains(lowName, "rodata") &&
+			!strings.Contains(lowName, ".str") {
 			continue
 		}
 

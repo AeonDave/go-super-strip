@@ -37,15 +37,16 @@ go build -o gosstrip
 gosstrip [OPTIONS] <file>
 ```
 
+Note: Operations are executed in strict order: strip -> compact -> obfuscate -> insert/overlay -> regex
+
 ### Options
 
 | Option         | Long Form           | Description                                                |
 |----------------|---------------------|------------------------------------------------------------|
 | `-a`           | `--analyze`         | Analyze file structure only (standalone)                   |
-| `-s`           | `--strip`           | Strip debug symbols and metadata                           |
-| `-c`           | `--compact`         | Reduce file size by removing sections                      |
-| `-o`           | `--obfuscate`       | Apply obfuscation techniques                               |
-| `-f`           | `--force`           | Apply risky operations for -s, -c, -o                      |
+| `-s`           | `--strip`           | Strip debug symbols and metadata (use `-s=force=true` for risky ops) |
+| `-c`           | `--compact`         | Reduce file size by removing sections (use `-c=force=true` for risky ops) |
+| `-o`           | `--obfuscate`       | Apply obfuscation techniques (note: force currently has no extra effect) |
 | `-r <pattern>` | `--regex <pattern>` | Strip bytes matching regex pattern                         |
 | `-i <spec>`    | `--insert <spec>`   | Insert section (format: `name:data_or_file[:password]`)    |
 | `-l <spec>`    | `--overlay <spec>`  | Add overlay (format: `data_or_file[:password]`)            |
@@ -61,6 +62,7 @@ Note for Windows/PowerShell users:
 - Always quote the -p value to avoid shell parsing issues with commas.
   Example: gosstrip.exe -p="compression=lzma,level=9,encryption=chacha20" file.exe
 - Alternatively, use the stop-parsing operator: gosstrip.exe --% -p=compression=lzma,level=9,encryption=chacha20 file.exe
+- If you pass -p/--pack without options, the CLI applies defaults: compression=lzma, level=9, encryption=chacha20 (polymorphic enabled).
 
 | Option        | Values                                   | Default       | Description                                   |
 |---------------|------------------------------------------|---------------|-----------------------------------------------|
@@ -87,6 +89,8 @@ gosstrip -a /bin/ls
 gosstrip -a -v /bin/bash
 ```
 
+Note: `-a` (analysis) must be used alone and cannot be combined with other operations in the same run.
+
 ### Stripping & Compaction
 
 ```bash
@@ -100,8 +104,12 @@ gosstrip -c binary
 gosstrip -s -c -o binary
 
 # Aggressive stripping with risky operations
-gosstrip -s -f binary
+gosstrip -s=force=true binary
 ```
+
+Notes:
+- PE: Compaction recalculates SizeOfImage/SizeOfHeaders, clears CheckSum (for unsigned binaries), and may trim trailing overlay if no Authenticode signature is present.
+- ELF: With `-c=force=true`, compaction may remove the Section Header Table (SHT) to maximize size. The binary remains runnable (loaders use Program Headers), but section-based tools (objdump/readelf -S) will not work.
 
 ### Pattern Removal
 
@@ -179,7 +187,7 @@ gosstrip -s -c -o binary
 gosstrip -p binary.stripped
 
 # Full pipeline with custom options
-gosstrip -s -f binary
+gosstrip -s=force=true binary
 gosstrip -p=compression=lzma,level=9,encryption=chacha20 binary.stripped
 ```
 

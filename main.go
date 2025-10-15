@@ -16,17 +16,19 @@ import (
 const defaultPackOptions = "compression=lzma,level=9,encryption=chacha20"
 
 type Configuration struct {
-	FilePath  string
-	Verbose   bool
-	Analyze   bool   // -a: Analyze file structure only (standalone)
-	Strip     bool   // -s: Strip info, metadata and sections
-	Obfuscate bool   // -o: Apply obfuscation techniques
-	Compact   bool   // -c: Apply file size reduction
-	Insert    string // -i: Add section (format: name:filepath[:password])
-	Overlay   string // -l: Add overlay (format: filepath[:password])
-	Regex     string // -r: Strip bytes matching regex pattern
-	Pack      string // -p: Pack with compression and polymorphic stub (format: opt1=val1,opt2=val2)
-	Force     bool   // -f: Apply risky operations for -s, -c, -o
+	FilePath       string
+	Verbose        bool
+	Analyze        bool   // -a: Analyze file structure only (standalone)
+	Strip          bool   // -s: Strip info, metadata and sections
+	Obfuscate      bool   // -o: Apply obfuscation techniques
+	Compact        bool   // -c: Apply file size reduction
+	CompactForce   bool   // -c=force: enable risky compaction operations
+	Insert         string // -i: Add section (format: name:filepath[:password])
+	Overlay        string // -l: Add overlay (format: filepath[:password])
+	Regex          string // -r: Strip bytes matching regex pattern
+	Pack           string // -p: Pack with compression and polymorphic stub (format: opt1=val1,opt2=val2)
+	StripForce     bool   // -s=force: risky strip operations for -s
+	ObfuscateForce bool   // -o=force: risky obfuscation operations for -o
 }
 
 var (
@@ -54,10 +56,6 @@ var (
 	packFlag     = flag.String("p", "", "Pack executable with compression and polymorphic stub (format: opt1=val1,opt2=val2)")
 	packFlagLong = flag.String("pack", "", "Pack executable with compression and polymorphic stub (format: opt1=val1,opt2=val2)")
 
-	// Modifiers
-	forceFlag     = flag.Bool("f", false, "Apply risky operations to -s, -c, or -o")
-	forceFlagLong = flag.Bool("force", false, "Apply risky operations to -s, -c, or -o")
-
 	// Other
 	verboseFlag = flag.Bool("v", false, "Enable verbose output")
 	helpFlag    = flag.Bool("h", false, "Show this help")
@@ -71,6 +69,8 @@ func main() {
 		}
 	}
 
+	// Preprocess -s/-o suboptions and -p defaults before parsing flags
+	preprocessOperationFlags()
 	// Preprocess -p/--pack flags with no value so they won't consume the file path
 	preprocessPackFlags()
 
@@ -87,6 +87,74 @@ func main() {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+var preStripForce bool
+var preObfForce bool
+var preCompactForce bool
+
+func preprocessOperationFlags() {
+	if len(os.Args) == 0 {
+		return
+	}
+	normalizeBool := func(v string) (bool, bool) {
+		v = strings.TrimSpace(strings.ToLower(v))
+		switch v {
+		case "", "1", "true", "yes", "on":
+			return true, true
+		case "0", "false", "no", "off":
+			return true, false
+		default:
+			return false, false
+		}
+	}
+	parseForce := func(optStr string) (found bool, val bool) {
+		parts := strings.Split(optStr, ",")
+		for _, p := range parts {
+			kv := strings.SplitN(strings.TrimSpace(p), "=", 2)
+			key := strings.ToLower(strings.TrimSpace(kv[0]))
+			if key == "force" || key == "f" {
+				if len(kv) == 1 {
+					return true, true
+				}
+				ok, b := normalizeBool(kv[1])
+				if ok {
+					return true, b
+				}
+			}
+		}
+		return false, false
+	}
+
+	args := os.Args[:0]
+	for _, a := range os.Args {
+		if strings.HasPrefix(a, "-s=") || strings.HasPrefix(a, "--strip=") {
+			opt := a[strings.Index(a, "=")+1:]
+			if found, v := parseForce(opt); found {
+				preStripForce = v
+			}
+			args = append(args, "-s")
+			continue
+		}
+		if strings.HasPrefix(a, "-o=") || strings.HasPrefix(a, "--obfuscate=") {
+			opt := a[strings.Index(a, "=")+1:]
+			if found, v := parseForce(opt); found {
+				preObfForce = v
+			}
+			args = append(args, "-o")
+			continue
+		}
+		if strings.HasPrefix(a, "-c=") || strings.HasPrefix(a, "--compact=") {
+			opt := a[strings.Index(a, "=")+1:]
+			if found, v := parseForce(opt); found {
+				preCompactForce = v
+			}
+			args = append(args, "-c")
+			continue
+		}
+		args = append(args, a)
+	}
+	os.Args = args
 }
 
 func preprocessPackFlags() {
@@ -125,22 +193,24 @@ func parseArgs() (*Configuration, error) {
 		return nil, fmt.Errorf("exactly one file path required")
 	}
 	config := &Configuration{
-		FilePath:  args[0],
-		Verbose:   *verboseFlag,
-		Analyze:   *analyzeFlag || *analyzeFlagLong,
-		Strip:     *stripFlag || *stripFlagLong,
-		Obfuscate: *obfuscateFlag || *obfuscateFlagLong,
-		Compact:   *compactFlag || *compactFlagLong,
-		Force:     *forceFlag || *forceFlagLong,
-		Regex:     common.FirstNonEmpty(*regexFlag, *regexFlagLong),
-		Insert:    common.FirstNonEmpty(*insertFlag, *insertFlagLong),
-		Overlay:   common.FirstNonEmpty(*overlayFlag, *overlayFlagLong),
-		Pack:      common.FirstNonEmpty(*packFlag, *packFlagLong),
+		FilePath:       args[0],
+		Verbose:        *verboseFlag,
+		Analyze:        *analyzeFlag || *analyzeFlagLong,
+		Strip:          *stripFlag || *stripFlagLong,
+		Obfuscate:      *obfuscateFlag || *obfuscateFlagLong,
+		Compact:        *compactFlag || *compactFlagLong,
+		CompactForce:   preCompactForce,
+		StripForce:     preStripForce,
+		ObfuscateForce: preObfForce,
+		Regex:          common.FirstNonEmpty(*regexFlag, *regexFlagLong),
+		Insert:         common.FirstNonEmpty(*insertFlag, *insertFlagLong),
+		Overlay:        common.FirstNonEmpty(*overlayFlag, *overlayFlagLong),
+		Pack:           common.FirstNonEmpty(*packFlag, *packFlagLong),
 	}
 	if _, err := os.Stat(config.FilePath); os.IsNotExist(err) {
 		return nil, fmt.Errorf("file does not exist: %s", config.FilePath)
 	}
-	if config.Analyze && (config.Strip || config.Obfuscate || config.Compact || config.Regex != "" || config.Insert != "" || config.Overlay != "" || config.Pack != "" || config.Force) {
+	if config.Analyze && (config.Strip || config.Obfuscate || config.Compact || config.Regex != "" || config.Insert != "" || config.Overlay != "" || config.Pack != "") {
 		return nil, fmt.Errorf("analyze (-a) must be used alone")
 	}
 	// Se `-p` o `--pack` è stato specificato (anche con stringa vuota), segna come attivo
@@ -158,9 +228,6 @@ func parseArgs() (*Configuration, error) {
 		_ = i
 	}
 
-	if config.Force && !(config.Strip || config.Compact || config.Obfuscate) {
-		return nil, fmt.Errorf("force (-f) can only be used with strip (-s), compact (-c), or obfuscate (-o)")
-	}
 	if !(config.Analyze || config.Strip || config.Obfuscate || config.Compact || config.Regex != "" || config.Insert != "" || config.Overlay != "" || config.Pack != "") {
 		return nil, fmt.Errorf("at least one operation required (-a, -s, -o, -c, -i, -l, -r, or -p)")
 	}
@@ -276,9 +343,9 @@ func runStrip(config *Configuration, isPE bool) error {
 	fmt.Println("\n=== Strip Operations ===\nPerforming stripping...")
 	var result *common.OperationResult
 	if isPE {
-		result = perw.StripPE(config.FilePath, config.Force)
+		result = perw.StripPE(config.FilePath, config.StripForce)
 	} else {
-		result = elfrw.StripELF(config.FilePath, config.Force)
+		result = elfrw.StripELF(config.FilePath, config.StripForce)
 	}
 	printOperationResult(getFileType(isPE), "Stripping", result)
 	return nil
@@ -288,9 +355,9 @@ func runCompact(config *Configuration, isPE bool) error {
 	fmt.Println("\n=== Compact Operations ===\nPerforming file compaction...")
 	var result *common.OperationResult
 	if isPE {
-		result = perw.CompactPE(config.FilePath, config.Force)
+		result = perw.CompactPE(config.FilePath, config.CompactForce)
 	} else {
-		result = elfrw.CompactELF(config.FilePath, config.Force)
+		result = elfrw.CompactELF(config.FilePath, config.CompactForce)
 	}
 	printOperationResult(getFileType(isPE), "Compaction", result)
 	return nil
@@ -300,9 +367,9 @@ func runObfuscate(config *Configuration, isPE bool) error {
 	fmt.Println("\n=== Obfuscation Operations ===")
 	var result *common.OperationResult
 	if isPE {
-		result = perw.ObfuscatePE(config.FilePath, config.Force)
+		result = perw.ObfuscatePE(config.FilePath, config.ObfuscateForce)
 	} else {
-		result = elfrw.ObfuscateELF(config.FilePath, config.Force)
+		result = elfrw.ObfuscateELF(config.FilePath, config.ObfuscateForce)
 	}
 	printOperationResult(getFileType(isPE), "Obfuscation", result)
 	return nil
@@ -453,41 +520,43 @@ DESCRIPTION:
 	Operations are performed in strict order: strip -> compact -> obfuscate -> insert/overlay -> regex
 
 OPTIONS:
-	-a, --analyze        Analyze executable file structure and exit
-	-s, --strip          StripAll debug and symbol sections
-	-c, --compact        Apply size reduction by removing sections
-	-f, --force          Apply risky operations to -s, -c, or -o
-	-o, --obfuscate      Apply obfuscation techniques
-	-r, --regex <pattern> StripAll bytes matching a custom regex pattern
-	-i, --insert <spec>  Add hex section (format: name:data_or_file[:password])
-	                     - name:file.txt (file without password)
-	                     - name:HelloWorld (string without password)  
-	                     - name:file.txt:password123 (file with string password)
-	                     - name:HelloWorld:deadbeef (string with hex password)
-	                     Note: PE section names are limited to 8 characters
-	-l, --overlay <spec> Add data as overlay (format: data_or_file[:password])
-	                     - file.txt (file without password)
-	                     - HelloWorld (string without password)  
-	                     - file.txt:password123 (file with string password)
-	                     - HelloWorld:deadbeef (string with hex password)
-	-p, --pack <options> Pack executable with compression and polymorphic stub
-	                     Options format: opt1=val1,opt2=val2
-	                     Available options:
-	                       compression=xz|lzma|none (default: xz)
-	                       level=0-9 (default: 6)
-	                       encryption=xor|aes-256-gcm|chacha20|none (default: aes-256-gcm)
-	                       polymorphic=true|false (default: true)
-	                       junkdensity=0.0-1.0 (default: 0.2)
-	                       padding=true|false (default: true)
-	                       inmemory=true|false (default: false)
-	                       antidebug=true|false (default: false)
-	                       antivm=true|false (default: false)
-	                       verbose=true|false (default: false)
-	                     Note (Windows/PowerShell): quote the -p value to avoid shell parsing issues with commas.
+	-a, --analyze            Analyze executable file structure and exit
+	-s, --strip              StripAll debug and symbol sections
+	                         Suboptions: -s=force=true|false (alias: -s=f=true|false)
+	-c, --compact            Apply size reduction by removing sections
+	                         Suboptions: -c=force=true|false (alias: -c=f=true|false)
+	-o, --obfuscate          Apply obfuscation techniques
+	                         Suboptions: -o=force=true|false (alias: -o=f=true|false)
+	-r, --regex <pattern>    StripAll bytes matching a custom regex pattern
+	-i, --insert <spec>      Add hex section (format: name:data_or_file[:password])
+	                         - name:file.txt (file without password)
+	                         - name:HelloWorld (string without password)  
+	                         - name:file.txt:password123 (file with string password)
+	                         - name:HelloWorld:deadbeef (string with hex password)
+	                         Note: PE section names are limited to 8 characters
+	-l, --overlay <spec>     Add data as overlay (format: data_or_file[:password])
+	                         - file.txt (file without password)
+	                         - HelloWorld (string without password)  
+	                         - file.txt:password123 (file with string password)
+	                         - HelloWorld:deadbeef (string with hex password)
+	-p, --pack <options>     Pack executable with compression and polymorphic stub
+	                         Options format: opt1=val1,opt2=val2
+	                         Available options:
+	                           compression=xz|lzma|none (default: xz)
+	                           level=0-9 (default: 6)
+	                           encryption=xor|aes-256-gcm|chacha20|none (default: aes-256-gcm)
+	                           polymorphic=true|false (default: true)
+	                           junkdensity=0.0-1.0 (default: 0.2)
+	                           padding=true|false (default: true)
+	                           inmemory=true|false (default: false)
+	                           antidebug=true|false (default: false)
+	                           antivm=true|false (default: false)
+	                           verbose=true|false (default: false)
+	                         Note (Windows/PowerShell): quote the -p value to avoid shell parsing issues with commas.
                         Example: gosstrip.exe -p="compression=lzma,level=9,encryption=chacha20" file.exe
-	                       Or use stop-parsing operator: gosstrip.exe --%% -p=compression=lzma,level=9,encryption=chacha20 file.exe
-	-v                   Enable verbose output
-	-h                   Show this help
+	                         Or use stop-parsing operator: gosstrip.exe --%% -p=compression=lzma,level=9,encryption=chacha20 file.exe
+	-v                       Enable verbose output
+	-h                       Show this help
 
 
 EXAMPLES:
@@ -499,8 +568,8 @@ EXAMPLES:
 	%[1]s -p=compression=xz,level=9,encryption=aes-256-gcm bin  # Pack with custom options
 	%[1]s -p=polymorphic=true,junkdensity=0.5,inmemory=true bin # Pack with polymorphism
 	%[1]s -s -c -o bin        			    		# StripAll, compact, and obfuscate (full pipeline)
-	%[1]s -s -f bin            		    		# StripAll with risky operations (relocations, etc.)
-	%[1]s -c -f bin               				# Compact with risky operations
+	%[1]s -s -sf bin            		    		# StripAll with risky operations (relocations, etc.)
+	%[1]s -o -of bin               			# Obfuscation with risky operations
 	%[1]s -s -r 'UPX!' bin        				# StripAll built-in rules, then custom regex 'UPX!'
 	%[1]s -i '.custom:data.bin' bin 			# Add hex section from file
 	%[1]s -i '.custom:HelloWorld' bin 			# Add hex section from string
