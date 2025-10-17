@@ -226,10 +226,10 @@ func GetRegexStripRules() []RegexStripRule {
 				`UPX![0-9\.\x00-\x20]{1,10}`,                                   // UPX signature
 				`\$UPX: [a-zA-Z0-9._\-\s]{5,}\$`,                               // UPX marker string
 				`(?i)Info: This file is packed with the UPX executable packer`, // Informational banner
-				`(?i)\b(UPX|PECompact|ASPack|themida|vmprotect)\b`,             // Known packers (case-insensitive)
+				`(?i)\b(UPX!|PECompact|ASPack|themida|vmprotect)\b`,            // Known packers (case-insensitive)
 			},
 			Description: "Known packer signatures (comprehensive)",
-			Fill:        ZeroFill,
+			Fill:        RandomFill,
 			IsRisky:     false,
 		},
 		// Source file paths (safer and more comprehensive)

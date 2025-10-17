@@ -41,18 +41,18 @@ Note: Operations are executed in strict order: strip -> compact -> obfuscate -> 
 
 ### Options
 
-| Option         | Long Form           | Description                                                |
-|----------------|---------------------|------------------------------------------------------------|
-| `-a`           | `--analyze`         | Analyze file structure only (standalone)                   |
-| `-s`           | `--strip`           | Strip debug symbols and metadata (use `-s=force=true` for risky ops) |
+| Option         | Long Form           | Description                                                               |
+|----------------|---------------------|---------------------------------------------------------------------------|
+| `-a`           | `--analyze`         | Analyze file structure only (standalone)                                  |
+| `-s`           | `--strip`           | Strip debug symbols and metadata (use `-s=force=true` for risky ops)      |
 | `-c`           | `--compact`         | Reduce file size by removing sections (use `-c=force=true` for risky ops) |
-| `-o`           | `--obfuscate`       | Apply obfuscation techniques (note: force currently has no extra effect) |
-| `-r <pattern>` | `--regex <pattern>` | Strip bytes matching regex pattern                         |
-| `-i <spec>`    | `--insert <spec>`   | Insert section (format: `name:data_or_file[:password]`)    |
-| `-l <spec>`    | `--overlay <spec>`  | Add overlay (format: `data_or_file[:password]`)            |
-| `-p [opts]`    | `--pack [opts]`     | Pack with polymorphic stub (format: `opt1=val1,opt2=val2`) |
-| `-v`           |                     | Enable verbose output                                      |
-| `-h`           |                     | Show help                                                  |
+| `-o`           | `--obfuscate`       | Apply obfuscation techniques (note: force currently has no extra effect)  |
+| `-r <pattern>` | `--regex <pattern>` | Strip bytes matching regex pattern                                        |
+| `-i <spec>`    | `--insert <spec>`   | Insert section (format: `name:data_or_file[:password]`)                   |
+| `-l <spec>`    | `--overlay <spec>`  | Add overlay (format: `data_or_file[:password]`)                           |
+| `-p [opts]`    | `--pack [opts]`     | Pack with polymorphic stub (format: `opt1=val1,opt2=val2`)                |
+| `-v`           |                     | Enable verbose output                                                     |
+| `-h`           |                     | Show help                                                                 |
 
 ### Pack Options
 
@@ -74,7 +74,7 @@ Note for Windows/PowerShell users:
 | `padding`     | `true`, `false`                          | `true`        | Add random padding to stub                    |
 | `inmemory`    | `true`, `false`                          | `false`       | Execute payload in-memory without disk writes |
 | `antidebug`   | `true`, `false`                          | `false`       | Add anti-debugging checks [Not Implemented]   |
-| `antivm`      | `true`, `false`                          | `false`       | Add anti-VM detection [Not Implemented]                        |
+| `antivm`      | `true`, `false`                          | `false`       | Add anti-VM detection [Not Implemented]       |
 | `verbose`     | `true`, `false`                          | `false`       | Detailed packing output                       |
 
 ## Examples

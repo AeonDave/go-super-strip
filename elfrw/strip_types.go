@@ -155,13 +155,12 @@ func GetRegexStripRules() []RegexStripRule {
 				`\b__cplusplus\b`,
 				`\btypeinfo for [a-zA-Z0-9_:]{3,}\b`,
 				`\bvtable for [a-zA-Z0-9_:]{3,}\b`,
-				`\b_Z[a-zA-Z0-9_]+\b`, // Mangled C++ symbols (basic pattern)
 			},
 			Description: "C++ specific markers",
 			Fill:        ZeroFill,
 			IsRisky:     false,
 		},
-		// Rust specific markers
+		//Rust specific markers
 		{
 			Patterns: []string{
 				`\brustc [0-9]+\.[0-9]+\.[0-9]+\b`,
@@ -235,10 +234,10 @@ func GetRegexStripRules() []RegexStripRule {
 				`UPX![0-9\.\x00-\x20]{1,10}`,                                   // UPX magic blocks with padding
 				`\$UPX: [a-zA-Z0-9._\-\s]{5,}\$`,                               // UPX metadata marker
 				`(?i)Info: This file is packed with the UPX executable packer`, // Informational banner
-				`(?i)\b(UPX|PECompact|ASPack|themida|vmprotect)\b`,             // Common packer names
+				`(?i)\b(UPX!|PECompact|ASPack|themida|vmprotect)\b`,            // Common packer names
 			},
 			Description: "Known packer signatures",
-			Fill:        ZeroFill,
+			Fill:        RandomFill,
 			IsRisky:     false,
 		},
 		// Common library markers

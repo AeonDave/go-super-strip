@@ -82,12 +82,19 @@ func (e *ELFFile) StripByteRegex(pattern *regexp.Regexp, useRandom bool) (int, e
 				continue
 			}
 			base := uint64(section.Offset)
-			maxLen := int64(len(e.RawData)) - section.Offset
-			if maxLen <= 0 {
+			rawLen := uint64(len(e.RawData))
+			if base >= rawLen {
 				continue
 			}
-			// Extract section data slice
-			secData := e.RawData[base : base+uint64(section.Size)]
+			size := uint64(section.Size)
+			if size > rawLen-base {
+				size = rawLen - base
+			}
+			if size == 0 {
+				continue
+			}
+			// Extract section data slice ensuring bounds within file
+			secData := e.RawData[base : base+size]
 			for _, match := range pattern.FindAllIndex(secData, -1) {
 				start, end := match[0], match[1]
 				if start < 0 || end > len(secData) || start >= end {
