@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"gosstrip/common"
 	"io"
+	"math"
 	"os"
 	"strings"
 )
@@ -455,7 +456,7 @@ func (e *ELFFile) populateSectionMetadata(section *Section) {
 	flags := section.Flags
 	section.IsAlloc = (flags & SHF_ALLOC) != 0
 	section.CommonSectionInfo.IsExecutable = (flags & SHF_EXECINSTR) != 0
-	section.CommonSectionInfo.IsReadable = section.IsAlloc
+	section.CommonSectionInfo.IsReadable = true
 	section.CommonSectionInfo.IsWritable = (flags & SHF_WRITE) != 0
 
 	if section.Size <= 0 || section.Type == SHT_NOBITS || section.Offset < 0 {
@@ -525,6 +526,9 @@ func (e *ELFFile) parseSegmentsFromELF() ([]Segment, error) {
 	for i, prog := range e.ELF.Progs {
 		if prog == nil {
 			continue
+		}
+		if i > int(math.MaxUint16) {
+			return nil, fmt.Errorf("program header index exceeds uint16 range: %d", i)
 		}
 		flags := uint32(prog.Flags)
 		segments = append(segments, Segment{
@@ -717,11 +721,11 @@ func (e *ELFFile) getSectionContent(index uint16) ([]byte, error) {
 		if offset > uint64(len(e.RawData)) || end > uint64(len(e.RawData)) {
 			return nil, fmt.Errorf("section %d content out of range", index)
 		}
+		if offset > uint64(math.MaxInt) || end > uint64(math.MaxInt) {
+			return nil, fmt.Errorf("section %d content exceeds supported size", index)
+		}
 		start := int(offset)
 		finish := int(end)
-		if start < 0 || finish < start {
-			return nil, fmt.Errorf("section %d content out of range", index)
-		}
 		data := make([]byte, finish-start)
 		copy(data, e.RawData[start:finish])
 		return data, nil
@@ -742,6 +746,9 @@ func (e *ELFFile) getSectionContent(index uint16) ([]byte, error) {
 	end := offset + size
 	if end < offset || end > uint64(len(e.RawData)) {
 		return nil, fmt.Errorf("section %d content out of range", index)
+	}
+	if offset > uint64(math.MaxInt) || end > uint64(math.MaxInt) {
+		return nil, fmt.Errorf("section %d content exceeds supported size", index)
 	}
 	start := int(offset)
 	finish := int(end)
