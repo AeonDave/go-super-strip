@@ -1,6 +1,7 @@
 package elfrw
 
 import (
+	"bytes"
 	"fmt"
 	"gosstrip/common"
 	"os"
@@ -156,12 +157,12 @@ func TestELF_Overlay_Extract_Run_NoPassword(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read payload failed: %v", err)
 	}
-	suffix := ov
-	if len(ov) > len(pbytes) {
-		suffix = ov[len(ov)-len(pbytes):]
+	extracted, err := locateOverlayPayload(ov, pbytes)
+	if err != nil {
+		t.Fatalf("extract payload failed: %v", err)
 	}
 	out := filepath.Join(t.TempDir(), "ovl_payload_elf")
-	if err := os.WriteFile(out, suffix, 0o700); err != nil {
+	if err := os.WriteFile(out, extracted, 0o700); err != nil {
 		t.Fatalf("failed to write overlay payload: %v", err)
 	}
 	runELFInWSL(t, out)
@@ -181,13 +182,7 @@ func TestELF_Overlay_Extract_Run_WithPassword(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read payload failed: %v", err)
 	}
-	// AES-GCM output size = len(payload) + 12 nonce + 16 tag
-	ctLen := len(pbytes) + 28
-	ct := ov
-	if len(ov) >= ctLen {
-		ct = ov[len(ov)-ctLen:]
-	}
-	dec, err := common.DecryptAES256GCM(ct, []byte(pwd))
+	dec, err := decryptOverlayPayload(ov, pwd, len(pbytes))
 	if err != nil {
 		t.Fatalf("decrypt overlay failed: %v", err)
 	}
@@ -196,6 +191,40 @@ func TestELF_Overlay_Extract_Run_WithPassword(t *testing.T) {
 		t.Fatalf("failed to write decrypted overlay payload: %v", err)
 	}
 	runELFInWSL(t, out)
+}
+
+func locateOverlayPayload(overlay, payload []byte) ([]byte, error) {
+	if len(payload) == 0 {
+		return nil, fmt.Errorf("payload is empty")
+	}
+	idx := bytes.Index(overlay, payload)
+	if idx == -1 {
+		return nil, fmt.Errorf("payload bytes not found within overlay")
+	}
+	slice := overlay[idx : idx+len(payload)]
+	return append([]byte(nil), slice...), nil
+}
+
+func decryptOverlayPayload(overlay []byte, password string, payloadLen int) ([]byte, error) {
+	if payloadLen <= 0 {
+		return nil, fmt.Errorf("invalid payload length: %d", payloadLen)
+	}
+	ctLen := payloadLen + 28 // AES-GCM nonce (12) + tag (16)
+	if len(overlay) < ctLen {
+		return nil, fmt.Errorf("overlay too small (%d) for ciphertext (%d)", len(overlay), ctLen)
+	}
+	pwdBytes := []byte(password)
+	for start := 0; start+ctLen <= len(overlay); start++ {
+		window := overlay[start : start+ctLen]
+		dec, err := common.DecryptAES256GCM(window, pwdBytes)
+		if err == nil {
+			if len(dec) != payloadLen {
+				return nil, fmt.Errorf("unexpected decrypted length: %d != %d", len(dec), payloadLen)
+			}
+			return dec, nil
+		}
+	}
+	return nil, fmt.Errorf("no decryptable payload found in overlay")
 }
 
 // === New: Go on Linux (ELF) real-binary tests via WSL ===
