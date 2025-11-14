@@ -67,7 +67,7 @@ func PackELF(inputPath string, config *PackConfig) (*PackResult, error) {
 	}
 
 	// 6. Compila stub con metadata embedded
-	stubBinary, err := CompileStub(config, metadata, encrypted)
+	stubBinary, err := compileStubFunc(config, metadata, encrypted)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compile stub: %w", err)
 	}
