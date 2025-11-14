@@ -17,6 +17,7 @@ func TestPEPipelineOperations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to open PE: %v", err)
 	}
+	defer file.Close()
 	peFile, err := perw.ReadPE(file)
 	if err != nil {
 		t.Fatalf("ReadPE returned error: %v", err)

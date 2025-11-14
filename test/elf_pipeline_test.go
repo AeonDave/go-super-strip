@@ -22,6 +22,7 @@ func TestELFPipelineOperations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to open ELF: %v", err)
 	}
+	defer file.Close()
 	elfFile, err := elfrw.ReadELF(file)
 	if err != nil {
 		t.Fatalf("ReadELF returned error: %v", err)
