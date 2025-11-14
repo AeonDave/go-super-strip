@@ -1,11 +1,54 @@
 package elfrw
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 )
+
+var (
+	elfFixtureOnce sync.Once
+	elfFixtureData []byte
+	elfFixtureErr  error
+)
+
+func buildELFFixture() {
+	tmpDir, err := os.MkdirTemp("", "elf_fixture_build")
+	if err != nil {
+		elfFixtureErr = err
+		return
+	}
+	defer func() {
+		_ = os.RemoveAll(tmpDir)
+	}()
+
+	output := filepath.Join(tmpDir, "simple")
+
+	cmd := exec.Command("go", "build", "-o", output, "./testfiles/simple_go.go")
+	cmd.Dir = ".."
+	cmd.Env = append(os.Environ(),
+		"GOOS=linux",
+		"GOARCH="+runtime.GOARCH,
+		"CGO_ENABLED=0",
+	)
+
+	if out, err := cmd.CombinedOutput(); err != nil {
+		elfFixtureErr = fmt.Errorf("go build failed: %v\n%s", err, out)
+		return
+	}
+
+	data, err := os.ReadFile(output)
+	if err != nil {
+		elfFixtureErr = err
+		return
+	}
+
+	elfFixtureData = data
+}
 
 func copyELFFixture(t *testing.T, name string) string {
 	T := t
@@ -16,14 +59,13 @@ func copyELFFixture(t *testing.T, name string) string {
 		T.Skipf("ELF tests require Linux environment; current OS: %s", runtime.GOOS)
 	}
 
-	src := filepath.Join("..", "testfiles", name)
-	data, err := os.ReadFile(src)
-	if err != nil {
-		T.Fatalf("failed to read source test file %q: %v", name, err)
+	elfFixtureOnce.Do(buildELFFixture)
+	if elfFixtureErr != nil {
+		T.Fatalf("failed to prepare ELF fixture %q: %v", name, elfFixtureErr)
 	}
 
 	dst := filepath.Join(t.TempDir(), name)
-	if err := os.WriteFile(dst, data, 0o700); err != nil {
+	if err := os.WriteFile(dst, elfFixtureData, 0o700); err != nil {
 		T.Fatalf("failed to create temp fixture %q: %v", name, err)
 	}
 

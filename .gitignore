@@ -1,4 +1,5 @@
 *.exe
+!testfiles/simple.exe
 *.exe~
 *.dll
 *.so
@@ -10,4 +11,3 @@ go.work.sum
 .env
 .idea/
 .venv/
-test/

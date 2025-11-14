@@ -71,7 +71,7 @@ func PackPE(inputPath string, config *PackConfig) (*PackResult, error) {
 	if config.OutputPath == "" {
 		config.OutputPath = inputPath + ".packed.exe"
 	}
-	stubBinary, err := CompileStub(config, metadata, encrypted)
+	stubBinary, err := compileStubFunc(config, metadata, encrypted)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compile stub: %w", err)
 	}
