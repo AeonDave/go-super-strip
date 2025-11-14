@@ -83,7 +83,7 @@ func extractELFSectionData(t *testing.T, elfPath, sectionName string) []byte {
 	if idx < 0 {
 		t.Fatalf("section %s not found", sectionName)
 	}
-	content, err := ef.ELF.GetSectionContent(uint16(ef.Sections[idx].Index))
+	content, err := ef.getSectionContent(uint16(ef.Sections[idx].Index))
 	if err != nil {
 		t.Fatalf("failed to read section content: %v", err)
 	}

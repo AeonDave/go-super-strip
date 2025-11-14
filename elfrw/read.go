@@ -1,14 +1,16 @@
 package elfrw
 
 import (
+	"bytes"
 	"crypto/md5"
 	"crypto/sha1"
 	"crypto/sha256"
+	"debug/elf"
 	"encoding/binary"
 	"fmt"
-	"github.com/yalue/elf_reader"
 	"gosstrip/common"
 	"io"
+	"math"
 	"os"
 	"strings"
 )
@@ -25,6 +27,9 @@ func ReadELF(file *os.File) (*ELFFile, error) {
 }
 
 func (e *ELFFile) Close() error {
+	if e.ELF != nil {
+		_ = e.ELF.Close()
+	}
 	if e.File != nil {
 		return e.File.Close()
 	}
@@ -63,6 +68,10 @@ func newELFFileFromDisk(file *os.File) (*ELFFile, error) {
 		return nil, err
 	}
 
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("failed to reset file cursor: %w", err)
+	}
+
 	is64Bit := len(rawData) > 4 && rawData[4] == 2
 	ef := &ELFFile{
 		File:     file,
@@ -75,24 +84,13 @@ func newELFFileFromDisk(file *os.File) (*ELFFile, error) {
 		nameOffsets: make(map[string]uint32),
 	}
 
-	elfFile, err := elf_reader.ParseELFFile(rawData)
-	if err != nil {
-		fmt.Printf("⚠️ Parsing con elf_reader fallito per '%s': %v. Tentativo con la modalità di fallback.\n", ef.FileName, err)
-		ef.usedFallbackMode = true
-	} else {
+	if elfFile, err := elf.NewFile(bytes.NewReader(rawData)); err == nil {
 		ef.ELF = elfFile
+	} else {
+		ef.usedFallbackMode = true
 	}
 
 	return ef, nil
-}
-
-func executeSafeParsing(component, fileName string, parseFunc func()) {
-	defer func() {
-		if r := recover(); r != nil {
-			fmt.Printf("⚠️  Recovered from panic while parsing %s in '%s': %v\n", component, fileName, r)
-		}
-	}()
-	parseFunc()
 }
 
 func validateELFHeader(data []byte) error {
@@ -105,16 +103,19 @@ func validateELFHeader(data []byte) error {
 	return nil
 }
 
-func parseFlags(flags elf_reader.ELFSectionFlags) uint64 {
+func parseFlags(flags elf.SectionFlag) uint64 {
 	var result uint64
-	if flags.Executable() {
+	if flags&elf.SHF_EXECINSTR != 0 {
 		result |= SHF_EXECINSTR
 	}
-	if flags.Allocated() {
+	if flags&elf.SHF_ALLOC != 0 {
 		result |= SHF_ALLOC
 	}
-	if flags.Writable() {
+	if flags&elf.SHF_WRITE != 0 {
 		result |= SHF_WRITE
+	}
+	if flags&elf.SHF_STRINGS != 0 {
+		result |= SHF_STRINGS
 	}
 	return result
 }
@@ -282,14 +283,33 @@ func (e *ELFFile) checkForPacking() {
 }
 
 func (e *ELFFile) parseAllELFComponents() error {
-	if e.usedFallbackMode {
-		fmt.Printf("⚠️  Using fallback parsing mode for ELF file '%s'\n", e.FileName)
-		_ = e.parseBasicSectionsFromRaw()
+	if e.Is64Bit {
+		e.entryPoint = e.readValue(ELF64_E_ENTRY, true)
 	} else {
-		executeSafeParsing("sections", e.FileName, func() { e.Sections = e.parseSections() })
-		executeSafeParsing("segments", e.FileName, func() { e.Segments = e.parseSegments() })
-		executeSafeParsing("dynamic entries", e.FileName, func() { e.DynamicEntries = e.parseDynamicEntries() })
+		e.entryPoint = e.readValue(ELF32_E_ENTRY, false)
 	}
+
+	if e.usedFallbackMode {
+		if err := e.parseBasicSectionsFromRaw(); err != nil {
+			e.Sections = make([]Section, 0)
+		}
+		if err := e.parseBasicSegmentsFromRaw(); err != nil {
+			e.Segments = make([]Segment, 0)
+		}
+	} else {
+		sections, err := e.parseSectionsFromELF()
+		if err != nil {
+			return err
+		}
+		segments, err := e.parseSegmentsFromELF()
+		if err != nil {
+			return err
+		}
+		e.Sections = sections
+		e.Segments = segments
+	}
+
+	e.DynamicEntries = e.parseDynamicEntries()
 	e.isDynamic = e.checkIfDynamic()
 	e.hasInterpreter = e.checkHasInterpreter()
 	e.machineType = e.getMachineType()
@@ -309,58 +329,6 @@ func (e *ELFFile) parseAllELFComponents() error {
 	}
 
 	return nil
-}
-
-func (e *ELFFile) parseSections() []Section {
-	count := e.ELF.GetSectionCount()
-	sections := make([]Section, 0, count)
-
-	fmt.Printf("🔍 Parsing %d sections\n", count)
-
-	for i := uint16(0); i < count; i++ {
-		header, err := e.ELF.GetSectionHeader(i)
-		if err != nil {
-			fmt.Printf("⚠️  Failed to get section header %d: %v\n", i, err)
-			continue
-		}
-		name, err := e.ELF.GetSectionName(i)
-		if err != nil && i != SHT_NULL {
-			fmt.Printf("⚠️  Failed to get section name %d: %v\n", i, err)
-			name = fmt.Sprintf("section_%d", i)
-		}
-		if name == "" && i != SHT_NULL {
-			fmt.Printf("⚠️  Empty section name for section %d\n", i)
-			name = fmt.Sprintf("section_%d", i)
-		}
-
-		flags := header.GetFlags()
-
-		section := Section{
-			Name:      name,
-			Offset:    int64(header.GetFileOffset()),
-			Size:      int64(header.GetSize()),
-			Address:   header.GetVirtualAddress(),
-			Index:     int(i),
-			Type:      uint32(header.GetType()),
-			Flags:     parseFlags(flags),
-			IsAlloc:   flags.Allocated(),
-			Alignment: header.GetAlignment(),
-			CommonSectionInfo: common.CommonSectionInfo{
-				IsExecutable: flags.Executable(),
-				IsReadable:   true,
-				IsWritable:   flags.Writable(),
-			},
-		}
-		if section.Size > 0 && section.Offset >= 0 && section.Offset+section.Size <= int64(len(e.RawData)) {
-			content := e.RawData[section.Offset : section.Offset+section.Size]
-			section.MD5Hash = fmt.Sprintf("%x", md5.Sum(content))
-			section.SHA1Hash = fmt.Sprintf("%x", sha1.Sum(content))
-			section.SHA256Hash = fmt.Sprintf("%x", sha256.Sum256(content))
-			section.Entropy = common.CalculateEntropy(content)
-		}
-		sections = append(sections, section)
-	}
-	return sections
 }
 
 func (e *ELFFile) parseBasicSectionsFromRaw() error {
@@ -407,17 +375,8 @@ func (e *ELFFile) parseBasicSectionsFromRaw() error {
 			stringTableOffset, stringTableSize := e.parseSectionOffsetAndSize(stringHeaderBase)
 			if stringTableOffset+stringTableSize <= uint64(len(e.RawData)) {
 				stringTableData = e.RawData[stringTableOffset : stringTableOffset+stringTableSize]
-				fmt.Printf("🔍 String table found: offset=0x%X, size=%d bytes\n", stringTableOffset, stringTableSize)
-			} else {
-				fmt.Printf("⚠️  String table bounds check failed: offset=0x%X, size=%d, fileSize=%d\n",
-					stringTableOffset, stringTableSize, len(e.RawData))
 			}
-		} else {
-			fmt.Printf("⚠️  String table header bounds check failed: headerBase=0x%X, entrySize=%d, fileSize=%d\n",
-				stringHeaderBase, shEntSize, len(e.RawData))
 		}
-	} else {
-		fmt.Printf("⚠️  Invalid string table index: shstrndx=%d, shNum=%d\n", shstrndx, shNum)
 	}
 
 	sections := make([]Section, 0, shNum)
@@ -427,6 +386,7 @@ func (e *ELFFile) parseBasicSectionsFromRaw() error {
 			break
 		}
 		section := e.parseSectionHeader(base, i, stringTableData)
+		e.populateSectionMetadata(&section)
 		sections = append(sections, section)
 	}
 	e.Sections = sections
@@ -445,27 +405,28 @@ func (e *ELFFile) parseSectionOffsetAndSize(base uint64) (uint64, uint64) {
 }
 
 func (e *ELFFile) parseSectionHeader(base uint64, index uint16, stringTableData []byte) Section {
-	nameOffset := uint64(e.getEndian().Uint32(e.RawData[base+ELF_SH_NAME : base+ELF_SH_NAME+4]))
-	sectionType := e.getEndian().Uint32(e.RawData[base+ELF_SH_TYPE : base+ELF_SH_TYPE+4])
+	endian := e.getEndian()
+	nameOffset := uint64(endian.Uint32(e.RawData[base+ELF_SH_NAME : base+ELF_SH_NAME+4]))
+	sectionType := endian.Uint32(e.RawData[base+ELF_SH_TYPE : base+ELF_SH_TYPE+4])
 
 	var flags, address uint64
 	if e.Is64Bit {
-		flags = e.getEndian().Uint64(e.RawData[base+ELF64_SH_FLAGS : base+ELF64_SH_FLAGS+8])
-		address = e.getEndian().Uint64(e.RawData[base+ELF64_SH_ADDR : base+ELF64_SH_ADDR+8])
+		flags = endian.Uint64(e.RawData[base+ELF64_SH_FLAGS : base+ELF64_SH_FLAGS+8])
+		address = endian.Uint64(e.RawData[base+ELF64_SH_ADDR : base+ELF64_SH_ADDR+8])
 	} else {
-		flags = uint64(e.getEndian().Uint32(e.RawData[base+ELF32_SH_FLAGS : base+ELF32_SH_FLAGS+4]))
-		address = uint64(e.getEndian().Uint32(e.RawData[base+ELF32_SH_ADDR : base+ELF32_SH_ADDR+4]))
+		flags = uint64(endian.Uint32(e.RawData[base+ELF32_SH_FLAGS : base+ELF32_SH_FLAGS+4]))
+		address = uint64(endian.Uint32(e.RawData[base+ELF32_SH_ADDR : base+ELF32_SH_ADDR+4]))
 	}
 	offset, size := e.parseSectionOffsetAndSize(base)
 	var link, info, alignment uint64
 	if e.Is64Bit {
-		link = uint64(e.getEndian().Uint32(e.RawData[base+ELF64_SH_LINK : base+ELF64_SH_LINK+4]))
-		info = uint64(e.getEndian().Uint32(e.RawData[base+ELF64_SH_INFO : base+ELF64_SH_INFO+4]))
-		alignment = e.getEndian().Uint64(e.RawData[base+ELF64_SH_ADDRALIGN : base+ELF64_SH_ADDRALIGN+8])
+		link = uint64(endian.Uint32(e.RawData[base+ELF64_SH_LINK : base+ELF64_SH_LINK+4]))
+		info = uint64(endian.Uint32(e.RawData[base+ELF64_SH_INFO : base+ELF64_SH_INFO+4]))
+		alignment = endian.Uint64(e.RawData[base+ELF64_SH_ADDRALIGN : base+ELF64_SH_ADDRALIGN+8])
 	} else {
-		link = uint64(e.getEndian().Uint32(e.RawData[base+ELF32_SH_LINK : base+ELF32_SH_LINK+4]))
-		info = uint64(e.getEndian().Uint32(e.RawData[base+ELF32_SH_INFO : base+ELF32_SH_INFO+4]))
-		alignment = uint64(e.getEndian().Uint32(e.RawData[base+ELF32_SH_ADDRALIGN : base+ELF32_SH_ADDRALIGN+4]))
+		link = uint64(endian.Uint32(e.RawData[base+ELF32_SH_LINK : base+ELF32_SH_LINK+4]))
+		info = uint64(endian.Uint32(e.RawData[base+ELF32_SH_INFO : base+ELF32_SH_INFO+4]))
+		alignment = uint64(endian.Uint32(e.RawData[base+ELF32_SH_ADDRALIGN : base+ELF32_SH_ADDRALIGN+4]))
 	}
 	name := fmt.Sprintf("raw_section_%d", index)
 	if stringTableData != nil && nameOffset < uint64(len(stringTableData)) {
@@ -476,13 +437,8 @@ func (e *ELFFile) parseSectionHeader(base uint64, index uint16, stringTableData 
 		if end > nameOffset {
 			name = string(stringTableData[nameOffset:end])
 		}
-	} else if stringTableData == nil {
-		fmt.Printf("⚠️  No string table data available for section %d\n", index)
-	} else if nameOffset >= uint64(len(stringTableData)) {
-		fmt.Printf("⚠️  Name offset %d out of bounds for section %d (string table size: %d)\n",
-			nameOffset, index, len(stringTableData))
 	}
-	section := Section{
+	return Section{
 		Name:      name,
 		Offset:    int64(offset),
 		Size:      int64(size),
@@ -490,60 +446,190 @@ func (e *ELFFile) parseSectionHeader(base uint64, index uint16, stringTableData 
 		Index:     int(index),
 		Type:      sectionType,
 		Flags:     flags,
-		IsAlloc:   (flags & SHF_ALLOC) != 0,
 		Alignment: alignment,
 		Link:      uint32(link),
 		Info:      uint32(info),
-		CommonSectionInfo: common.CommonSectionInfo{
-			IsExecutable: (flags & SHF_EXECINSTR) != 0,
-			IsReadable:   true,
-			IsWritable:   (flags & SHF_WRITE) != 0,
-		},
 	}
-
-	if section.Size > 0 && section.Type != SHT_NOBITS && section.Offset >= 0 && section.Offset+section.Size <= int64(len(e.RawData)) {
-		content := e.RawData[section.Offset : section.Offset+section.Size]
-		section.MD5Hash = fmt.Sprintf("%x", md5.Sum(content))
-		section.SHA1Hash = fmt.Sprintf("%x", sha1.Sum(content))
-		section.SHA256Hash = fmt.Sprintf("%x", sha256.Sum256(content))
-		section.Entropy = common.CalculateEntropy(content)
-	}
-
-	return section
 }
 
-func (e *ELFFile) parseSegments() []Segment {
-	count := e.ELF.GetSegmentCount()
-	segments := make([]Segment, 0, count)
+func (e *ELFFile) populateSectionMetadata(section *Section) {
+	flags := section.Flags
+	section.IsAlloc = (flags & SHF_ALLOC) != 0
+	section.CommonSectionInfo.IsExecutable = (flags & SHF_EXECINSTR) != 0
+	section.CommonSectionInfo.IsReadable = true
+	section.CommonSectionInfo.IsWritable = (flags & SHF_WRITE) != 0
 
-	for i := uint16(0); i < count; i++ {
-		phdr, err := e.ELF.GetProgramHeader(i)
-		if err != nil {
+	if section.Size <= 0 || section.Type == SHT_NOBITS || section.Offset < 0 {
+		return
+	}
+
+	start := section.Offset
+	end := start + section.Size
+	if end < start || end > int64(len(e.RawData)) {
+		return
+	}
+
+	startIdx := int(start)
+	endIdx := int(end)
+	if startIdx < 0 || endIdx > len(e.RawData) {
+		return
+	}
+
+	content := e.RawData[startIdx:endIdx]
+	section.MD5Hash = fmt.Sprintf("%x", md5.Sum(content))
+	section.SHA1Hash = fmt.Sprintf("%x", sha1.Sum(content))
+	section.SHA256Hash = fmt.Sprintf("%x", sha256.Sum256(content))
+	section.Entropy = common.CalculateEntropy(content)
+}
+
+func (e *ELFFile) parseSectionsFromELF() ([]Section, error) {
+	if e.ELF == nil {
+		return nil, fmt.Errorf("elf reader is not initialized")
+	}
+
+	sections := make([]Section, 0, len(e.ELF.Sections))
+	for i, sec := range e.ELF.Sections {
+		if sec == nil {
 			continue
 		}
-		flags := phdr.GetFlags()
+		header := sec.SectionHeader
+		name := sec.Name
+		if name == "" && i != int(SHT_NULL) {
+			name = fmt.Sprintf("section_%d", i)
+		}
+
+		flags := parseFlags(header.Flags)
+		section := Section{
+			Name:      name,
+			Offset:    int64(header.Offset),
+			Size:      int64(header.Size),
+			Address:   header.Addr,
+			Index:     i,
+			Type:      uint32(header.Type),
+			Flags:     flags,
+			Alignment: header.Addralign,
+			Link:      header.Link,
+			Info:      header.Info,
+		}
+		e.populateSectionMetadata(&section)
+		sections = append(sections, section)
+	}
+	return sections, nil
+}
+
+func (e *ELFFile) parseSegmentsFromELF() ([]Segment, error) {
+	if e.ELF == nil {
+		return nil, fmt.Errorf("elf reader is not initialized")
+	}
+
+	segments := make([]Segment, 0, len(e.ELF.Progs))
+	for i, prog := range e.ELF.Progs {
+		if prog == nil {
+			continue
+		}
+		if i > int(math.MaxUint16) {
+			return nil, fmt.Errorf("program header index exceeds uint16 range: %d", i)
+		}
+		flags := uint32(prog.Flags)
 		segments = append(segments, Segment{
-			Type:         uint32(phdr.GetType()),
-			Flags:        uint32(flags),
-			Offset:       phdr.GetFileOffset(),
-			FileSize:     phdr.GetFileSize(),
-			MemSize:      phdr.GetMemorySize(),
+			Type:         uint32(prog.Type),
+			Flags:        flags,
+			Offset:       prog.Off,
+			VirtualAddr:  prog.Vaddr,
+			PhysicalAddr: prog.Paddr,
+			FileSize:     prog.Filesz,
+			MemSize:      prog.Memsz,
+			Alignment:    prog.Align,
 			IsExecutable: (flags & common.PERM_EXECUTE) != 0,
 			IsReadable:   (flags & common.PERM_READ) != 0,
 			IsWritable:   (flags & common.PERM_WRITE) != 0,
-			Loadable:     phdr.GetType() == elf_reader.ProgramHeaderType(PT_LOAD),
-			Index:        i,
+			Loadable:     prog.Type == elf.PT_LOAD,
+			Index:        uint16(i),
 		})
 	}
-	return segments
+	return segments, nil
 }
 
 func (e *ELFFile) parseBasicSegmentsFromRaw() error {
 	minHeaderSize := ELF64_EHDR_SIZE
+	if !e.Is64Bit {
+		minHeaderSize = ELF32_EHDR_SIZE
+	}
 	if len(e.RawData) < minHeaderSize {
 		return fmt.Errorf("file too small")
 	}
-	e.Segments = []Segment{}
+
+	var phOffset uint64
+	var phEntrySize uint16
+	var phCount uint16
+
+	if e.Is64Bit {
+		phOffset = e.readValue(ELF64_E_PHOFF, true)
+		phEntrySize = e.readValue16(ELF64_E_PHENTSIZE)
+		phCount = e.readValue16(ELF64_E_PHNUM)
+	} else {
+		phOffset = e.readValue(ELF32_E_PHOFF, false)
+		phEntrySize = e.readValue16(ELF32_E_PHENTSIZE)
+		phCount = e.readValue16(ELF32_E_PHNUM)
+	}
+
+	if phOffset == 0 || phEntrySize == 0 || phCount == 0 {
+		e.Segments = make([]Segment, 0)
+		return nil
+	}
+
+	if phOffset >= uint64(len(e.RawData)) {
+		return fmt.Errorf("program header offset out of range")
+	}
+
+	maxSize := phOffset + uint64(phEntrySize)*uint64(phCount)
+	if maxSize > uint64(len(e.RawData)) {
+		phCount = uint16((uint64(len(e.RawData)) - phOffset) / uint64(phEntrySize))
+	}
+
+	segments := make([]Segment, 0, phCount)
+	endian := e.getEndian()
+
+	for i := uint16(0); i < phCount; i++ {
+		base := phOffset + uint64(i)*uint64(phEntrySize)
+		if base+uint64(phEntrySize) > uint64(len(e.RawData)) {
+			break
+		}
+		start := int(base)
+		seg := Segment{Index: i}
+		if e.Is64Bit {
+			if phEntrySize < 56 {
+				break
+			}
+			seg.Type = endian.Uint32(e.RawData[start : start+4])
+			seg.Flags = endian.Uint32(e.RawData[start+4 : start+8])
+			seg.Offset = endian.Uint64(e.RawData[start+8 : start+16])
+			seg.VirtualAddr = endian.Uint64(e.RawData[start+16 : start+24])
+			seg.PhysicalAddr = endian.Uint64(e.RawData[start+24 : start+32])
+			seg.FileSize = endian.Uint64(e.RawData[start+32 : start+40])
+			seg.MemSize = endian.Uint64(e.RawData[start+40 : start+48])
+			seg.Alignment = endian.Uint64(e.RawData[start+48 : start+56])
+		} else {
+			if phEntrySize < 32 {
+				break
+			}
+			seg.Type = endian.Uint32(e.RawData[start : start+4])
+			seg.Offset = uint64(endian.Uint32(e.RawData[start+4 : start+8]))
+			seg.VirtualAddr = uint64(endian.Uint32(e.RawData[start+8 : start+12]))
+			seg.PhysicalAddr = uint64(endian.Uint32(e.RawData[start+12 : start+16]))
+			seg.FileSize = uint64(endian.Uint32(e.RawData[start+16 : start+20]))
+			seg.MemSize = uint64(endian.Uint32(e.RawData[start+20 : start+24]))
+			seg.Flags = endian.Uint32(e.RawData[start+24 : start+28])
+			seg.Alignment = uint64(endian.Uint32(e.RawData[start+28 : start+32]))
+		}
+		seg.IsExecutable = (seg.Flags & common.PERM_EXECUTE) != 0
+		seg.IsReadable = (seg.Flags & common.PERM_READ) != 0
+		seg.IsWritable = (seg.Flags & common.PERM_WRITE) != 0
+		seg.Loadable = seg.Type == PT_LOAD
+		segments = append(segments, seg)
+	}
+
+	e.Segments = segments
 	return nil
 }
 
@@ -553,7 +639,7 @@ func (e *ELFFile) parseDynamicEntries() []DynamicEntry {
 	if !found {
 		return entries
 	}
-	dynData, err := e.ELF.GetSectionContent(dynIndex)
+	dynData, err := e.getSectionContent(dynIndex)
 	if err != nil {
 		return entries
 	}
@@ -588,4 +674,112 @@ func (e *ELFFile) parseDynamicEntries() []DynamicEntry {
 		})
 	}
 	return entries
+}
+
+func (e *ELFFile) sectionCount() int {
+	if e.ELF != nil {
+		return len(e.ELF.Sections)
+	}
+	return len(e.Sections)
+}
+
+func (e *ELFFile) getSectionName(index uint16) (string, error) {
+	if e.ELF != nil {
+		if int(index) >= len(e.ELF.Sections) {
+			return "", fmt.Errorf("invalid section index: %d", index)
+		}
+		section := e.ELF.Sections[index]
+		if section == nil {
+			return "", fmt.Errorf("section %d is nil", index)
+		}
+		return section.Name, nil
+	}
+	if int(index) >= len(e.Sections) {
+		return "", fmt.Errorf("invalid section index: %d", index)
+	}
+	return e.Sections[index].Name, nil
+}
+
+func (e *ELFFile) getSectionContent(index uint16) ([]byte, error) {
+	if e.ELF != nil {
+		if int(index) >= len(e.ELF.Sections) {
+			return nil, fmt.Errorf("invalid section index: %d", index)
+		}
+		section := e.ELF.Sections[index]
+		if section == nil {
+			return nil, fmt.Errorf("section %d is nil", index)
+		}
+		size := section.Size
+		if size == 0 || section.Type == elf.SHT_NOBITS {
+			return []byte{}, nil
+		}
+		offset := section.Offset
+		end := offset + size
+		if end < offset {
+			return nil, fmt.Errorf("section %d size overflow", index)
+		}
+		if offset > uint64(len(e.RawData)) || end > uint64(len(e.RawData)) {
+			return nil, fmt.Errorf("section %d content out of range", index)
+		}
+		if offset > uint64(math.MaxInt) || end > uint64(math.MaxInt) {
+			return nil, fmt.Errorf("section %d content exceeds supported size", index)
+		}
+		start := int(offset)
+		finish := int(end)
+		data := make([]byte, finish-start)
+		copy(data, e.RawData[start:finish])
+		return data, nil
+	}
+
+	if int(index) >= len(e.Sections) {
+		return nil, fmt.Errorf("invalid section index: %d", index)
+	}
+	section := e.Sections[index]
+	if section.Size <= 0 || section.Type == SHT_NOBITS {
+		return []byte{}, nil
+	}
+	if section.Offset < 0 {
+		return nil, fmt.Errorf("section %d content out of range", index)
+	}
+	offset := uint64(section.Offset)
+	size := uint64(section.Size)
+	end := offset + size
+	if end < offset || end > uint64(len(e.RawData)) {
+		return nil, fmt.Errorf("section %d content out of range", index)
+	}
+	if offset > uint64(math.MaxInt) || end > uint64(math.MaxInt) {
+		return nil, fmt.Errorf("section %d content exceeds supported size", index)
+	}
+	start := int(offset)
+	finish := int(end)
+	data := make([]byte, finish-start)
+	copy(data, e.RawData[start:finish])
+	return data, nil
+}
+
+func (e *ELFFile) getProgramHeader(index uint16) (*elf.Prog, error) {
+	if e.ELF != nil {
+		if int(index) >= len(e.ELF.Progs) {
+			return nil, fmt.Errorf("invalid program header index: %d", index)
+		}
+		prog := e.ELF.Progs[index]
+		if prog == nil {
+			return nil, fmt.Errorf("program header %d is nil", index)
+		}
+		return prog, nil
+	}
+	if int(index) >= len(e.Segments) {
+		return nil, fmt.Errorf("invalid program header index: %d", index)
+	}
+	seg := e.Segments[index]
+	return &elf.Prog{ProgHeader: elf.ProgHeader{
+		Type:   elf.ProgType(seg.Type),
+		Flags:  elf.ProgFlag(seg.Flags),
+		Off:    seg.Offset,
+		Vaddr:  seg.VirtualAddr,
+		Paddr:  seg.PhysicalAddr,
+		Filesz: seg.FileSize,
+		Memsz:  seg.MemSize,
+		Align:  seg.Alignment,
+	}}, nil
 }

@@ -4,7 +4,6 @@ go 1.24.0
 
 require (
 	github.com/ulikunitz/xz v0.5.15
-	github.com/yalue/elf_reader v1.0.1
 	golang.org/x/crypto v0.44.0
 )
 

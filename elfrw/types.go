@@ -1,16 +1,15 @@
 package elfrw
 
 import (
+	"debug/elf"
 	"fmt"
 	"gosstrip/common"
 	"os"
-
-	"github.com/yalue/elf_reader"
 )
 
 type ELFFile struct {
 	File             *os.File
-	ELF              elf_reader.ELFFile
+	ELF              *elf.File
 	Is64Bit          bool
 	FileName         string
 	Sections         []Section
@@ -108,6 +107,7 @@ const (
 	ELF64_E_SHOFF     = 40 // Section header table offset
 	ELF64_E_FLAGS     = 48 // Processor-specific flags
 	ELF64_E_PHENTSIZE = 54 // Program header entry size
+	ELF64_E_PHNUM     = 56 // Number of program headers
 	ELF64_E_SHENTSIZE = 58 // Section header entry size
 	ELF64_E_SHNUM     = 60 // Number of section headers
 	ELF64_E_SHSTRNDX  = 62 // Section header string table index
@@ -117,6 +117,7 @@ const (
 	ELF32_E_SHOFF     = 32 // Section header table offset
 	ELF32_E_FLAGS     = 36 // Processor-specific flags
 	ELF32_E_PHENTSIZE = 42 // Program header entry size
+	ELF32_E_PHNUM     = 44 // Number of program headers
 	ELF32_E_SHENTSIZE = 46 // Section header entry size
 	ELF32_E_SHNUM     = 48 // Number of section headers
 	ELF32_E_SHSTRNDX  = 50 // Section header string table index
