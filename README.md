@@ -2,6 +2,10 @@
 
 A comprehensive binary manipulation toolkit for ELF and PE executables with advanced polymorphic packing capabilities.
 
+## Documentation
+
+Detailed technique guides, including stripping, compaction, and obfuscation walkthroughs, now live under [`/docs`](docs/).
+
 ## Features
 
 ### Core Operations
