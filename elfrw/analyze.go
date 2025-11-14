@@ -1532,18 +1532,18 @@ func (e *ELFFile) parseSymbolEntry(data []byte, stringTable []byte) Symbol {
 }
 
 func (e *ELFFile) findSectionByName(name string) (uint16, bool) {
-	count := e.ELF.GetSectionCount()
-	for i := uint16(0); i < count; i++ {
-		sectionName, err := e.ELF.GetSectionName(i)
+	count := e.sectionCount()
+	for i := 0; i < count; i++ {
+		sectionName, err := e.getSectionName(uint16(i))
 		if err == nil && sectionName == name {
-			return i, true
+			return uint16(i), true
 		}
 	}
 	return 0, false
 }
 
 func (e *ELFFile) readStringFromSection(sectionIndex uint16, offset int) string {
-	sectionData, err := e.ELF.GetSectionContent(sectionIndex)
+	sectionData, err := e.getSectionContent(sectionIndex)
 	if err != nil || offset >= len(sectionData) || offset < 0 {
 		return ""
 	}
@@ -1559,12 +1559,12 @@ func (e *ELFFile) readStringFromSection(sectionIndex uint16, offset int) string 
 func (e *ELFFile) parseSymbolsFromSection(symIndex, strIndex uint16) []Symbol {
 	var symbols []Symbol
 
-	symData, err := e.ELF.GetSectionContent(symIndex)
+	symData, err := e.getSectionContent(symIndex)
 	if err != nil {
 		return symbols
 	}
 
-	strData, err := e.ELF.GetSectionContent(strIndex)
+	strData, err := e.getSectionContent(strIndex)
 	if err != nil {
 		return symbols
 	}

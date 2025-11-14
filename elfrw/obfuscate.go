@@ -213,7 +213,7 @@ func (e *ELFFile) obfuscateBaseAddresses() *common.OperationResult {
 			continue
 		}
 
-		if _, err := e.ELF.GetProgramHeader(segment.Index); err != nil {
+		if _, err := e.getProgramHeader(segment.Index); err != nil {
 			continue
 		}
 
@@ -371,7 +371,7 @@ func (e *ELFFile) obfuscateRuntimeStrings() *common.OperationResult {
 			continue
 		}
 
-		sectionData, err := e.ELF.GetSectionContent(uint16(section.Index))
+		sectionData, err := e.getSectionContent(uint16(section.Index))
 		if err != nil || len(sectionData) < 3 {
 			continue
 		}

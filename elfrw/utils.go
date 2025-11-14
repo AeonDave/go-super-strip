@@ -73,7 +73,7 @@ func formatPresence(present bool) string {
 
 func (e *ELFFile) IsDynamic() bool {
 	// Returns true for ET_DYN (shared objects and PIE executables)
-	return e.ELF != nil && e.ELF.GetFileType() == 3 // ET_DYN
+	return e.ELF != nil && e.ELF.FileHeader.Type == elf.ET_DYN
 }
 
 // IsSharedObject returns true only for shared libraries (.so), not PIE executables.
@@ -82,7 +82,7 @@ func (e *ELFFile) IsSharedObject() bool {
 	if e.ELF == nil {
 		return false
 	}
-	return e.ELF.GetFileType() == 3 && !e.hasInterpreter
+	return e.ELF.FileHeader.Type == elf.ET_DYN && !e.hasInterpreter
 }
 
 func (e *ELFFile) getFileTypeName() string {
@@ -90,19 +90,19 @@ func (e *ELFFile) getFileTypeName() string {
 		return "Unknown"
 	}
 
-	switch e.ELF.GetFileType() {
-	case 0:
+	switch e.ELF.FileHeader.Type {
+	case elf.ET_NONE:
 		return "No file type"
-	case 1:
+	case elf.ET_REL:
 		return "Relocatable"
-	case 2:
+	case elf.ET_EXEC:
 		return "Executable"
-	case 3:
+	case elf.ET_DYN:
 		return "Shared object"
-	case 4:
+	case elf.ET_CORE:
 		return "Core file"
 	default:
-		return fmt.Sprintf("Unknown(0x%x)", e.ELF.GetFileType())
+		return fmt.Sprintf("Unknown(0x%x)", e.ELF.FileHeader.Type)
 	}
 }
 
@@ -110,7 +110,7 @@ func (e *ELFFile) getFileType() uint16 {
 	if e.ELF == nil {
 		return 0
 	}
-	return uint16(e.ELF.GetFileType())
+	return uint16(e.ELF.FileHeader.Type)
 }
 
 func (e *ELFFile) isLittleEndian() bool {

@@ -193,11 +193,11 @@ func (e *ELFFile) truncateFile() error {
 }
 
 func (e *ELFFile) updateProgramHeader(index uint16, newSize uint64) error {
-	header, err := e.ELF.GetProgramHeader(index)
+	header, err := e.getProgramHeader(index)
 	if err != nil {
 		return fmt.Errorf("failed to read program header %d: %w", index, err)
 	}
-	headerOffset, headerSize := header.GetFileOffset(), header.GetFileSize()
+	headerOffset, headerSize := header.Off, header.Filesz
 
 	pos, err := e.getProgramHeaderPosition(index)
 	if err != nil {
