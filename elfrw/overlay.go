@@ -26,8 +26,9 @@ func (e *ELFFile) AddOverlay(dataOrFile string, password string) *common.Operati
 	if len(finalContent) == 0 {
 		return common.NewSkipped("Overlay content is empty")
 	}
-
-	overlayOffset := int64(len(e.RawData))
+	originalSize := int64(len(e.RawData))
+	overlayOffset := originalSize
+	e.truncateSectionsAt(originalSize)
 	e.RawData = append(e.RawData, finalContent...)
 	e.HasOverlay = true
 	e.OverlayOffset = overlayOffset
@@ -38,6 +39,31 @@ func (e *ELFFile) AddOverlay(dataOrFile string, password string) *common.Operati
 		message += " (encrypted)"
 	}
 	return common.NewApplied(message, 1)
+}
+
+func (e *ELFFile) truncateSectionsAt(limit int64) {
+	if limit <= 0 {
+		return
+	}
+	for i := range e.Sections {
+		section := &e.Sections[i]
+		if section.Type == SHT_NOBITS {
+			continue
+		}
+		start := section.Offset
+		if start < 0 {
+			continue
+		}
+		end := start + section.Size
+		if end <= limit {
+			continue
+		}
+		if start >= limit {
+			section.Size = 0
+			continue
+		}
+		section.Size = limit - start
+	}
 }
 
 func (e *ELFFile) ExtractOverlay() ([]byte, error) {

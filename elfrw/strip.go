@@ -60,49 +60,15 @@ func (e *ELFFile) StripByteRegex(pattern *regexp.Regexp, useRandom bool) (int, e
 		return 0, fmt.Errorf("regex pattern cannot be nil")
 	}
 	totalMatches := 0
-	// Helper to process a match range in the raw data
-	process := func(offset uint64, length int) {
-		if err := e.fillRegion(offset, length, useRandom); err == nil {
-			totalMatches++
+	for _, match := range pattern.FindAllIndex(e.RawData, -1) {
+		start, end := match[0], match[1]
+		if start < 0 || end > len(e.RawData) || start >= end {
+			continue
 		}
-	}
-	if len(e.Sections) == 0 {
-		// Apply regex to entire file
-		for _, match := range pattern.FindAllIndex(e.RawData, -1) {
-			start, end := match[0], match[1]
-			if start < 0 || end > len(e.RawData) || start >= end {
-				continue
-			}
-			process(uint64(start), end-start)
+		if err := e.fillRegion(uint64(start), end-start, useRandom); err != nil {
+			return totalMatches, fmt.Errorf("failed to fill pattern at offset %d: %w", start, err)
 		}
-	} else {
-		// Apply regex within each section
-		for _, section := range e.Sections {
-			if section.Offset <= 0 || section.Size <= 0 {
-				continue
-			}
-			base := uint64(section.Offset)
-			rawLen := uint64(len(e.RawData))
-			if base >= rawLen {
-				continue
-			}
-			size := uint64(section.Size)
-			if size > rawLen-base {
-				size = rawLen - base
-			}
-			if size == 0 {
-				continue
-			}
-			// Extract section data slice ensuring bounds within file
-			secData := e.RawData[base : base+size]
-			for _, match := range pattern.FindAllIndex(secData, -1) {
-				start, end := match[0], match[1]
-				if start < 0 || end > len(secData) || start >= end {
-					continue
-				}
-				process(base+uint64(start), end-start)
-			}
-		}
+		totalMatches++
 	}
 	return totalMatches, nil
 }

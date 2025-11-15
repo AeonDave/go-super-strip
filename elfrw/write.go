@@ -250,7 +250,6 @@ func (e *ELFFile) updateSectionHeaders() error {
 	if entrySize == 0 {
 		return nil
 	}
-
 	for i, section := range e.Sections {
 		pos := sectionHeaderOffset + uint64(i)*entrySize
 

@@ -250,7 +250,7 @@ func (p *PEFile) printPEHeaders() {
 	}
 
 	versionInfo := p.VersionInfo
-	if versionInfo != nil && len(versionInfo) > 0 {
+	if len(versionInfo) > 0 {
 		fmt.Printf("\n📄 VERSION DETAILS:\n")
 
 		keyOrder := []string{"FileDescription", "FileVersion", "ProductVersion", "CompanyName", "LegalCopyright", "OriginalFilename", "ProductName", "InternalName"}

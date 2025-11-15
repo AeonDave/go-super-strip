@@ -263,23 +263,51 @@ func buildCSource(t *testing.T, baseName, targetOS string) string {
 	t.Helper()
 	tmpDir := t.TempDir()
 	outputName := strings.TrimSuffix(baseName, filepath.Ext(baseName))
+	output := filepath.Join(tmpDir, outputName)
 	var compiler string
-	var output string
 	if targetOS == "windows" {
 		compiler = "x86_64-w64-mingw32-gcc"
-		output = filepath.Join(tmpDir, outputName+".exe")
+		output += ".exe"
 	} else {
 		compiler = "gcc"
-		output = filepath.Join(tmpDir, outputName)
+	}
+	if targetOS == "linux" && runtime.GOOS == "windows" && hasWSL() {
+		sourceAbs, err := filepath.Abs(filepath.Join("..", "testfiles", baseName))
+		if err != nil {
+			t.Fatalf("failed to resolve source path: %v", err)
+		}
+		outputAbs, err := filepath.Abs(output)
+		if err != nil {
+			t.Fatalf("failed to resolve output path: %v", err)
+		}
+		cmd := fmt.Sprintf("gcc -O2 '%s' -o '%s' -lm", toWSLPath(sourceAbs), toWSLPath(outputAbs))
+		if err := runWSLCommand(cmd); err != nil {
+			t.Fatalf("failed to build c fixture %s via WSL: %v", baseName, err)
+		}
+		if err := os.Chmod(output, 0o700); err != nil {
+			t.Fatalf("failed to make c fixture executable: %v", err)
+		}
+		return output
 	}
 	if _, err := exec.LookPath(compiler); err != nil {
 		t.Fatalf("required compiler %s not found in PATH", compiler)
 	}
-	args := []string{"-O2", "-o", output, filepath.Join("..", "testfiles", baseName)}
+	sourcePath := filepath.Join("testfiles", baseName)
+	args := []string{"-O2", "-o", output, sourcePath}
 	cmd := exec.Command(compiler, args...)
 	cmd.Dir = ".."
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("failed to build c fixture %s for %s: %v\n%s", baseName, targetOS, err, out)
+	}
+	if targetOS != "windows" {
+		if _, err := os.Stat(output); os.IsNotExist(err) {
+			alt := output + ".exe"
+			if _, altErr := os.Stat(alt); altErr == nil {
+				if renameErr := os.Rename(alt, output); renameErr != nil {
+					t.Fatalf("failed to normalize linux fixture name: %v", renameErr)
+				}
+			}
+		}
 	}
 	if targetOS != "windows" {
 		if err := os.Chmod(output, 0o700); err != nil {
@@ -297,13 +325,15 @@ func copyBinary(t *testing.T, src string) string {
 	if err != nil {
 		t.Fatalf("failed to open source binary: %v", err)
 	}
-	defer srcFile.Close()
+	defer func(srcFile *os.File) {
+		_ = srcFile.Close()
+	}(srcFile)
 	dstFile, err := os.Create(dst)
 	if err != nil {
 		t.Fatalf("failed to create destination binary: %v", err)
 	}
 	if _, err := io.Copy(dstFile, srcFile); err != nil {
-		dstFile.Close()
+		_ = dstFile.Close()
 		t.Fatalf("failed to copy binary: %v", err)
 	}
 	if err := dstFile.Close(); err != nil {
@@ -331,16 +361,33 @@ func assertContains(t *testing.T, output, expected string) {
 	}
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 func ensureTool(t *testing.T, tool string) {
 	t.Helper()
 	if _, err := exec.LookPath(tool); err != nil {
 		t.Skipf("required tool %s not available: %v", tool, err)
 	}
+}
+
+func hasWSL() bool {
+	_, err := exec.LookPath("wsl.exe")
+	return err == nil
+}
+
+func toWSLPath(win string) string {
+	if len(win) < 3 || win[1] != ':' {
+		return win
+	}
+	drive := strings.ToLower(string(win[0]))
+	path := strings.ReplaceAll(win[2:], "\\", "/")
+	return "/mnt/" + drive + path
+}
+
+func runWSLCommand(cmd string) error {
+	c := exec.Command("wsl.exe", "bash", "-lc", cmd)
+	c.Env = os.Environ()
+	out, err := c.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("WSL command failed: %v\n%s", err, string(out))
+	}
+	return nil
 }

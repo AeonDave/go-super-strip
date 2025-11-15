@@ -214,25 +214,86 @@ func (e *ELFFile) getMachineType() string {
 }
 
 func (e *ELFFile) checkForOverlay() {
-	var maxEnd int64 = 0
+	fileSize := e.FileSize
+	if fileSize <= 0 {
+		fileSize = int64(len(e.RawData))
+	}
+	clamp := func(value int64) int64 {
+		switch {
+		case value < 0:
+			return 0
+		case value > fileSize:
+			return fileSize
+		default:
+			return value
+		}
+	}
+
+	var maxEnd int64
 	for _, section := range e.Sections {
-		if section.Type != SHT_NOBITS {
-			if end := section.Offset + section.Size; end > maxEnd {
-				maxEnd = end
-			}
+		if section.Type == SHT_NOBITS {
+			continue
+		}
+		end := section.Offset + section.Size
+		end = clamp(end)
+		if end > maxEnd {
+			maxEnd = end
 		}
 	}
 	for _, segment := range e.Segments {
-		if end := int64(segment.Offset + segment.FileSize); end > maxEnd {
+		if segment.FileSize == 0 {
+			continue
+		}
+		end := int64(segment.Offset + segment.FileSize)
+		end = clamp(end)
+		if end > maxEnd {
 			maxEnd = end
 		}
 	}
 
-	if maxEnd > 0 && maxEnd < e.FileSize {
+	// Include the section header table itself to ensure it is treated as part of the base file.
+	shoffPos, shnumPos, _ := e.getHeaderPositions()
+	if shoff, err := e.getSectionHeaderOffset(shoffPos); err == nil {
+		entrySize := uint64(0)
+		if e.Is64Bit {
+			entrySize = uint64(e.readUint16(ELF64_E_SHENTSIZE))
+		} else {
+			entrySize = uint64(e.readUint16(ELF32_E_SHENTSIZE))
+		}
+		count := uint64(e.readUint16(shnumPos))
+		headerEnd := int64(shoff + entrySize*count)
+		headerEnd = clamp(headerEnd)
+		if headerEnd > maxEnd {
+			maxEnd = headerEnd
+		}
+	}
+
+	if shstrEnd := clamp(e.sectionStringTableEnd()); shstrEnd > 0 && shstrEnd < maxEnd {
+		maxEnd = shstrEnd
+	}
+
+	if maxEnd > 0 && maxEnd < fileSize {
 		e.HasOverlay = true
 		e.OverlayOffset = maxEnd
-		e.OverlaySize = e.FileSize - maxEnd
+		e.OverlaySize = fileSize - maxEnd
 	}
+}
+
+func (e *ELFFile) sectionStringTableEnd() int64 {
+	var idx uint16
+	if e.Is64Bit {
+		idx = e.readValue16(ELF64_E_SHSTRNDX)
+	} else {
+		idx = e.readValue16(ELF32_E_SHSTRNDX)
+	}
+	if int(idx) >= len(e.Sections) {
+		return 0
+	}
+	section := e.Sections[idx]
+	if section.Type == SHT_NOBITS || section.Offset < 0 || section.Size <= 0 {
+		return 0
+	}
+	return section.Offset + section.Size
 }
 
 func (e *ELFFile) checkIfDynamic() bool {

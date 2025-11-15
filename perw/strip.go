@@ -57,32 +57,17 @@ func (p *PEFile) StripByPattern(pattern *regexp.Regexp, fillMode FillMode) (int,
 	}
 
 	totalMatches := 0
-	for _, section := range p.Sections {
-		if section.Offset <= 0 || section.Size <= 0 {
+	data := p.RawData
+	for _, match := range pattern.FindAllIndex(data, -1) {
+		start := match[0]
+		end := match[1]
+		if start < 0 || end > len(data) || start >= end {
 			continue
 		}
-
-		sectionStart := section.Offset
-		sectionEnd := section.Offset + section.Size
-
-		// Check bounds
-		if sectionStart >= int64(len(p.RawData)) || sectionEnd > int64(len(p.RawData)) {
-			continue
+		if err := p.fillRegion(int64(start), end-start, fillMode); err != nil {
+			return totalMatches, fmt.Errorf("failed to fill pattern at offset %d: %w", start, err)
 		}
-
-		sectionData := p.RawData[sectionStart:sectionEnd]
-		matches := pattern.FindAllIndex(sectionData, -1)
-
-		for _, match := range matches {
-			start := match[0]
-			end := match[1]
-			if start >= 0 && end <= len(sectionData) {
-				if err := p.fillRegion(section.Offset+int64(start), end-start, fillMode); err != nil {
-					return totalMatches, fmt.Errorf("failed to fill pattern at section %s offset %d: %w", section.Name, start, err)
-				}
-				totalMatches++
-			}
-		}
+		totalMatches++
 	}
 
 	return totalMatches, nil
