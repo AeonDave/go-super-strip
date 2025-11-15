@@ -26,9 +26,12 @@ func (e *ELFFile) AddOverlay(dataOrFile string, password string) *common.Operati
 	if len(finalContent) == 0 {
 		return common.NewSkipped("Overlay content is empty")
 	}
-	originalSize := int64(len(e.RawData))
-	overlayOffset := originalSize
-	e.truncateSectionsAt(originalSize)
+	baseLimit := e.logicalFileEnd()
+	e.truncateSectionsAt(baseLimit)
+	if err := e.rebuildSectionHeaderTable(); err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to rebuild section headers: %v", err))
+	}
+	overlayOffset := int64(len(e.RawData))
 	e.RawData = append(e.RawData, finalContent...)
 	e.HasOverlay = true
 	e.OverlayOffset = overlayOffset

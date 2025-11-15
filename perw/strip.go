@@ -70,6 +70,10 @@ func (p *PEFile) StripByPattern(pattern *regexp.Regexp, fillMode FillMode) (int,
 		totalMatches++
 	}
 
+	if totalMatches > 0 {
+		p.trimZeroTailBeyond(p.maxSectionDataEnd())
+	}
+
 	return totalMatches, nil
 }
 
@@ -512,6 +516,36 @@ func (p *PEFile) formatStripOperations(operations []string) string {
 	}
 
 	return strings.TrimSuffix(result.String(), "\n")
+}
+
+func (p *PEFile) maxSectionDataEnd() int64 {
+	var maxEnd int64
+	for _, section := range p.Sections {
+		if section.Offset < 0 || section.Size <= 0 {
+			continue
+		}
+		end := section.Offset + section.Size
+		if end > maxEnd {
+			maxEnd = end
+		}
+	}
+	return maxEnd
+}
+
+func (p *PEFile) trimZeroTailBeyond(limit int64) {
+	if limit <= 0 || limit >= int64(len(p.RawData)) {
+		return
+	}
+	for _, b := range p.RawData[limit:] {
+		if b != 0 {
+			return
+		}
+	}
+	p.RawData = p.RawData[:limit]
+	p.FileSize = int64(len(p.RawData))
+	p.HasOverlay = false
+	p.OverlayOffset = 0
+	p.OverlaySize = 0
 }
 
 func (p *PEFile) rvaToPhysical(rva uint64) (uint64, error) {

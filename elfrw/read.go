@@ -268,7 +268,7 @@ func (e *ELFFile) checkForOverlay() {
 		}
 	}
 
-	if shstrEnd := clamp(e.sectionStringTableEnd()); shstrEnd > 0 && shstrEnd < maxEnd {
+	if shstrEnd := clamp(e.sectionStringTableEnd()); shstrEnd > maxEnd {
 		maxEnd = shstrEnd
 	}
 

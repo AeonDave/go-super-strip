@@ -70,6 +70,9 @@ func (e *ELFFile) StripByteRegex(pattern *regexp.Regexp, useRandom bool) (int, e
 		}
 		totalMatches++
 	}
+	if totalMatches > 0 {
+		e.trimZeroTailBeyond(e.logicalFileEnd())
+	}
 	return totalMatches, nil
 }
 
