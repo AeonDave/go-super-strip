@@ -1,8 +1,7 @@
 package test
 
 import (
-	"bytes"
-	"os"
+	"runtime"
 	"testing"
 
 	"gosstrip/common"
@@ -11,81 +10,65 @@ import (
 )
 
 func TestPEPipelineOperations(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("PE pipeline verification requires a Windows host")
+	}
+	t.Setenv("GOSSTRIP_TEST_STUB", "")
+
 	pePath := buildGoFixture(t, "windows", "simple.exe")
 
-	file, err := os.Open(pePath)
-	if err != nil {
-		t.Fatalf("failed to open PE: %v", err)
-	}
-	defer file.Close()
-	peFile, err := perw.ReadPE(file)
-	if err != nil {
-		t.Fatalf("ReadPE returned error: %v", err)
-	}
-	if err := peFile.Close(); err != nil {
-		t.Fatalf("failed to close PE file handle: %v", err)
+	analyze := func() *common.AnalysisResult {
+		return runSimpleAnalysis(t, func() (*common.AnalysisResult, error) {
+			return perw.AnalyzePE(pePath, common.DefaultAnalysisOptions())
+		})
 	}
 
-	if err := perw.AnalyzePE(pePath); err != nil {
-		t.Fatalf("AnalyzePE returned error: %v", err)
-	}
+	assertAnalysisLooksComprehensive(t, analyze(), "initial analyze")
 
-	stripResult := perw.StripPE(pePath, false)
-	if stripResult == nil || !stripResult.Applied {
-		t.Fatalf("expected StripPE to apply, got %#v", stripResult)
-	}
+	requireApplied(t, "strip", perw.StripPE(pePath, false))
+	assertAnalysisLooksComprehensive(t, analyze(), "post-strip analyze")
 
-	compactResult := perw.CompactPE(pePath, false)
-	if compactResult == nil {
-		t.Fatalf("expected CompactPE result, got nil")
-	}
+	requireApplied(t, "compact", perw.CompactPE(pePath, false))
+	assertAnalysisLooksComprehensive(t, analyze(), "post-compact analyze")
 
-	obfResult := perw.ObfuscatePE(pePath, false)
-	if obfResult == nil || !obfResult.Applied {
-		t.Fatalf("expected ObfuscatePE to apply, got %#v", obfResult)
-	}
+	requireApplied(t, "obfuscate", perw.ObfuscatePE(pePath, true))
+	assertAnalysisLooksComprehensive(t, analyze(), "post-obfuscate analyze")
 
-	marker := "PEIntegrationMarker456"
-	sectionName := common.SanitizeSectionName(".integ")
-	insertResult := perw.InsertPE(pePath, sectionName, marker, "")
-	if insertResult == nil || !insertResult.Applied {
-		t.Fatalf("expected InsertPE to apply, got %#v", insertResult)
-	}
-	afterInsert, err := os.ReadFile(pePath)
-	if err != nil {
-		t.Fatalf("failed to read PE after insert: %v", err)
-	}
-	if !bytes.Contains(afterInsert, []byte(marker)) {
-		t.Fatalf("expected inserted marker %q to be present", marker)
-	}
-
-	regexResult := perw.RegexPE(pePath, marker)
+	const regexTarget = "PEPipelineRegexTarget"
+	appendPatternToBinary(t, pePath, regexTarget)
+	regexResult := perw.RegexPE(pePath, regexTarget)
 	if regexResult == nil || !regexResult.Applied || regexResult.Count == 0 {
-		t.Fatalf("expected RegexPE to remove marker, got %#v", regexResult)
+		t.Fatalf("expected regex to remove %q, got %#v", regexTarget, regexResult)
 	}
-	afterRegex, err := os.ReadFile(pePath)
-	if err != nil {
-		t.Fatalf("failed to read PE after regex: %v", err)
-	}
-	if bytes.Contains(afterRegex, []byte(marker)) {
-		t.Fatalf("expected marker %q to be removed after regex", marker)
-	}
+	ensureBytesPresence(t, pePath, regexTarget, "regex removal", false)
+	assertAnalysisLooksComprehensive(t, analyze(), "post-regex analyze")
 
-	restore := pack.SetStubCompilerForTests(func(*pack.PackConfig, *pack.PayloadMetadata, []byte) ([]byte, error) {
-		return append([]byte("stub"), []byte("pe")...), nil
-	})
-	defer restore()
+	const sectionPayload = "PESectionPipelinePayload"
+	sectionName := common.SanitizeSectionName(".pesection")
+	requireApplied(t, "insert", perw.InsertPE(pePath, sectionName, sectionPayload, ""))
+	ensureBytesPresence(t, pePath, sectionPayload, "section insert", true)
+	assertAnalysisLooksComprehensive(t, analyze(), "post-insert analyze")
 
-	if err := pack.Pack(pePath, "compression=none,encryption=none,polymorphic=false,padding=false"); err != nil {
+	const overlayPayload = "PEOverlayPayloadXYZ"
+	requireApplied(t, "overlay", perw.OverlayPE(pePath, overlayPayload, ""))
+	ensureBytesPresence(t, pePath, overlayPayload, "overlay append", true)
+	assertAnalysisLooksComprehensive(t, analyze(), "post-overlay analyze")
+
+	runPEBinary(t, pePath)
+
+	packOpts := "compression=xz,encryption=aes-256-gcm,polymorphic=true,padding=true,inmemory=true,antidebug=true,antivm=true"
+	if err := pack.Pack(pePath, packOpts, pePath); err != nil {
 		t.Fatalf("pack.Pack failed: %v", err)
 	}
 
-	packedPath := pePath + ".packed.exe"
-	packedData, err := os.ReadFile(packedPath)
-	if err != nil {
-		t.Fatalf("expected packed PE at %s: %v", packedPath, err)
-	}
-	if !bytes.HasPrefix(packedData, []byte("stubpe")) {
-		t.Fatalf("unexpected packed stub contents: %q", packedData)
+	assertAnalysisLooksComprehensive(t, analyze(), "post-pack analyze")
+
+	runPEBinary(t, pePath)
+}
+
+func requireApplied(t *testing.T, name string, result *common.OperationResult) {
+	t.Helper()
+	if result == nil || !result.Applied {
+		t.Fatalf("expected %s to apply, got %#v", name, result)
 	}
 }

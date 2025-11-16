@@ -69,7 +69,7 @@ func PackPE(inputPath string, config *PackConfig) (*PackResult, error) {
 	// 6. Compila stub con metadata embedded
 	// Assicura che il compilatore selezioni correttamente il target Windows impostando OutputPath di default prima della compilazione
 	if config.OutputPath == "" {
-		config.OutputPath = inputPath + ".packed.exe"
+		config.OutputPath = inputPath
 	}
 	stubBinary, err := compileStubFunc(config, metadata, encrypted)
 	if err != nil {
@@ -116,7 +116,7 @@ func PackPE(inputPath string, config *PackConfig) (*PackResult, error) {
 	// 9. Scrivi output
 	outputPath := config.OutputPath
 	if outputPath == "" {
-		outputPath = inputPath + ".packed.exe"
+		outputPath = inputPath
 	}
 
 	if err := os.WriteFile(outputPath, packedData, 0755); err != nil {

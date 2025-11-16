@@ -31,15 +31,32 @@ func processPE(filePath string, flags int, operation func(*PEFile) *common.Opera
 	return result
 }
 
-func AnalyzePE(filePath string) error {
+func AnalyzePE(filePath string, opts common.AnalysisOptions) (*common.AnalysisResult, error) {
 	peFile, err := readPe(filePath, os.O_RDONLY)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() {
 		_ = peFile.Close()
 	}()
-	return peFile.Analyze()
+	peFile.calculateSectionEntropy()
+	peFile.IsPacked = peFile.detectPacking()
+	switch opts.Mode {
+	case common.AnalysisModeDeep:
+		text, err := common.CaptureOutput(func() error {
+			return peFile.printDeepReport()
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &common.AnalysisResult{
+			FileType: "PE",
+			Mode:     common.AnalysisModeDeep,
+			Text:     text,
+		}, nil
+	default:
+		return peFile.buildSimpleReport(), nil
+	}
 }
 
 func StripPE(filePath string, force bool) *common.OperationResult {

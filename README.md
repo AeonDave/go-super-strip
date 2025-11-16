@@ -38,35 +38,36 @@ go build -o gosstrip
 ### Command Syntax
 
 ```
-gosstrip [OPTIONS] <file>
+gosstrip -a[=format=json,mode=deep] <input> [output]
+
+gosstrip [ -s[=key=value,...] -c[=key=value,...] -o[=key=value,...] -r=pattern1[,patternN] -i=... -l=... -p=key=value,... ] <input> [output]
 ```
 
-Note: Operations are executed in strict order: strip -> compact -> obfuscate -> insert/overlay -> regex -> pack (if enabled)
+- `-a` (analyze) runs alone and supports optional output redirection.
+- Pipeline operations always execute in canonical order: strip → compact → obfuscate → regex → insert → overlay → pack. CLI flags can appear only once (regex may repeat) and must respect this order.
+- Provide `<output>` to write all edits to a copy; omit it to mutate the input file in place (packing follows the same rule).
 
-### Options
+### Feature Flags & Options
 
-| Option         | Long Form           | Description                                                               |
-|----------------|---------------------|---------------------------------------------------------------------------|
-| `-a`           | `--analyze`         | Analyze file structure only (standalone)                                  |
-| `-s`           | `--strip`           | Strip debug symbols and metadata (use `-s=force=true` for risky ops)      |
-| `-c`           | `--compact`         | Reduce file size by removing sections (use `-c=force=true` for risky ops) |
-| `-o`           | `--obfuscate`       | Apply obfuscation techniques (note: force currently has no extra effect)  |
-| `-r <pattern>` | `--regex <pattern>` | Strip bytes matching regex pattern                                        |
-| `-i <spec>`    | `--insert <spec>`   | Insert section (format: `name:data_or_file[:password]`)                   |
-| `-l <spec>`    | `--overlay <spec>`  | Add overlay (format: `data_or_file[:password]`)                           |
-| `-p [opts]`    | `--pack [opts]`     | Pack with polymorphic stub (format: `opt1=val1,opt2=val2`)                |
-| `-v`           |                     | Enable verbose output                                                     |
-| `-h`           |                     | Show help                                                                 |
+| Flag / Feature             | Purpose                                                                                                      | Accepted options / notes                                                                                                                                         |
+|----------------------------|--------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `-a[=format=json,mode=deep]` | Analyze PE/ELF structures and emit either text (default) or JSON. With `<output>` the report is written to disk. | `format` = `text` or `json`. `mode` = `simple` (concise summaries) or `deep` (legacy verbose analyzer). Analysis cannot be combined with other features.        |
+| `-s[=force=true]`          | Strip debug symbols, Rich headers, DWARF data, etc.                                                          | `force` (bool, default `false`) permits aggressive removals.                                                                                                     |
+| `-c[=force=true]`          | Compact binaries by trimming unused regions and recalculating headers.                                       | `force` (bool) allows destructive trim such as removing ELF section tables.                                                                                      |
+| `-o[=force=true]`          | Rename sections/symbols and randomize metadata.                                                              | `force` (bool) currently behaves like a safety toggle for future advanced modes.                                                                                 |
+| `-r=pattern1[,patternN]`   | Remove bytes that match one or more regex patterns.                                                          | Comma-separated list; the flag may be repeated to append additional patterns.                                                                                    |
+| `-i=name=...,file|data=...`| Insert a new (optionally encrypted) section.                                                                 | `name` (required, ≤8 chars in PE). Supply exactly one of `file` or `data`, plus optional `password` (ASCII or hex).                                              |
+| `-l=file|data=...`         | Append payload data as an overlay past the end of the file.                                                  | Provide `file` or `data`, not both. Optional `password` encrypts the overlay.                                                                                    |
+| `-p=key=value,...`         | Run the polymorphic packer over the working file.                                                            | Options share the grammar in the table below. When omitted, defaults to `compression=lzma,level=9,encryption=chacha20`.                                          |
+| `-h`, `--help`, `help`     | Show CLI usage.                                                                                              | Works anywhere in the command line.                                                                                                                              |
 
 ### Pack Options
 
-When using `-p` or `--pack`, you can specify options in `key=value` format separated by commas:
+When using `-p`, specify options in `key=value` format separated by commas. Quote the value on PowerShell/CMD to avoid comma parsing issues. If `-p` is provided without options, defaults are applied automatically.
 
-Note for Windows/PowerShell users:
-- Always quote the -p value to avoid shell parsing issues with commas.
-  Example: gosstrip.exe -p="compression=lzma,level=9,encryption=chacha20" file.exe
-- Alternatively, use the stop-parsing operator: gosstrip.exe --% -p=compression=lzma,level=9,encryption=chacha20 file.exe
-- If you pass -p/--pack without options, the CLI applies defaults: compression=lzma, level=9, encryption=chacha20 (polymorphic enabled).
+- Example (PowerShell): `gosstrip.exe -p="compression=lzma,level=9,encryption=chacha20" file.exe`
+- Stop-parsing alternative: `gosstrip.exe --% -p=compression=lzma,level=9,encryption=chacha20 file.exe`
+- Defaults applied when omitting the option string: `compression=lzma,level=9,encryption=chacha20`
 
 | Option        | Values                                   | Default       | Description                                   |
 |---------------|------------------------------------------|---------------|-----------------------------------------------|
@@ -77,8 +78,8 @@ Note for Windows/PowerShell users:
 | `junkdensity` | `0.0-1.0`                                | `0.2`         | Density of garbage code injection             |
 | `padding`     | `true`, `false`                          | `true`        | Add random padding to stub                    |
 | `inmemory`    | `true`, `false`                          | `false`       | Execute payload in-memory without disk writes |
-| `antidebug`   | `true`, `false`                          | `false`       | Add anti-debugging checks [Not Implemented]   |
-| `antivm`      | `true`, `false`                          | `false`       | Add anti-VM detection [Not Implemented]       |
+| `antidebug`   | `true`, `false`                          | `false`       | Add anti-debugging checks (placeholder)       |
+| `antivm`      | `true`, `false`                          | `false`       | Add anti-VM detection (placeholder)           |
 | `verbose`     | `true`, `false`                          | `false`       | Detailed packing output                       |
 
 ## Examples
@@ -89,26 +90,22 @@ Note for Windows/PowerShell users:
 # Analyze ELF file structure
 gosstrip -a /bin/ls
 
-# Verbose analysis
-gosstrip -a -v /bin/bash
+# Request the legacy deep analyzer and save as JSON
+gosstrip -a=format=json,mode=deep /bin/bash bash-analysis.json
 ```
 
-Note: `-a` (analysis) must be used alone and cannot be combined with other operations in the same run.
+Notes:
+- `-a` must be used alone and cannot be combined with other operations in the same run.
+- `mode=simple` (default) prints a concise, emoji-free report suitable for logs; `mode=deep` renders the original detailed tables and also powers JSON exports if legacy data is needed.
 
 ### Stripping & Compaction
 
 ```bash
-# Strip debug symbols
+# Strip debug symbols in place
 gosstrip -s binary
 
-# Compact file (remove non-essential sections)
-gosstrip -c binary
-
-# Strip + compact + obfuscate (full pipeline)
-gosstrip -s -c -o binary
-
-# Aggressive stripping with risky operations
-gosstrip -s=force=true binary
+# Run strip + compact + obfuscation and write to a copy
+gosstrip -s=force=true -c -o binary binary.hardened
 ```
 
 Notes:
@@ -118,81 +115,71 @@ Notes:
 ### Pattern Removal
 
 ```bash
-# Strip bytes matching pattern
-gosstrip -r 'UPX!' binary
+# Remove multiple markers in one pass
+gosstrip -r=UPX!,UPY?,v2_signature binary
 
-# Combine strip with regex
-gosstrip -s -r 'signature_pattern' binary
+# Combine strip with regex (executed automatically before later operations)
+gosstrip -s -r='secret_pattern' binary
 ```
 
 ### Section Insertion
 
 ```bash
 # Insert section from file
-gosstrip -i '.custom:config.bin' binary
+gosstrip -i=name=.custom,file=config.bin binary
 
-# Insert section from string
-gosstrip -i '.data:HelloWorld' binary
+# Insert section from string literal
+gosstrip -i=name=.data,data=HelloWorld binary
 
-# Insert encrypted section
-gosstrip -i '.secret:sensitive.dat:password123' binary
+# Insert encrypted section (password can be ASCII or hex)
+gosstrip -i=name=.secret,file=sensitive.dat,password=password123 binary
 
 # PE section names are limited to 8 characters
-gosstrip -i '.config:data.bin' pe_binary.exe
+gosstrip -i=name=.config,file=data.bin pe_binary.exe
 ```
 
 ### Overlay Operations
 
 ```bash
 # Append file as overlay
-gosstrip -l 'config.json' binary
+gosstrip -l=file=config.json binary
 
 # Append string as overlay
-gosstrip -l 'metadata_string' binary
+gosstrip -l=data=metadata_string binary
 
 # Append encrypted overlay
-gosstrip -l 'sensitive.dat:encryption_key' binary
+gosstrip -l=file=sensitive.dat,password=encryption_key binary
 ```
 
 ### Polymorphic Packing
 
 ```bash
-# Basic packing (default polymorphic)
-gosstrip -p binary
+# Basic packing (default options)
+gosstrip -p binary.exe
 
-# Pack with specific options
-gosstrip -p=compression=xz,encryption=aes-256-gcm,level=9 binary
+# Pack with explicit options and write to a new file
+gosstrip -p=compression=xz,encryption=aes-256-gcm,level=9 binary.exe binary-packed.exe
 
-# Pack with maximum polymorphism
-gosstrip -p=polymorphic=true,junkdensity=0.5,padding=true binary
+# Maximum polymorphism knobs
+gosstrip -p=polymorphic=true,junkdensity=0.5,padding=true binary.exe
 
-# Pack with in-memory execution (no disk traces)
-gosstrip -p=inmemory=true,encryption=chacha20 binary
+# Favor in-memory execution
+gosstrip -p=inmemory=true,encryption=chacha20 binary.exe
 
-# Pack with anti-analysis features
-gosstrip -p=antidebug=true,antivm=true binary
+# Enable (placeholder) anti-analysis switches
+gosstrip -p=antidebug=true,antivm=true binary.exe
 
-# Full stealth mode (polymorphic + in-memory + anti-analysis)
-gosstrip -p=polymorphic=true,inmemory=true,antidebug=true,antivm=true binary
-
-# Generate multiple unique variants
-for i in {1..10}; do
-    gosstrip -p=polymorphic=true binary
-    sha256sum binary.packed
-    ./binary.packed  # All execute identically
+# Maintain both the original and multiple packed variants
+for i in {1..4}; do
+    gosstrip -p=polymorphic=true sample.bin "variants/sample-$i.bin"
 done
 ```
 
 ### Combined Operations
 
 ```bash
-# Strip, compact, obfuscate, then pack
-gosstrip -s -c -o binary
-gosstrip -p binary.stripped
-
-# Full pipeline with custom options
-gosstrip -s=force=true binary
-gosstrip -p=compression=lzma,level=9,encryption=chacha20 binary.stripped
+# Full pipeline with custom regex, section insert, overlay, and packing
+gosstrip -s -c -o -r='UPX!','\\.rsrc' -i=name=.intel,file=payload.bin -l=file=overlay.bin -p=compression=lzma,inmemory=true input.exe output.exe
 ```
 
 ## Polymorphic Techniques

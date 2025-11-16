@@ -11,7 +11,7 @@ import (
 
 func TestAnalyzePE_Succeeds(t *testing.T) {
 	pePath := copyPEFixture(t, "simple.exe")
-	if err := AnalyzePE(pePath); err != nil {
+	if _, err := AnalyzePE(pePath, common.DefaultAnalysisOptions()); err != nil {
 		t.Fatalf("AnalyzePE returned error: %v", err)
 	}
 }

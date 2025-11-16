@@ -45,8 +45,8 @@ func TestCLIOptionsOnCompiledFixtures(t *testing.T) {
 				if fixture.IsPE {
 					expectedType = "PE"
 				}
-				assertContains(t, output, "=== File Analysis ===")
-				assertContains(t, output, "File type: "+expectedType)
+				assertContains(t, output, expectedType+" ANALYSIS (SIMPLE mode)")
+				assertContains(t, output, "Binary Summary")
 			},
 		},
 		{
@@ -72,7 +72,7 @@ func TestCLIOptionsOnCompiledFixtures(t *testing.T) {
 		},
 		{
 			Name: "insert",
-			Args: []string{"-i=.agg:.section_marker"},
+			Args: []string{"-i=name=.agg,data=.section_marker"},
 			Verify: func(t *testing.T, _ compiledFixture, binaryPath string, output string) {
 				assertContains(t, output, "Completed operations: insert")
 				data := readFile(t, binaryPath)
@@ -83,7 +83,7 @@ func TestCLIOptionsOnCompiledFixtures(t *testing.T) {
 		},
 		{
 			Name: "overlay",
-			Args: []string{"-l=OVERLAY_PAYLOAD"},
+			Args: []string{"-l=data=OVERLAY_PAYLOAD"},
 			Verify: func(t *testing.T, _ compiledFixture, binaryPath string, output string) {
 				assertContains(t, output, "Completed operations: overlay")
 				data := readFile(t, binaryPath)
@@ -114,11 +114,7 @@ func TestCLIOptionsOnCompiledFixtures(t *testing.T) {
 			Args: []string{"-p=compression=none,encryption=none,polymorphic=false,padding=false"},
 			Verify: func(t *testing.T, fixture compiledFixture, binaryPath string, output string) {
 				assertContains(t, output, "=== Pack Operations ===")
-				packedPath := binaryPath + ".packed"
-				if fixture.IsPE {
-					packedPath += ".exe"
-				}
-				data := readFile(t, packedPath)
+				data := readFile(t, binaryPath)
 				if !bytes.HasPrefix(data, []byte(testStubPrefix)) {
 					t.Fatalf("expected packed stub to start with %q, got %q", testStubPrefix, data[:min(16, len(data))])
 				}
@@ -130,15 +126,24 @@ func TestCLIOptionsOnCompiledFixtures(t *testing.T) {
 				"-s",
 				"-c",
 				"-o",
-				"-i=.combo:SECTION_COMBO",
-				"-l=OVERLAY_COMBO",
-				"-r=SECTION_COMBO",
+				"-r=PIPELINE_REGEX_TARGET",
+				"-i=name=.combo,data=SECTION_COMBO",
+				"-l=data=OVERLAY_COMBO",
+			},
+			Prepare: func(t *testing.T, _ compiledFixture, binaryPath string) {
+				data := append(readFile(t, binaryPath), []byte("PIPELINE_REGEX_TARGET")...)
+				if err := os.WriteFile(binaryPath, data, 0o600); err != nil {
+					t.Fatalf("failed to append pipeline regex target: %v", err)
+				}
 			},
 			Verify: func(t *testing.T, _ compiledFixture, binaryPath string, output string) {
-				assertContains(t, output, "Completed operations: strip, compact, obfuscate, insert, overlay, regex")
+				assertContains(t, output, "Completed operations: strip, compact, obfuscate, regex, insert, overlay")
 				data := readFile(t, binaryPath)
-				if bytes.Contains(data, []byte("SECTION_COMBO")) {
-					t.Fatalf("expected SECTION_COMBO to be removed after regex")
+				if bytes.Contains(data, []byte("PIPELINE_REGEX_TARGET")) {
+					t.Fatalf("expected PIPELINE_REGEX_TARGET to be removed after regex")
+				}
+				if !bytes.Contains(data, []byte("SECTION_COMBO")) {
+					t.Fatalf("expected inserted section data to be present after pipeline")
 				}
 				if !bytes.Contains(data, []byte("OVERLAY_COMBO")) {
 					t.Fatalf("expected overlay data to be present after pipeline")

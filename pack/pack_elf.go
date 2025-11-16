@@ -112,7 +112,7 @@ func PackELF(inputPath string, config *PackConfig) (*PackResult, error) {
 	// 9. Scrivi output
 	outputPath := config.OutputPath
 	if outputPath == "" {
-		outputPath = inputPath + ".packed"
+		outputPath = inputPath
 	}
 
 	if err := os.WriteFile(outputPath, packedData, 0755); err != nil {

@@ -59,7 +59,102 @@ func (p *PEFile) printSectionAnomalies() {
 	fmt.Println()
 }
 
-func (p *PEFile) Analyze() error {
+func (p *PEFile) buildSimpleReport() *common.AnalysisResult {
+	report := &common.AnalysisResult{
+		FileType: "PE",
+		Mode:     common.AnalysisModeSimple,
+	}
+
+	md5Hash := md5.Sum(p.RawData)
+	sha256Hash := sha256.Sum256(p.RawData)
+	summaryLines := []string{
+		fmt.Sprintf("File: %s", p.FileName),
+		fmt.Sprintf("Size: %s", common.FormatBytes(p.FileSize)),
+		fmt.Sprintf("MD5: %x", md5Hash),
+		fmt.Sprintf("SHA256: %x", sha256Hash),
+		fmt.Sprintf("Architecture: %s", p.Machine),
+		fmt.Sprintf("Entry Point: 0x%X", p.entryPoint),
+		fmt.Sprintf("Image Base: 0x%X", p.imageBase),
+	}
+	if p.TimeDateStamp != "" {
+		summaryLines = append(summaryLines, fmt.Sprintf("Timestamp: %s", p.TimeDateStamp))
+	}
+	if p.HasOverlay {
+		summaryLines = append(summaryLines, fmt.Sprintf("Overlay: present (%s starting at 0x%X)", common.FormatBytes(p.OverlaySize), p.OverlayOffset))
+	} else {
+		summaryLines = append(summaryLines, "Overlay: not detected")
+	}
+	report.AddBlock("Binary Summary", summaryLines...)
+
+	totalSections := len(p.Sections)
+	execSections := 0
+	writableSections := 0
+	totalSectionSize := int64(0)
+	for _, section := range p.Sections {
+		if section.IsExecutable {
+			execSections++
+		}
+		if section.IsWritable {
+			writableSections++
+		}
+		totalSectionSize += section.Size
+	}
+	spaceLines := []string{
+		fmt.Sprintf("Sections: %d (exec: %d, writable: %d)", totalSections, execSections, writableSections),
+		fmt.Sprintf("Total Section Footprint: %s", common.FormatBytes(totalSectionSize)),
+		fmt.Sprintf("Size of Image: %s", common.FormatBytes(int64(p.sizeOfImage))),
+		fmt.Sprintf("Headers Size: %s", common.FormatBytes(int64(p.sizeOfHeaders))),
+	}
+	if p.HasOverlay {
+		spaceLines = append(spaceLines, fmt.Sprintf("Overlay Size: %s", common.FormatBytes(p.OverlaySize)))
+	}
+	spaceLines = append(spaceLines, fmt.Sprintf("Packed Status: %t", p.IsPacked))
+	report.AddBlock("Section Overview", spaceLines...)
+
+	securityLines := []string{
+		fmt.Sprintf("ASLR: %s", boolToStatus(p.dllCharacteristics&0x0040 != 0)),
+		fmt.Sprintf("DEP/NX: %s", boolToStatus(p.dllCharacteristics&0x0100 != 0)),
+		fmt.Sprintf("CFG: %s", boolToStatus(p.dllCharacteristics&0x4000 != 0)),
+	}
+	report.AddBlock("Security Features", securityLines...)
+
+	importStats := []string{
+		fmt.Sprintf("Imported DLLs: %d", len(p.Imports)),
+		fmt.Sprintf("Imported Functions: %d", countImportedFunctions(p.Imports)),
+		fmt.Sprintf("Exported Functions: %d", len(p.Exports)),
+	}
+	report.AddBlock("Linkage Summary", importStats...)
+
+	sections := make([]SectionInfo, len(p.Sections))
+	for i, s := range p.Sections {
+		sections[i] = SectionInfo{
+			Name:         s.Name,
+			FileOffset:   int64(s.FileOffset),
+			Size:         s.Size,
+			IsExecutable: s.IsExecutable,
+			IsWritable:   s.IsWritable,
+		}
+	}
+	report.MergeWarnings(analyzeSectionAnomalies(sections))
+	return report
+}
+
+func boolToStatus(val bool) string {
+	if val {
+		return "enabled"
+	}
+	return "disabled"
+}
+
+func countImportedFunctions(imports []ImportInfo) int {
+	total := 0
+	for _, imp := range imports {
+		total += len(imp.Functions)
+	}
+	return total
+}
+
+func (p *PEFile) printDeepReport() error {
 	p.calculateSectionEntropy()
 	p.IsPacked = p.detectPacking()
 	p.printBasicInfo()

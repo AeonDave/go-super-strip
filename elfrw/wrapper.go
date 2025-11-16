@@ -31,16 +31,33 @@ func processELF(file string, flags int, operation func(*ELFFile) *common.Operati
 	return result
 }
 
-func AnalyzeELF(file string) error {
+func AnalyzeELF(file string, opts common.AnalysisOptions) (*common.AnalysisResult, error) {
 	elfFile, err := readElf(file, os.O_RDONLY)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() {
 		_ = elfFile.Close()
 	}()
 
-	return elfFile.Analyze()
+	elfFile.calculateSectionEntropy()
+	elfFile.IsPacked = elfFile.detectPacking()
+	switch opts.Mode {
+	case common.AnalysisModeDeep:
+		text, err := common.CaptureOutput(func() error {
+			return elfFile.printDeepReport()
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &common.AnalysisResult{
+			FileType: "ELF",
+			Mode:     common.AnalysisModeDeep,
+			Text:     text,
+		}, nil
+	default:
+		return elfFile.buildSimpleReport(), nil
+	}
 }
 
 func StripELF(filePath string, force bool) *common.OperationResult {

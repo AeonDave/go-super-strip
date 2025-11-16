@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-func (e *ELFFile) Analyze() error {
+func (e *ELFFile) printDeepReport() error {
 	e.calculateSectionEntropy()
 	e.IsPacked = e.detectPacking()
 	e.printBasicInfo()
@@ -802,6 +802,86 @@ func (e *ELFFile) printSectionAnomalies() {
 	}
 
 	fmt.Println()
+}
+
+func (e *ELFFile) buildSimpleReport() *common.AnalysisResult {
+	report := &common.AnalysisResult{
+		FileType: "ELF",
+		Mode:     common.AnalysisModeSimple,
+	}
+	md5Hash := md5.Sum(e.RawData)
+	shaHash := sha256.Sum256(e.RawData)
+	summary := []string{
+		fmt.Sprintf("File: %s", e.FileName),
+		fmt.Sprintf("Size: %s", common.FormatBytes(e.FileSize)),
+		fmt.Sprintf("MD5: %x", md5Hash),
+		fmt.Sprintf("SHA256: %x", shaHash),
+		fmt.Sprintf("Architecture: %s", e.machineType),
+		fmt.Sprintf("Entry Point: 0x%X", e.entryPoint),
+	}
+	report.AddBlock("Binary Summary", summary...)
+
+	loadable, execSegs, writableSegs := 0, 0, 0
+	for _, seg := range e.Segments {
+		if seg.Loadable {
+			loadable++
+		}
+		if seg.IsExecutable {
+			execSegs++
+		}
+		if seg.IsWritable {
+			writableSegs++
+		}
+	}
+	segmentLines := []string{
+		fmt.Sprintf("Program Segments: %d (loadable: %d, exec: %d, writable: %d)", len(e.Segments), loadable, execSegs, writableSegs),
+		fmt.Sprintf("Dynamic Linking: %t", e.isDynamic),
+		fmt.Sprintf("Interpreter Present: %t", e.hasInterpreter),
+	}
+	report.AddBlock("Program Headers", segmentLines...)
+
+	totalSections := len(e.Sections)
+	execSections := 0
+	writableSections := 0
+	totalSize := int64(0)
+	for _, section := range e.Sections {
+		totalSize += section.Size
+		if section.IsExecutable {
+			execSections++
+		}
+		if section.IsWritable {
+			writableSections++
+		}
+	}
+	sectionLines := []string{
+		fmt.Sprintf("Sections: %d (exec: %d, writable: %d)", totalSections, execSections, writableSections),
+		fmt.Sprintf("Section Footprint: %s", common.FormatBytes(totalSize)),
+		fmt.Sprintf("Packed Status: %t", e.IsPacked),
+	}
+	if e.HasOverlay {
+		sectionLines = append(sectionLines, fmt.Sprintf("Overlay: present (%s)", common.FormatBytes(e.OverlaySize)))
+	} else {
+		sectionLines = append(sectionLines, "Overlay: not detected")
+	}
+	report.AddBlock("Section Overview", sectionLines...)
+
+	report.AddBlock("Linkage Summary",
+		fmt.Sprintf("Total Symbols: %d", len(e.Symbols)),
+		fmt.Sprintf("Dynamic Entries: %d", len(e.DynamicEntries)),
+	)
+
+	infos := make([]SectionInfo, len(e.Sections))
+	for i, section := range e.Sections {
+		infos[i] = SectionInfo{
+			Name:              section.Name,
+			Offset:            section.Offset,
+			Size:              section.Size,
+			Alignment:         section.Alignment,
+			CommonSectionInfo: section.CommonSectionInfo,
+		}
+	}
+	report.MergeWarnings(analyzeSectionAnomalies(infos, e.FileSize))
+	return report
 }
 
 func (e *ELFFile) printSymbolAnalysis() {

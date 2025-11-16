@@ -12,7 +12,7 @@ import (
 func TestAnalyzeELF_Succeeds(t *testing.T) {
 	elfPath := copyELFFixture(t, "simple_c")
 
-	if err := AnalyzeELF(elfPath); err != nil {
+	if _, err := AnalyzeELF(elfPath, common.DefaultAnalysisOptions()); err != nil {
 		t.Fatalf("AnalyzeELF returned error: %v", err)
 	}
 }

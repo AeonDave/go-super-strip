@@ -9,7 +9,7 @@ import (
 )
 
 // Pack è la funzione principale per il packing
-func Pack(filePath string, optionsString string) error {
+func Pack(filePath string, optionsString string, outputPath string) error {
 	// 1. Parsea opzioni
 	config, err := ParseOptions(optionsString)
 	if err != nil {
@@ -19,6 +19,10 @@ func Pack(filePath string, optionsString string) error {
 	// 2. Valida configurazione
 	if err := config.Validate(); err != nil {
 		return fmt.Errorf("invalid configuration: %w", err)
+	}
+
+	if outputPath != "" {
+		config.OutputPath = outputPath
 	}
 
 	if config.Verbose {
