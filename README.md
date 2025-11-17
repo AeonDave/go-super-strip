@@ -61,6 +61,19 @@ gosstrip [ -s[=key=value,...] -c[=key=value,...] -o[=key=value,...] -r=pattern1[
 | `-p=key=value,...`         | Run the polymorphic packer over the working file.                                                            | Options share the grammar in the table below. When omitted, defaults to `compression=lzma,level=9,encryption=chacha20`.                                          |
 | `-h`, `--help`, `help`     | Show CLI usage.                                                                                              | Works anywhere in the command line.                                                                                                                              |
 
+## Operation Details
+
+### Strip
+- **Default** – removes debug info, Rich/DWARF data, Go metadata, and secondary timestamps, then repairs the relevant headers/SHT.
+- **Force** – additionally purges relocations/import descriptors (PE) or loader records/SHT (ELF). Force is intended for "make it as small as possible" workflows and may break exotic binaries.
+
+### Compact
+- **Default** – trims empty/corrupt sections, recalculates SizeOfImage/headers, and rebuilds `.shstrtab` while preserving loader records.
+- **Force** – allows destructive trimming (PE resources/imports, ELF segment merging and `.shstrtab` scrubbing) and overwrites slack with random data before truncation.
+
+### Obfuscation
+- **Default** – renames sections, randomizes header metadata, shuffles strings/import descriptors, and fills executable padding runs with randomized NOP sequences.
+- **Force** – enables extra techniques (forged subsystem/DLL flags, fake CodeView RSDS entries, forceful import/IAT shuffling, JMP-based junk padding). Force mode still targets runnable binaries, but extremely sensitive loaders might react differently.
 ### Pack Options
 
 When using `-p`, specify options in `key=value` format separated by commas. Quote the value on PowerShell/CMD to avoid comma parsing issues. If `-p` is provided without options, defaults are applied automatically.
@@ -663,6 +676,17 @@ done
 # Verify all hashes are unique
 cat hash_*.txt | sort | uniq | wc -l  # Should equal 5
 ```
+
+### CLI Matrix Regression Script
+
+Use the bundled matrix runner to capture canonical CLI flows (analyze → obfuscate and analyze → strip → compact → obfuscate) for both PE and ELF targets in default and force modes. The script builds fresh fixtures with `x86_64-w64-mingw32-gcc` and either local `gcc` or WSL’s toolchain, then stores every command transcript under timestamped folders for later review.
+
+```bash
+bash tests/cli_matrix.sh
+# => logs under tests/logs/cli_matrix_YYYYMMDD_HHMMSS/
+```
+
+Inspect the resulting logs to compare analyzer output before/after each stage or to archive regression evidence for future troubleshooting.
 
 ## Architecture
 

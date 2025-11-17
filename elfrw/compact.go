@@ -96,6 +96,9 @@ func (e *ELFFile) Compact(force bool, fillRandom bool) *common.OperationResult {
 	// Update the main message
 	result.Message = fmt.Sprintf("removed %d sections", len(removable))
 
+	if force {
+		e.scrubSectionStringTable()
+	}
 	return result
 }
 
@@ -403,6 +406,34 @@ func (e *ELFFile) maxLoadSegmentEnd() int64 {
 		}
 	}
 	return maxEnd
+}
+
+func (e *ELFFile) scrubSectionStringTable() {
+	index := -1
+	for i, sec := range e.Sections {
+		if strings.EqualFold(strings.Trim(strings.TrimSpace(sec.Name), "\x00"), ".shstrtab") {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		return
+	}
+	sec := &e.Sections[index]
+	if sec.Offset < 0 || sec.Size <= 0 {
+		return
+	}
+	start := int(sec.Offset)
+	end := start + int(sec.Size)
+	if start < 0 || end > len(e.RawData) {
+		return
+	}
+	for i := start; i < end; i++ {
+		e.RawData[i] = 0
+	}
+	for i := range e.Sections {
+		e.Sections[i].Name = ""
+	}
 }
 
 func (e *ELFFile) updateSectionHeaderTableOffset(removedOffset int64, removedSize int64) error {

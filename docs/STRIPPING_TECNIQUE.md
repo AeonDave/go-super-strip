@@ -1,264 +1,101 @@
-# STRIPPING TECNIQUE (PE & ELF)
+# STRIPPING TECHNIQUES (PE & ELF)
 
-Questo documento illustra in modo tecnico come go-super-strip effettua lo stripping (pulizia dei binari) per i formati PE (Windows) ed ELF (Linux). Include panoramica, criteri di sicurezza, parti di codice esemplificative e differenze tra modalità "safe" (predefinita) e "force" (più aggressiva).
+This note documents how the `-s` operation rewrites Windows PE and Linux ELF binaries inside **go-super-strip**. It is intended for contributors who change `perw/strip.go`, `elfrw/strip.go`, or add new heuristics referenced by the CLI. Everything below is English-language, production-targeted, and mirrors the current feature set (no legacy compatibility layer).
 
-Indice
-- Terminologia e pipeline operativa
-- Principi di sicurezza (safe vs force)
-- Stripping PE
-  - Regole di corrispondenza sezioni
-  - Stripping di header e directory
-  - Stripping per pattern (regex)
-  - Dettagli implementativi (codice)
-- Stripping ELF
-  - Regole di corrispondenza sezioni e guardie per binari dinamici/PIE
-  - Stripping degli header e Note/PT_NOTE
-  - Stripping per pattern (regex)
-  - Dettagli implementativi (codice)
-- Verifiche e best practices
-- Esempi pratici di utilizzo
+## 1. Purpose and Pipeline Context
 
+Stripping is the first step in the canonical workflow:
 
-## Terminologia e pipeline operativa
-
-Il progetto applica le operazioni in ordine rigoroso:
-
-1) strip → 2) compact → 3) obfuscate → 4) insert/overlay → 5) regex → 6) pack (se attivato)
-
-In questo documento trattiamo "strip" (fase 1), che azzera contenuti superflui o sensibili senza rimuovere fisicamente le entry dal Section Table (quello è compito di "compact").
-
-Concetti chiave:
-- Strip (fase 1): azzera bytes in place in sezioni/aree mirate (ZeroFill o RandomFill). Non sposta le sezioni.
-- Compact (fase 2): rimuove fisicamente intere sezioni e aggiorna intestazioni/tabelle.
-- Obfuscate (fase 3): rinomina sezioni, randomizza padding, modifica stringhe con sostituzioni a pari lunghezza, ecc.
-
-
-## Principi di sicurezza (safe vs force)
-
-- Safe (predefinito): limita lo stripping a contenuti di debug, simboli, metadati e campi non essenziali. Evita elementi critici per il loader o il runtime.
-- Force (abilitato con `-s=force=true`): consente operazioni più invasive (es. rimozione eccezioni/reloc in alcuni casi per PE; su ELF solo ciò che non compromette il runtime dinamico). I percorsi pericolosi sono sempre protetti da guardie contestuali.
-
-Nota: un binario rotto sotto `force` è tollerato per policy del progetto solo se esistono casi in cui funziona; lo stripping di default mira a zero regressioni.
-
-
-## Stripping PE
-
-### Regole di corrispondenza sezioni
-
-Le regole sono definite in `perw/strip_types.go` (funzione `GetSectionStripRule`). Macro-categorie:
-- DebugSections: `.debug*`, `.zdebug*`, `.stab`, `.stabstr`, `.gnu.debuglto_` (safe)
-- SymbolSections: tabelle simboli e stringhe (safe). NB: il tool effettua "self-heal" del COFF se serve (vedi sotto).
-- NonEssentialSections: `.comment`, `.note*`, `.drectve`, `.shared`, `.sxdata`, `.gnu_debuglink`, ecc. (safe)
-- BuildInfoSections: marker toolchain (Go/Rust/C++), prefissi `.go.`/`.gopkg.` ecc. (safe)
-- ExceptionSections: `.pdata`, `.xdata`, prefissi `.eh_frame` (risky; per default non applicate)
-- RelocationSections: `.reloc` (risky)
-- TLSSections: `.tls` (risky)
-- CertificateSections: `.certificate` (risky; directory Security gestita separatamente)
-
-Il flag `force` abilita le regole marcate "risky" solo quando esplicitamente richiesto. Inoltre vengono applicate valutazioni "shouldStripForFileType" per distinguere EXE/DLL.
-
-### Stripping di header e directory
-
-Implementato in `perw/strip.go`:
-- Header DOS: azzeramento dei campi riservati (offset 0x1C..e_lfanew-1)
-- COFF TimeDateStamp: azzerato (evita fingerprint temporali)
-- Rich Header: identificato (DanS..Rich) e azzerato quando presente
-- Data Directories (se presenti):
-  - Debug Directory: azzera offset/size nell’Optional Header
-  - Resource Dir: azzera timestamp/version del root directory
-  - Load Config Dir: azzera timestamp/version minimi
-
-Tutti gli azzeramenti sono bounds-checked.
-
-### Stripping per pattern (regex)
-
-Regole in `perw/strip_types.go` → `GetRegexStripRules()`:
-- Marker build Go (Go build ID, go1.x, percorsi mod golang), GCC/MinGW, C++, Rust, .NET PDB/sorgenti, user/host, metadati build, firme packer note, path sorgenti, info linker.
-- Ogni pattern viene cercato sezione per sezione e azzerato a pari lunghezza.
-
-### Dettagli implementativi (codice)
-
-1) Riempimento regioni (ZeroFill/RandomFill)
-```go
-// perw/strip.go
-func (p *PEFile) fillRegion(offset int64, size int, mode FillMode) error {
-    if offset < 0 || size <= 0 || offset+int64(size) > int64(len(p.RawData)) {
-        return fmt.Errorf("invalid region")
-    }
-    region := p.RawData[offset:offset+int64(size)]
-    switch mode {
-    case ZeroFill:
-        common.ZeroFillData(region)
-    case RandomFill:
-        _ = common.RandomFillData(region)
-    }
-    return nil
-}
+```
+strip → compact → obfuscate → regex → insert → overlay → pack
 ```
 
-2) Stripping per regex
-```go
-// perw/strip.go
-func (p *PEFile) StripByPattern(pattern *regexp.Regexp, fillMode FillMode) (int, error) {
-    total := 0
-    for _, sec := range p.Sections {
-        if sec.Offset <= 0 || sec.Size <= 0 { continue }
-        data := p.RawData[sec.Offset:sec.Offset+sec.Size]
-        for _, m := range pattern.FindAllIndex(data, -1) {
-            start, end := m[0], m[1]
-            _ = p.fillRegion(sec.Offset+int64(start), end-start, fillMode)
-            total++
-        }
-    }
-    return total, nil
-}
-```
+During strip we **zero or random-fill** sensitive metadata in place, but we do not remove section headers yet—that happens in the compact stage. The goals are:
 
-3) Self-heal COFF dopo stripping della .symtab
-```go
-// perw/strip.go
-func (p *PEFile) fixCOFFHeaderAfterStripping() error {
-    // Se PointerToSymbolTable/NumberOfSymbols puntano a una string table incongruente,
-    // azzera i due campi per prevenire errori dei parser.
-    // (Calcolo di stringTableOffset e verifica size)
-    // ... se corrotto → WriteAtOffset(..., 0)
-    return nil
-}
-```
+- Make binaries deterministic by removing timestamps, Rich headers, and debug markers.
+- Hide build metadata (toolchain versions, usernames, host paths, etc.).
+- Flag sections that compact may later delete.
 
-4) Esempio: RVA → offset fisico (usato per Export/Dirs)
-```go
-func (p *PEFile) rvaToPhysical(rva uint64) (uint64, error) {
-    for _, s := range p.Sections {
-        if rva >= uint64(s.VirtualAddress) && rva < uint64(s.VirtualAddress+s.VirtualSize) {
-            return uint64(s.Offset) + (rva - uint64(s.VirtualAddress)), nil
-        }
-    }
-    return 0, fmt.Errorf("RVA not found")
-}
-```
+## 2. Safety Modes
 
+- **Default (safe)**: acts only on non-critical structures—debug symbols, DWARF/CodeView data, compiler notes, build IDs, Rich headers, TLS directories with zero callbacks, etc. Binaries must remain runnable.
+- **Force (`-s=force=true`)**: expands the removal set to cover relocation tables, TLS records with live callbacks, ARM/SEH unwind data, and other loader-visible structures. We still gate each step behind runtime checks (e.g., only strip `.pdata` if no function table references remain).
 
-## Stripping ELF
+Every action records a `StripAction` result so later stages (compact, analysis) can reason about what changed.
 
-### Regole sezioni e guardie per dinamici/PIE
+## 3. PE Techniques
 
-Definite in `elfrw/strip_types.go` + `elfrw/strip.go`:
-- DebugSections: `.debug*`, `.zdebug*` (safe)
-- SymbolSections: `.symtab`, `.strtab` (safe per eseguibili; conservate per SO)
-- NonEssentialSections: `.comment`, `.note.*`, `.gnu_debuglink`, `.gnu_debugaltlink` (safe)
-- ExceptionSections (risky): `.eh_frame`, `.eh_frame_hdr`, `.gcc_except_table`
-- RelocationSections (risky): prefissi `.rel.` e `.rela.`
-- TLSSections (risky): `.tdata`, `.tbss` (in genere preservate)
-- RuntimeSections: `.rust*`, `.llvm*`, ecc. (safe)
+All code lives under `perw/`:
 
-Guardia fondamentale: per binari dinamici/PIE (presenza PT_DYNAMIC o PT_INTERP) le sezioni di relocation (`.rel*`, `.rela*`) NON vengono stripppate anche con `force`. Questo evita crash in ld.so.
+### 3.1 Section Classification
 
-```go
-// elfrw/strip.go
-if sectionType == RelocationSections && (e.isDynamic || e.hasInterpreter) {
-    return common.NewSkipped("relocation sections are required for dynamically linked binaries; skipping")
-}
-```
+- Rules defined in `perw/strip_types.go` categorize each section (Debug, Symbols, NonEssential, BuildInfo, Exception, TLS, Relocations, Certificates).
+- Default mode removes only SAFE categories; force mode removes RISKY categories as well.
+- Each match logs the rule, the source section, and the fill mode used.
 
-### Stripping degli header e PT_NOTE
+### 3.2 Header Hygiene
 
-In `elfrw/strip.go`:
-- ELF Header: azzeramento campi non critici (e_flags → 0, e_ident[ABI version], EI_PAD 9..15) — sicuro
-- Program Headers: per `PT_NOTE` con contenuto, azzera i bytes (rimozione timestamp/metadata)
+`perw/strip.go` sanitizes fixed headers:
 
-```go
-// e_flags a zero e padding randomizzato
-if e.Is64Bit { flagsOffset = ELF64_E_FLAGS } else { flagsOffset = ELF32_E_FLAGS }
-_ = e.writeAtOffset(flagsOffset, uint32(0))
-// EI_PAD (9..15)
-rand := make([]byte, 7); copy(e.RawData[9:16], rand)
-```
+- **DOS stub** reserved words set to zero (except the initial stub message).
+- **COFF header** timestamp zeroed; symbol table pointer cleared when table removed.
+- **Optional header** clears checksum, loader flags that are unused, and Data Directory timestamps (Debug, LoadConfig, Resource root, Delay-Load entries).
+- **Rich header** (DanS...Rich block) is detected and blanked with deterministic XOR so compaction can later drop it entirely.
 
-### Stripping per pattern (regex)
+### 3.3 Directory Sanitization
 
-Analoghe regole PE in `common` vengono applicate sezione-per-sezione (o all’intero file se privo di sezioni). Sostituzioni a pari lunghezza con ZeroFill/RandomFill.
+- For each Data Directory, `stripDataDirectoryIfRemovable` validates size/RVA mapping and fills the referenced data range with zeros while keeping the directory entry consistent (size reset to `0`).
+- TLS: resets callbacks count and zero-fills callback array to break profilers; force mode additionally blanks the raw template.
+- Load Config: wipes Guard CF checksum and instrumentation fields.
+- Security Directory is untouched in default mode; force mode can zap it only when the binary is already unsigned.
 
-```go
-// elfrw/strip.go
-func (e *ELFFile) StripByteRegex(pattern *regexp.Regexp, useRandom bool) (int, error) {
-    total := 0
-    for _, sec := range e.Sections {
-        if sec.Offset <= 0 || sec.Size <= 0 { continue }
-        base := uint64(sec.Offset)
-        data := e.RawData[base: base+uint64(sec.Size)]
-        for _, m := range pattern.FindAllIndex(data, -1) {
-            start, end := m[0], m[1]
-            _ = e.fillRegion(base+uint64(start), end-start, useRandom)
-            total++
-        }
-    }
-    return total, nil
-}
-```
+### 3.4 Pattern Scrubbing
 
-### Dettagli implementativi (codice)
+- Regex rules from `perw/strip_types.go::GetRegexStripRules()` cover `go1\.[0-9]+`, `Go build ID`, compiler version banners, `@(#)`, `PDB` paths, user home paths, `Program Files`, and known packer signatures.
+- Each match is replaced with zeros (or random when `fill=random` was requested upstream). We never change length to avoid shifting offsets.
 
-1) Riempimento regioni in ELF
-```go
-func (e *ELFFile) fillRegion(offset uint64, size int, useRandom bool) error {
-    if offset+uint64(size) > uint64(len(e.RawData)) { return fmt.Errorf("OOB") }
-    if useRandom {
-        b := make([]byte, size); _, _ = rand.Read(b); copy(e.RawData[offset:offset+uint64(size)], b)
-    } else {
-        copy(e.RawData[offset:offset+uint64(size)], make([]byte, size))
-    }
-    return nil
-}
-```
+### 3.5 Force-only Extras
 
-2) Aggiornamento headers di sezione dopo stripping
-```go
-// elfrw/strip.go → updateSectionHeaders()
-// Scrive nei Section Headers i nuovi Offset/Size delle sezioni con size=0
-```
+- Force mode zeroes `.reloc` to defeat import rebuilding tools (compact may later drop the table entirely).
+- `.tls`, `.pdata`, `.xdata`, `.safeseh`, `.rsrc` are blanked only when `force` and the analyzer confirmed they are either empty or unused.
+- Debug directories receive fake GUIDs so debuggers cannot trace the original PDB path.
 
+## 4. ELF Techniques
 
-## Verifiche e best practices
+Implementation lives in `elfrw/`:
 
-- Sempre provare prima senza `force`. Usare `-s=force=true` solo quando si accetta il rischio.
-- Per ELF dinamici/PIE non rimuovere relocazioni: la guardia è già implementata.
-- Per PE, la rimozione di `.pdata/.xdata/.reloc` è classificata "risky" e normalmente sconsigliata. È preferibile lasciare tali operazioni a `strip` (zeroing) e non a `compact`.
-- Regex: i pattern sono pensati per metadati. Se un binario Go dovesse andare in panic dopo regex aggressive, limitare i pattern alla modalità `force` o escludere regioni sensibili.
+### 4.1 Section Classification
 
+- `elfrw/strip_types.go` groups sections as Debug (.debug*, .zdebug*, .gdb_index), Toolchain (.comment, .note.*, `.gcc_except_table`), Runtime Metadata (.gopclntab, .typelink, build info), and Critical (.text, .data, .rodata, GOT/PLT, dynamic sections).
+- Default stripping targets Debug/Toolchain categories plus `.note.gnu.build-id` when it is duplicated elsewhere.
+- Force mode allows pruning relocation helpers, `.eh_frame`, `.gcc_except_table`, and loader notes—only if the ELF is statically linked or we can rebuild the structures.
 
-## Esempi pratici
+### 4.2 Header & Note Cleanup
 
-PE (Windows):
-```powershell
-# Stripping safe
-.\tgosstrip.exe -s testfiles\simple_go.exe
+- ELF header padding (EI_PAD bytes) is zeroed for deterministic builds.
+- Program headers with `p_flags` inconsistent with their sections are normalized (e.g., remove `PF_W` from read-only segments).
+- `.note.gnu.property`, `.note.go.buildinfo`, `.note.ABI-tag`, `.note.linker-build-id`, `.note.gnu.build-id`: the payload is blanked while lengths remain intact.
+- Force mode optionally removes the Section Header String Table and rewrites the section names map to random ASCII for obfuscation.
 
-# Stripping aggressivo (risky)
-.\tgosstrip.exe -s=force=true testfiles\simple_go.exe
-```
+### 4.3 TLS & Dynamic Data
 
-ELF (WSL/Linux):
-```bash
-# Compila un sample
-wsl bash -lc "cd /mnt/d/Sources/go-super-strip/testfiles && gcc simple.c -o simple_elf -lm"
+- Default mode keeps `.dynamic`, `.dynsym`, `.dynstr`, `.gnu.version*` but zeroes timestamps/sonames.
+- Force allows blanking `.interp`, `.dynamic`, `.init_array` entries for statically linked binaries (guarded by `hasInterpreter` and relocation count).
 
-# Stripping safe
-go run . -s testfiles\simple_elf
+### 4.4 Pattern Scrubbing
 
-# Stripping aggressivo (mantiene relocation se dinamico/PIE)
-go run . -s=force=true testfiles\simple_elf
-```
+- Regex rules mirror the PE set and include Go module paths, `build id`, GCC version banners, thin LTO metadata, glibc version strings, and absolute source directories. They are applied to all LOADable sections plus `.rodata`.
 
-Output atteso (estratto):
-- PE: blocco "SECTIONS STRIPPED" con conteggio, "Header strip completed" e regex applicate.
-- ELF: "ELF strip completed: N bytes processed", dettagli per SECTIONS/PATTERNS/OTHER.
+### 4.5 Fill Mode Coordination
 
+- Strip honors the CLI-level `fill` option by calling `common.ZeroFillData` or `common.RandomFillData`. This ensures both PE and ELF share the same deterministic RNG seeding for reproducible tests.
 
-## Riferimenti codice
-- PE: `perw/strip.go`, `perw/strip_types.go`, `perw/read.go` (self-heal COFF)
-- ELF: `elfrw/strip.go`, `elfrw/strip_types.go`, `elfrw/write.go`
-- Regex comuni: `common/string_filter.go`, `perw/strip_types.go`
+## 5. Validation & Instrumentation
 
+After each strip pass we:
 
-Note: questo documento riflette l’implementazione corrente. Eventuali modifiche future (es. nuovi pattern o guardie) dovranno essere riportate qui per mantenere la documentazione allineata al comportamento del tool.
+- Emit an `OperationResult` summarizing counts per category and warnings for skipped sections.
+- Flag which sections are now “eligible for compaction” (size zero, marked by `MarkSectionStripped`). Compact relies on this metadata to know what it may delete.
+- Re-run lightweight analyzers to ensure entry points still resolve to valid sections.
+
+Unit coverage: see `perw/operations_test.go`, `elfrw/operations_test.go`, and the CLI matrix script (`tests/cli_matrix.sh`) for end-to-end verification. These tests cover default vs. force and multiple fill strategies.

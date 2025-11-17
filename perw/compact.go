@@ -16,6 +16,9 @@ func (p *PEFile) Compact(force bool, fillRandom bool, keepResources bool) *commo
 		return common.NewSkipped(fmt.Sprintf("Failed to compact: %v", err))
 	}
 	p.restoreTimeDateStamp(origTimestamp, tsOffset)
+	if force {
+		p.scrubSectionHeaderNames()
+	}
 	return result
 }
 
@@ -705,4 +708,20 @@ func (p *PEFile) isNullOrZeroSection(section Section) bool {
 		section.Entropy = common.CalculateEntropy(p.RawData[section.Offset:endOffset])
 	}
 	return section.Entropy < 0.1
+}
+
+func (p *PEFile) scrubSectionHeaderNames() {
+	peHeaderOffset := int64(binary.LittleEndian.Uint32(p.RawData[PE_ELFANEW_OFFSET : PE_ELFANEW_OFFSET+4]))
+	optionalSize := binary.LittleEndian.Uint16(p.RawData[peHeaderOffset+PE_SIGNATURE_SIZE+PE_OPTSIZE_OFFSET:])
+	sectionTableOffset := peHeaderOffset + PE_SIGNATURE_SIZE + PE_FILE_HEADER_SIZE + int64(optionalSize)
+	for i := range p.Sections {
+		hdr := sectionTableOffset + int64(i*PE_SECTION_HEADER_SIZE)
+		if hdr+PE_SECTION_NAME_SIZE > int64(len(p.RawData)) {
+			break
+		}
+		for j := int64(0); j < PE_SECTION_NAME_SIZE; j++ {
+			p.RawData[hdr+j] = 0
+		}
+		p.Sections[i].Name = fmt.Sprintf("sec_%02d", i)
+	}
 }

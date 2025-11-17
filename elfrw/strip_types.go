@@ -254,6 +254,17 @@ func GetRegexStripRules() []RegexStripRule {
 			Fill:        RandomFill,
 			IsRisky:     false,
 		},
+		{
+			Patterns: []string{
+				`(?i)\bclang version [0-9][0-9\.]+\b`,
+				`(?i)Microsoft \(R\) (C|C\+\+)`,
+				`(?i)\bMSVC\b`,
+				`(?i)\bIntel\(R\) (C|C\+\+)`,
+			},
+			Description: "compiler fingerprint strings (force)",
+			Fill:        ZeroFill,
+			IsRisky:     true,
+		},
 		// Common library markers
 		{
 			Patterns: []string{

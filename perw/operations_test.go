@@ -102,6 +102,23 @@ func TestObfuscatePE_AppliesChanges(t *testing.T) {
 	}
 }
 
+func TestObfuscatePE_PreservesImports(t *testing.T) {
+	pePath := copyPEFixture(t, "simple.exe")
+	res := ObfuscatePE(pePath, true)
+	if res == nil || !res.Applied {
+		t.Fatalf("expected obfuscation to apply: %#v", res)
+	}
+	peFile, err := readPe(pePath, os.O_RDONLY)
+	if err != nil {
+		t.Fatalf("failed to reopen PE: %v", err)
+	}
+	defer func() { _ = peFile.Close() }()
+	importSyms, _ := peFile.PE.ImportedSymbols()
+	if len(importSyms) == 0 {
+		t.Fatal("import table was wiped after obfuscation")
+	}
+}
+
 func TestCompactPE_SafeOperation(t *testing.T) {
 	pePath := copyPEFixture(t, "simple.exe")
 	result := CompactPE(pePath, false, false, true)

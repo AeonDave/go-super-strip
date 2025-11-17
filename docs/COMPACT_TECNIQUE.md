@@ -1,219 +1,108 @@
-# COMPACT TECNIQUE (PE & ELF)
+# COMPACTION TECHNIQUES (PE & ELF)
 
-Questo documento illustra in modo tecnico come go-super-strip effettua la compattazione dei binari (fase di "compact" -c) per i formati PE (Windows) ed ELF (Linux). La compattazione rimuove fisicamente sezioni e aree non necessarie dal file, aggiorna le intestazioni e può rifilare l'overlay. Include panoramica, criteri di sicurezza, parti di codice esemplificative e differenze tra modalità "safe" (predefinita) e "force" (più aggressiva).
+This guide explains how the `-c` step physically shrinks binaries after stripping. It covers section selection, gap removal, validation, and force-mode heuristics for both Portable Executable (PE) and ELF targets.
 
-Indice
-- Terminologia e pipeline operativa
-- Principi di sicurezza (safe vs force)
-- Compact PE
-  - Criteri per selezione sezioni rimuovibili
-  - Protezioni (Data Directories e sezioni critiche)
-  - Algoritmo di rimozione fisica e riallineamento
-  - Aggiornamento header, SizeOfImage/Headers, CheckSum e overlay
-  - Dettagli implementativi (codice)
-- Compact ELF
-  - Criteri per selezione sezioni rimuovibili e guardie
-  - Rimozione fisica, aggiornamento Program Headers e SHT
-  - Opzione force: rimozione/disable della Section Header Table
-  - Dettagli implementativi (codice)
-- Verifiche e best practices
-- Esempi pratici
-- Riferimenti codice
+## 1. Goals
 
+1. Remove zeroed sections flagged by `strip`.
+2. Collapse unused padding between sections/segments.
+3. Optionally wipe overlay data once Authenticode and other signatures are removed.
+4. Keep entry points, imports, and runtime data valid—even under `force=true` (edge cases excepted).
 
-## Terminologia e pipeline operativa
+Compaction runs immediately after stripping in the canonical pipeline.
 
-Il progetto applica le operazioni in ordine rigoroso:
+## 2. Options
 
-1) strip → 2) compact → 3) obfuscate → 4) insert/overlay → 5) regex → 6) pack (se attivato)
+- `fill=zero` (default) or `fill=random`: determines how data is overwritten before it is truncated. This keeps forensic tooling from recovering previous bytes.
+- `keep_resources=true`: ensures Windows resources survive unless explicitly disabled.
+- `force=true`: enables aggressive trimming (e.g., relocations, loader notes, TLS tables, Section Header Table removal on ELF).
 
-In questo documento trattiamo "compact" (fase 2), che rimuove fisicamente sezioni e aggiorna gli header, a differenza dello "strip" (fase 1) che si limita ad azzerare bytes in-place.
+## 3. PE Compaction
 
-Concetti chiave:
-- Strip: azzera contenuti in aree mirate senza spostare sezioni.
-- Compact: elimina sezioni e ne ricostruisce le tabelle, aggiornando dimensioni/offset e talvolta rifilando il file.
-- Obfuscate: modifica nomi di sezione, padding, stringhe, ecc. (non coperto qui).
+Key code lives in `perw/compact.go`.
 
+### 3.1 Section Selection
 
-## Principi di sicurezza (safe vs force)
+- We re-use the strip metadata: any section marked `MarkedForRemoval` becomes a compaction candidate.
+- If strip metadata is missing (e.g., user runs compact directly), we recompute rules via `identifyStripSections`.
+- Default mode protects `.text`, `.data`, `.rdata`, `.idata`, `.edata`, `.reloc`, `.tls`, `.rsrc`, `.pdata`, `.xdata`, and any section referenced by a Data Directory entry.
+- Force mode allows removal of `.reloc`, `.pdata/.xdata`, `.tls`, `.rsrc`, Load Config, Delay-Load tables, and even TLS directories referenced by the header once we zero the matching Data Directory entries.
 
-- Safe (predefinito): rimuove soltanto sezioni chiaramente non essenziali, evitando quelle critiche per il loader/runtime. Rispetta le referenze nel PE Optional Header (Data Directories) e le sezioni chiave in ELF.
-- Force (abilitato con `-c=force=true`): consente rimozioni più aggressive (es. sezioni vuote/nulle, SHT negli ELF). Rimangono attive guardie per non rompere binari dinamici o firmati.
+### 3.2 Physical Removal
 
-Nota: un binario rotto sotto `force` è tollerato per policy del progetto se esistono casi in cui funziona; la modalità predefinita mira a zero regressioni.
+For each removable section (processed from highest index down):
 
+1. Calculate file-aligned size (`SizeOfRawData` aligned to `FileAlignment`).
+2. Delete the byte range from `RawData`.
+3. Shift later section headers’ `PointerToRawData` values backward.
+4. Decrement `NumberOfSections` and rebuild the section header table to keep `VirtualSize` / `VirtualAddress` consistent.
 
-## Compact PE
+### 3.3 Gap & Overlay Trimming
 
-### Criteri per selezione sezioni rimuovibili
+- After sections disappear, we recompute `SizeOfImage` and `SizeOfHeaders`.
+- Trailing zeros beyond the logical image end are truncated; if Authenticode is absent, overlay bytes are dropped entirely.
+- Force mode extends trimming into gaps between sections: page-aligned sequences of zeros are collapsed and later sections’ RVAs are shifted to maintain contiguous images.
 
-La selezione usa le stesse regole di categorizzazione del modulo di strip, tramite `perw/strip_types.go` → `GetSectionStripRule()`, ma qui le sezioni individuate vengono rimosse fisicamente.
+### 3.4 Directory Updates
 
-- Categorie SAFE: DebugSections (`.debug*`, `.zdebug*`, `.stab`, `.stabstr`, …), Symbol/Build/NonEssential/Runtime (commenti, note, marker toolchain come `.go.*`, `.gnu_debuglink`, ecc.).
-- Categorie RISKY (solo con `force`): ExceptionSections (`.pdata`, `.xdata`, `.eh_frame*`), RelocationSections (`.reloc`), TLSSections (`.tls`), CertificateSections (`.certificate`).
-- Inoltre vengono rimossi elementi manifestamente corrotti: nomi anomali (es. `<coff_ref_`, slash), caratteri invalidi, size/offets incoerenti.
-- Con `force` possono essere rimossi anche segmenti “null/zero” (sezione con size piccola e tutto 0).
+- Any Data Directory pointing into a removed section is cleared (RVA/Size→0). We warn if the directory was critical (Import, Certificates, TLS) and removal only occurs under `force`.
+- Import Table/IAT shuffling performed during obfuscation is preserved because compact rewrites lookups based on the new offsets, not by string matching.
 
-Codice (estratti):
-```go
-// perw/compact.go
-func (p *PEFile) identifyStripSections(force bool) (removable, keepable []int) {
-    rules := GetSectionStripRule()
-    protected := p.sectionsReferencedByDataDirectories()
-    critical := p.identifyCriticalSections()
-    // ... decide removable in base a regole, force e controlli di corruzione/null
-}
-```
+### 3.5 Validation
 
-### Protezioni (Data Directories e sezioni critiche)
+- Confirms the entry point still falls inside an executable section.
+- Optionally rehashes imports (debug builds) to ensure they point to real names.
+- Emits byte counts: header shrinkage, section bytes saved, overlay trimmed.
 
-- Data Directories: tutte le sezioni referenziate dalle DataDirectory dell’Optional Header sono marcate “keep”.
-- Sezioni critiche sempre preservate: `.text/.code`, `.data/.rdata`, `.idata/.edata`, `.pdata/.xdata`, `.tls`, `.reloc`, ed ogni sezione che contiene `go.`, `runtime`, `eh_frame`, `.ctors`, `.dtors`.
+## 4. ELF Compaction
 
-```go
-// perw/compact.go
-func (p *PEFile) sectionsReferencedByDataDirectories() map[int]struct{} { /* scansione 16 directory, mappa RVA→sezione */ }
-func (p *PEFile) identifyCriticalSections() map[int]struct{} { /* elenco sezioni imprescindibili */ }
-```
+See `elfrw/compact.go`.
 
-### Algoritmo di rimozione fisica e riallineamento
+### 4.1 Section Selection
 
-- Le sezioni da rimuovere sono ordinate in ordine decrescente di indice per evitare problemi di shifting.
-- Per ogni sezione: si calcola la size allineata a FileAlignment, si taglia lo slice `RawData`, si aggiornano gli offset delle sezioni successive.
-- Si decrementa `NumberOfSections` e si ricostruisce la tabella sezioni con `VirtualSize` coerente.
-- Si puliscono eventuali DataDirectory che puntavano ad aree rimosse.
+- Preference is given to sections flagged by strip; otherwise `identifyCompactableSections` replicates the heuristics:
+  - Safe removals: `.comment`, `.note.*`, `.symtab`, `.strtab`, `.debug*`, `.gdb_index`, `.go.buildinfo`, `.gopclntab` (if Go metadata analyzer confirms it is redundant).
+  - Guarded removals: `.interp`, `.dynamic`, GOT/PLT, `.ctors/.dtors/.init_array/.fini_array`, `.eh_frame`, `.gcc_except_table`, `.data.rel.ro.*`, `.tbss`. These require either static linking or `force`.
+  - Force also allows dropping `.shstrtab` and blank section headers, effectively hiding table names from analyzers.
 
-```go
-// perw/compact.go
-for _, idx := range removableSectionIndices {
-    _ = p.removeSingleSection(idx, &totalRemovedSize, fileAlignment)
-}
-_ = p.updateNumberOfSections(...)
-newSections := p.buildNewSectionsWithCorrectVirtualSize(...)
-_ = p.updateSectionTableWithNewSections(newSections)
-_ = p.clearDataDirectoriesForRemovedRVAs(removedRVAs)
-```
+### 4.2 Removal Algorithm
 
-### Aggiornamento header, SizeOfImage/Headers, CheckSum e overlay
+For each section:
 
-- `SizeOfImage` è ricalcolato come massimo `VirtualAddress + aligned(VirtualSize|Size)`, usando `SectionAlignment` (fallback a default se mancante).
-- `SizeOfHeaders` è allineato a `FileAlignment` e calcolato sul primo offset raw di sezione o fine tabella header.
-- `CheckSum` viene azzerato (binari non firmati). Se la Security Directory è vuota (nessuna Authenticode), l’overlay in coda viene rimosso.
+1. Remove the raw bytes and adjust offsets in `SectionHeaders`.
+2. Update any Program Header whose range sits after the gap.
+3. Keep track of total bytes removed for reporting.
 
-```go
-// perw/compact.go
-_ = WriteAtOffset(p.RawData, sizeOfImageOff, maxEndVA)
-_ = WriteAtOffset(p.RawData, sizeOfHeadersOff, sizeOfHeaders)
-_ = WriteAtOffset(p.RawData, checkSumOff, uint32(0))
-// se SecurityDir è 0, rifila overlay (tail > max end dei dati di sezione)
-```
+After all deletions:
 
-### Dettagli implementativi (codice)
+- Rebuild the Section Header Table so indices stay in sync.
+- Update `e.Header.Shoff`, `e.Header.Shnum`, and the string-table index. Force can set them to zero to mimic stripped kernels.
 
-1) Estrazione FileAlignment e rimozione di una singola sezione
-```go
-func (p *PEFile) extractFileAlignment() (uint32, error)
-func (p *PEFile) removeSingleSection(sectionIdx int, totalRemovedSize *int64, fileAlignment uint32) error
-```
-2) Ricostruzione Section Table e pulizia DataDirectories
-```go
-func (p *PEFile) buildNewSectionsWithCorrectVirtualSize(...)
-func (p *PEFile) updateSectionTableWithNewSections(newSections []Section) error
-func (p *PEFile) clearDataDirectoriesForRemovedRVAs(removedRVAs map[uint32]bool) error
-```
+### 4.3 Segment Compaction
 
+- When LOAD segments contain long zero pads, we consolidate them by moving trailing data forward and adjusting `p_offset/p_vaddr` while keeping alignment satisfied.
+- Force also merges adjacent RX/RW segments if alignment allows, further reducing `p_filesz`.
 
-## Compact ELF
+### 4.4 Overlay & Debug Data
 
-### Criteri per selezione sezioni rimuovibili e guardie
+- Data beyond the last LOAD segment is truncated unless an overlay insertion occurred later in the pipeline. If overlay metadata exists we keep the data but shrink any zero tail.
+- Go runtime metadata (typelink, itablink, go.buildinfo) can be removed even without strip as long as regex removal already wiped references; we validate via the analyzer before dropping them.
 
-- Sezioni critiche sempre preservate: `.text`, `.data`, `.rodata`, `.bss`, `.init/.fini`, `.plt/.got(.plt)`, `.dynamic`, `.dynsym/.dynstr`, `.hash/.gnu.hash`, `.interp`, `.ctors/.dtors/.init_array/.fini_array`, `.eh_frame(_hdr)`, `.gcc_except_table`, `.gopclntab`, `.typelink`, `.itablink`, `.tdata/.tbss`.
-- Esclusioni ulteriori: `.shstrtab`, `.strtab`, `.dynstr`, tipo `SHT_NOBITS` (niente dati da rimuovere).
-- Rimuovibili: sezioni corrotte (offset/size fuori limiti), già vuote, già stripppate (size=0 e offset=0), sezioni “null/zero” (contenuto tutto 0, entro limite 64KB) se `force`.
+### 4.5 Validation
 
-```go
-// elfrw/compact.go
-func (e *ELFFile) identifyCompactableSections(force bool) []int { /* vedi regole sopra */ }
-```
+- Ensures entry point points into an executable segment and that interpreter / dynamic sections remain when required.
+- In force mode we still keep PT_INTERP bytes when `hasInterpreter()` returns true to avoid breaking typical glibc binaries.
+- Post-pass warnings explain why certain sections were kept (e.g., “kept .dynamic because DT_NEEDED entries remain”).
 
-### Rimozione fisica, aggiornamento Program Headers e SHT
+## 5. Force-mode Expectations
 
-- Le sezioni selezionate vengono tagliate fisicamente da `RawData` con riallineamento locale; tutti gli offset successivi vengono decrementati della size rimossa.
-- I Program Header (`Segments`) che si trovano dopo l’area rimossa vengono aggiornati con i nuovi offset.
-- L’offset della Section Header Table (SHT) viene aggiornato se si trova dopo la rimozione; quindi la SHT viene ricostruita coerentemente.
-- Eventuale overlay oltre l’ultimo segmento `PT_LOAD` viene rifilato.
+- Force should still produce runnable binaries on standard fixtures. We only accept breakage for intentionally malformed or highly specialized inputs (e.g., custom loaders, signed binaries with active certificates).
+- Both PE and ELF emit explicit warnings if force removed something essential (imports, interpreter, TLS).
 
-```go
-// elfrw/compact.go
-_ = e.removeCompactSection(idx, &totalRemoved)
-e.updateSections(removable)
-_ = e.updateSectionHeaderTableOffset(section.Offset, removedSize)
-_ = e.rebuildSectionHeaderTable()
-```
+## 6. Testing
 
-### Opzione force: rimozione/disable della Section Header Table
+- Unit: `perw/compact_test.go`, `elfrw/compact_test.go`.
+- CLI: `test/cli_cross_compile_test.go` runs strip→compact on compiled fixtures.
+- Regression logging: `tests/cli_matrix.sh` captures analyze→strip→compact→obfuscate flows and stores logs under `tests/logs/`.
 
-Con `-c=force=true`, se presente, la Section Header Table può essere disabilitata (puntatori azzerati in header) e, se si trova in coda al file, fisicamente rimossa. Il loader ELF usa i Program Header, quindi l’eseguibile resta avviabile, ma strumenti che dipendono dalle sezioni (es. debugger) non avranno informazioni.
-
-```go
-// elfrw/compact.go (force)
-// azzera shoff/shnum/shstrndx; se SHT è in coda: truncate fisico
-e.writeAtOffset(shoffPos, uint64(0))
-```
-
-### Dettagli implementativi (codice)
-
-1) Rimozione fisica e aggiornamento offset
-```go
-func (e *ELFFile) removeCompactSection(sectionIdx int, totalRemovedSize *int64) error
-func (e *ELFFile) updateProgramHeaderOffsets(removedOffset, removedSize int64)
-func (e *ELFFile) updateSectionHeaderTableOffset(removedOffset, removedSize int64) error
-```
-2) Ricostruzione SHT e contatori
-```go
-func (e *ELFFile) rebuildSectionHeaderTable() error
-func (e *ELFFile) updateELFHeaderSectionCount(sectionCount uint16) error
-```
-
-
-## Verifiche e best practices
-
-- Provare prima senza `force`; usare `-c=force=true` solo se si accetta la perdita di informazioni/strumentabilità.
-- Su PE: evitare di rimuovere `.pdata/.xdata/.reloc/.tls` se non strettamente necessario; anch’esse sono marcate “risky”. Valutare l’impatto su ASLR/SEH.
-- Su ELF: la rimozione della SHT sotto `force` è potente ma invasiva. Assicurarsi che gli strumenti target non richiedano le sezioni.
-- Sempre verificare l’avvio dell’eseguibile e, per PE firmati, ricordare che rifilare l’overlay invalida eventuali firme se presenti (la Security Directory protegge il caso firmato).
-
-
-## Esempi pratici
-
-PE (Windows):
-```powershell
-# Compattazione safe
-.tgosstrip.exe -c testfiles\simple_go.exe
-
-# Compattazione aggressiva (risky)
-.tgosstrip.exe -c=force=true testfiles\simple_go.exe
-```
-
-ELF (WSL/Linux):
-```bash
-# Compila un sample
-wsl bash -lc "cd /mnt/d/Sources/go-super-strip/testfiles && gcc simple.c -o simple_elf -lm"
-
-# Compattazione safe
-go run . -c testfiles\simple_elf
-
-# Compattazione aggressiva: può disabilitare/rimuovere SHT
-go run . -c=force=true testfiles\simple_elf
-```
-
-Output atteso (estratto):
-- PE: "removed N sections", "size reduced ...", "trimmed overlay ...", "updated PE headers ...".
-- ELF: "removed N sections", "randomized padding in ..." (se presente), messaggi su SHT sotto force.
-
-
-## Riferimenti codice
-- PE: `perw/compact.go`, `perw/strip_types.go`, `perw/read.go`, `perw/write.go`
-- ELF: `elfrw/compact.go`, `elfrw/strip_types.go`, `elfrw/write.go`
-
-Note: questo documento riflette l’implementazione corrente. Eventuali modifiche future (nuove regole, nuove guardie) dovranno essere riportate qui per mantenere la documentazione allineata al comportamento del tool.
+Always run `go test ./...` plus `bash tests/cli_matrix.sh` after modifying compaction logic so we cover both automated and manual flows.

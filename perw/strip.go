@@ -561,6 +561,23 @@ func (p *PEFile) rvaToPhysical(rva uint64) (uint64, error) {
 	return 0, fmt.Errorf("RVA %x not found in any section", rva)
 }
 
+func (p *PEFile) physicalToRVA(offset uint32) (uint32, error) {
+	for _, section := range p.Sections {
+		start := uint32(section.Offset)
+		size := uint32(section.Size)
+		if size == 0 {
+			continue
+		}
+		if offset >= start && offset < start+size {
+			return section.VirtualAddress + (offset - start), nil
+		}
+	}
+	if offset < p.sizeOfHeaders {
+		return offset, nil
+	}
+	return 0, fmt.Errorf("file offset 0x%x not mapped to RVA", offset)
+}
+
 func (p *PEFile) fixCOFFHeaderAfterStripping() error {
 	if len(p.RawData) < PE_DOS_HEADER_SIZE {
 		return fmt.Errorf("file too small for PE structure")

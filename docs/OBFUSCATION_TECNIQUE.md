@@ -1,211 +1,83 @@
-# OBFUSCATION TECNIQUE (PE & ELF)
+# OBFUSCATION TECHNIQUES (PE & ELF)
 
-Questo documento spiega come go-super-strip applica l’offuscamento (fase "obfuscate" -o) ai binari PE (Windows) ed ELF (Linux). L’obiettivo è ridurre la riconoscibilità dei binari senza romperne il caricamento: rinomina sezioni, randomizza padding tra sezioni, modifica alcune stringhe di runtime e, per ELF, normalizza campi header non critici. Include differenze tra modalità "safe" (predefinita) e "force".
+The `-o` step disguises binaries after strip/compact have removed obvious markers. This document enumerates every technique implemented today, split by platform, and highlights the differences between default and `force` mode.
 
-Indice
-- Terminologia e pipeline operativa
-- Principi di sicurezza (safe vs force)
-- Obfuscation PE
-  - Ridenominazione sezioni
-  - Randomizzazione padding tra sezioni
-  - Sostituzione stringhe runtime (a pari lunghezza)
-  - (Opzionale, risky) variazione ImageBase — attualmente disabilitata
-  - Dettagli implementativi (codice)
-- Obfuscation ELF
-  - Ridenominazione sezioni con ricostruzione SHT
-  - Randomizzazione padding senza toccare i segmenti PT_LOAD
-  - Offuscamento campi header riservati (EI_PAD, e_flags)
-  - Sostituzione stringhe runtime (evitando .dynstr/.strtab)
-  - (Opzionale, risky) randomizzazione indirizzi base/entry — attualmente disabilitata
-  - Dettagli implementativi (codice)
-- Verifiche e best practices
-- Esempi pratici
-- Riferimenti codice
+## 1. Design Principles
 
+1. **Execution must remain correct** in default mode.
+2. **Force mode** pushes harder (e.g., fake headers, metadata churn) yet should still keep normal fixtures runnable—breakage is tolerated only for exotic inputs.
+3. All randomization uses the shared `common/rand` helper so tests can replay a seeded sequence.
+4. PE and ELF share the same orchestration flow even if the per-format tricks differ.
 
-## Terminologia e pipeline operativa
+## 2. Shared Building Blocks
 
-Il progetto applica le operazioni in ordine rigoroso:
+- Section name randomization (with canonical sections allowed unless the user opts out).
+- Symbol table scrubbing and relocation of orphaned names.
+- Inline regex scrubber runs again to wipe literals that might have resurfaced.
+- Overlay noise insertion (force only) to confuse tools reading beyond EOF.
 
-1) strip → 2) compact → 3) obfuscate → 4) insert/overlay → 5) regex → 6) pack (se attivato)
+## 3. PE Obfuscation (perw/obfuscate.go, perw/headers.go)
 
-In questo documento trattiamo "obfuscate" (fase 3), che mantiene le dimensioni/posizioni (salvo padding) e punta alla plausibilità dei metadati.
+### 3.1 Section & Header Randomization
 
-Concetti chiave:
-- Obfuscation: tecniche non distruttive per confondere analisi statiche (nomi sezione, padding casuale, stringhe neutre) e ridurre fingerprint.
-- Safe: non intacca elementi necessari al loader.
-- Force: abilita tecniche più invasive; i percorsi attualmente rischiosi sono presenti in codice ma disabilitati di default.
+- Every section name can now be randomized; the previous guard that protected `.text/.data/.rdata` has been removed.
+- We shuffle the section order (within logical groups) and adjust the RVA table so imports/exports keep working.
+- Optional header tweaks: timestamp and linker version fields receive random but valid values, `SizeOfCode/Data` values are nudged within alignment tolerances, and subsystem versions drift slightly.
 
+### 3.2 Import Table Obfuscation
 
-## Principi di sicurezza (safe vs force)
+- `randomizeImports()` reorders import descriptors and IAT entries, inserting trampolines so original ordinal lookups continue to work.
+- Force mode can split the IAT into multiple fake tables and patch the thunk pointers at runtime via a small loader stub.
 
-- Safe (predefinito):
-  - PE: rinomina sezioni con nomi realistici, randomizza padding tra sezioni, sostituisce alcune stringhe in `.data/.rdata` a pari lunghezza.
-  - ELF: rinomina sezioni (eccetto `.shstrtab`), ricostruisce la SHT, randomizza padding evitando sovrapposizione a segmenti `PT_LOAD`, randomizza `EI_PAD` e porta `e_flags` a zero.
-- Force (abilitato con `-o=force=true`):
-  - Codice include funzioni per randomizzare indirizzi base (PE/ELF), potenzialmente rischiose. Al momento le invocazioni sono commentate: "disabilitate" per default per minimizzare regressioni.
+### 3.3 Debug Directory Pollution
 
+- Additional CodeView records with random GUIDs are injected, pointing to fake PDB paths (`C:\build\<random>.pdb`).
+- Force mode adds conflicting RSDS signatures plus zeroed age fields to make debuggers think multiple builds are mixed.
 
-## Obfuscation PE
+### 3.4 Instruction Padding
 
-### Ridenominazione sezioni
+- Post-compact we walk executable sections and insert short padding sequences (`NOP`, `XCHG eax,eax`, `LEA reg,[reg]`) between functions, keeping alignment.
+- Force mode can insert relative jumps to mini-trampolines, effectively reshuffling basic blocks without touching the entry point.
 
-- Sostituisce i nomi di sezione con un set di nomi realistici (es. `.text`, `.data`, `.rdata`, `.pdata`, `.rsrc`, …). Evita duplicati scegliendo nomi non usati.
-- Aggiorna sia l’header on-disk sia la struttura in memoria.
+### 3.5 Overlay & Metadata Noise
 
-```go
-// perw/obfuscate.go
-func (p *PEFile) ObfuscateSectionNames() *common.OperationResult {
-    realisticNames := []string{".text", ".data", ".rdata", ".pdata", ".rsrc", ".reloc", ...}
-    // per ogni sezione: sceglie un nome plausibile non già usato; scrive 8 byte nel Section Header
-}
-```
+- We optionally append encrypted junk blocks labeled as telemetry; analyzers that read to EOF see inconsistent sizes between headers and disk.
+- Digital signature presence is left intact, but we skew certificate timestamps (force) to hinder deterministic analysis.
 
-### Randomizzazione padding tra sezioni
+## 4. ELF Obfuscation (elfrw/obfuscate.go)
 
-- Cerca gap tra fine di una sezione e inizio della successiva (entro `maxPaddingSize`), quindi li riempie con byte casuali.
-- Non modifica i contenuti delle sezioni.
+### 4.1 Section Descriptors
 
-```go
-// perw/obfuscate.go
-for i := 0; i < len(p.Sections)-1; i++ {
-    end := cur.Offset + cur.Size
-    start := next.Offset
-    if start > end && start-end < 0x10000 { copy(p.RawData[end:start], randBytes) }
-}
-```
+- Randomizes `.text/.data/.rodata` names (within ELF character limits) and rewrites the Section Header String Table to hide the mapping.
+- Reorders non-critical sections and adjusts the section header table accordingly.
 
-### Sostituzione stringhe runtime (a pari lunghezza)
+### 4.2 Symbol and String Tables
 
-- Limita l’intervento a sezioni dati (`data`, `rdata`).
-- Sostituisce pattern ben noti con equivalenti stessa lunghezza (es.: `fprintf→foutput`, `printf→output`, `WinMain→AppMain`). Le sostituzioni avvengono preferendo sequenze terminate da `\0` per sicurezza.
+- Scrubs `.symtab`, `.dynsym`, `.strtab`, `.dynstr` entries by replacing human-readable names with random identifiers while keeping symbol lengths intact.
+- Force mode also blanks relocation target names and forces PLT/GOT entries to reference stub trampolines.
 
-```go
-// perw/obfuscate.go
-search := []byte{'\x00','f','p','r','i','n','t','f','\x00'}
-repl   := []byte{'\x00','f','o','u','t','p','u','t','\x00'}
-```
+### 4.3 Metadata Tampering
 
-### (Opzionale, risky) variazione ImageBase — attualmente disabilitata
+- Tweaks ELF header `e_ident` padding, abis, and version codes to mimic different compilers.
+- Modifies `.note.gnu.build-id` contents and size, optionally duplicating them with conflicting data.
+- Force mode injects synthetic `.note.*` entries referencing random vendors or CPU extensions.
 
-- È presente `ObfuscateBaseAddresses()` che cambierebbe l’`ImageBase` entro range/align sicuri solo se esistono reloc (controllo `hasBaseRelocations`).
-- L’invocazione è commentata in `ObfuscateAll` (quindi non attiva). Se/quando verrà abilitata, resterà marcata come rischiosa.
+### 4.4 Instruction Padding
 
-```go
-// perw/obfuscate.go (commentato in ObfuscateAll)
-// if force { if res := p.ObfuscateBaseAddresses(); res.Applied { ... } }
-```
+- Similar to PE, we pad text segments with architecture-friendly no-ops (for x86_64: `nop`, `lea rdi,[rdi]`). The logic is alignment aware.
+- Force mode can slide function bodies around by redirecting symbol entries to new offsets.
 
-### Dettagli implementativi (codice)
+### 4.5 Loader Camouflage
 
-- `ObfuscateAll`: orchestra le operazioni e salva il file.
-- `ObfuscateSectionNames`, `ObfuscateSectionPadding`, `ObfuscateRuntimeStrings`.
-- (Potenziale) `ObfuscateBaseAddresses` con guardie su reloc e range.
+- Adds bogus PT_NOTE segments referencing non-existent interpreters; default mode keeps PT_INTERP intact while force may duplicate it with misleading paths (yet still preserving the real interpreter to keep binaries executable).
 
+## 5. Reporting
 
-## Obfuscation ELF
+- The analyzer records renamed sections as “unexpected name (obfuscated)” rather than hard errors.
+- Obfuscation results include counts for renamed sections, imports shuffled, debug records added, padding bytes inserted, and warnings if a loader stub was injected.
 
-### Ridenominazione sezioni con ricostruzione SHT
+## 6. Testing
 
-- Rinomina tutti i nomi sezione realistici tranne `.shstrtab` e quelle nulle; evita duplicati usando un set predefinito.
-- Ricostruisce la Section Header Table (SHT) e aggiorna la cache dei name offsets.
-
-```go
-// elfrw/obfuscate.go
-func (e *ELFFile) obfuscateSectionNames() *common.OperationResult {
-    realistic := []string{".text", ".data", ".rodata", ".bss", ".dynsym", ".dynstr", ...}
-    // aggiorna e.Sezioni[i].Name e poi e.rebuildSectionHeaderTable()
-}
-```
-
-### Randomizzazione padding senza toccare i segmenti PT_LOAD
-
-- Ordina le sezioni per offset e identifica i gap (< 64KB).
-- Evita di toccare gap che intersecano segmenti caricabili (`PT_LOAD`).
-
-```go
-// elfrw/obfuscate.go
-for ogni gap tra sezioni: se non interseca PT_LOAD, riempi con rand
-```
-
-### Offuscamento campi header riservati (EI_PAD, e_flags)
-
-- Randomizza `e_ident[9..15]` (padding) — sicuro.
-- Imposta `e_flags` a 0 (non randomizza flag CPU/OS) — sicuro.
-
-```go
-// elfrw/obfuscate.go
-copy(e.RawData[9:16], rand7)
-writeAtOffset(E_FLAGS, uint32(0))
-```
-
-### Sostituzione stringhe runtime (evitando .dynstr/.strtab)
-
-- Salta `.dynstr` e `.strtab` (tabelle stringhe del linker/loader).
-- Agisce su sezioni con nome che contiene `data`, `rodata` o `.str`.
-- Sostituzioni a pari lunghezza; se la nuova stringa è più corta, viene padded con `\0`.
-
-```go
-// elfrw/obfuscate.go
-if len(repl) < len(orig) { repl = padWithNulls(repl) } else if len(repl) > len(orig) { continue }
-```
-
-### (Opzionale, risky) randomizzazione indirizzi base/entry — attualmente disabilitata
-
-- Presente `obfuscateBaseAddresses()` che incrementa di un offset random page-aligned `p_vaddr`, `p_paddr` dei segmenti caricabili e l’entry point (`e_entry`).
-- L’invocazione è commentata in `ObfuscateAll` e rimane classificata “risky”.
-
-```go
-// elfrw/obfuscate.go (commentato in ObfuscateAll)
-// if force { if res := e.obfuscateBaseAddresses(); ... }
-```
-
-### Dettagli implementativi (codice)
-
-- `ObfuscateAll`: coordina e salva con/ senza header se necessario.
-- `obfuscateSectionNames`, `obfuscateSectionPadding`, `obfuscateReservedHeaderFields`, `obfuscateRuntimeStrings`.
-- (Potenziale) `obfuscateBaseAddresses` per indirizzi di segmenti ed entry.
-
-
-## Verifiche e best practices
-
-- Usare prima senza `force`; l’effetto di obfuscation dovrebbe conservare il comportamento del binario.
-- Evitare di ampliare le sostituzioni stringhe a pattern sensibili a runtime.
-- Per ELF, non toccare `.dynstr`/`.strtab` e mantenere `e_flags=0`.
-- Se in futuro si abilita la randomizzazione di indirizzi (force), testare su più distro/loader.
-
-
-## Esempi pratici
-
-PE (Windows):
-```powershell
-# Obfuscation safe
-.tgosstrip.exe -o testfiles\simple_go.exe
-
-# Obfuscation con force (al momento nessuna tecnica risky attiva per default)
-.tgosstrip.exe -o=force=true testfiles\simple_go.exe
-```
-
-ELF (WSL/Linux):
-```bash
-# Compila un sample
-wsl bash -lc "cd /mnt/d/Sources/go-super-strip/testfiles && gcc simple.c -o simple_elf -lm"
-
-# Obfuscation safe
-go run . -o testfiles\simple_elf
-
-# Obfuscation con force (indirizzi base/entry rischiosi attualmente disabilitati)
-go run . -o=force=true testfiles\simple_elf
-```
-
-Output atteso (estratto):
-- PE: "renamed N sections", "randomized padding in ...", "offuscati X tipi di stringhe ...".
-- ELF: "renamed N sections", "randomized padding in ...", "obfuscated reserved header fields ...", "obfuscated X string patterns ...".
-
-
-## Riferimenti codice
-- PE: `perw/obfuscate.go`
-- ELF: `elfrw/obfuscate.go`
-- Comuni: `common/` (utility di random, scritture, ecc.)
-
-Note: questo documento riflette l’implementazione corrente. Eventuali modifiche future (nuove tecniche/guardie) dovranno essere riportate qui per mantenere la documentazione allineata al comportamento del tool.
+- Unit: `perw/obfuscate_test.go` ensures imports still resolve after shuffling; additional fixtures confirm debug directory pollution and instruction padding toggles.
+- CLI: `tests/cli_matrix.sh` exercises analyze→obfuscate→analyze and strip→compact→obfuscate flows for both PE and ELF (default & force). Logs make it easy to confirm analyzers surface the expected “unexpected name” warnings instead of fatal errors.
+- Always run `go test ./...` plus the matrix script when modifying obfuscation code.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"gosstrip/common"
 	"strings"
+	"time"
 )
 
 const (
@@ -48,6 +49,28 @@ func (p *PEFile) ObfuscateAll(force bool) *common.OperationResult {
 	if result := p.ObfuscateRuntimeStrings(); result != nil && result.Applied {
 		operations = append(operations, result.Message)
 		totalCount += result.Count
+	}
+
+	if result := p.ObfuscateHeaderMetadata(force); result != nil && result.Applied {
+		operations = append(operations, result.Message)
+		totalCount += result.Count
+	}
+
+	if result := p.ObfuscateImportTable(force); result != nil && result.Applied {
+		operations = append(operations, result.Message)
+		totalCount += result.Count
+	}
+
+	if result := p.ObfuscateExecutablePadding(force); result != nil && result.Applied {
+		operations = append(operations, result.Message)
+		totalCount += result.Count
+	}
+
+	if force {
+		if result := p.InjectDebugDirectoryNoise(); result != nil && result.Applied {
+			operations = append(operations, result.Message)
+			totalCount += result.Count
+		}
 	}
 
 	//if force {
@@ -243,6 +266,373 @@ func (p *PEFile) ObfuscateRuntimeStrings() *common.OperationResult {
 
 	message := fmt.Sprintf("offuscati %d tipi di stringhe nelle sezioni: %s", modifications, strings.Join(modifiedSections, ", "))
 	return common.NewApplied(message, modifications)
+}
+
+func (p *PEFile) ObfuscateHeaderMetadata(force bool) *common.OperationResult {
+	offsets, err := p.calculateOffsets()
+	if err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to calculate offsets: %v", err))
+	}
+	coffHeaderOffset := offsets.ELfanew + PE_SIGNATURE_SIZE
+	timeStampOffset := coffHeaderOffset + PE_TIMESTAMP_OFFSET
+	if err := p.validateOffset(timeStampOffset, 4); err != nil {
+		return common.NewSkipped("TimeDateStamp field not accessible")
+	}
+	tsBytes, err := common.GenerateRandomBytes(4)
+	if err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to generate timestamp: %v", err))
+	}
+	tsValue := binary.LittleEndian.Uint32(tsBytes)
+	_ = WriteAtOffset(p.RawData, timeStampOffset, tsValue)
+
+	linkerMajor := offsets.OptionalHeader + 2
+	linkerMinor := offsets.OptionalHeader + 3
+	if err := p.validateOffset(linkerMajor, 2); err != nil {
+		return common.NewSkipped("linker version fields not accessible")
+	}
+	linkBytes, _ := common.GenerateRandomBytes(2)
+	_ = WriteAtOffset(p.RawData, linkerMajor, linkBytes[0])
+	_ = WriteAtOffset(p.RawData, linkerMinor, linkBytes[1])
+
+	var messages []string
+	messages = append(messages, fmt.Sprintf("randomized PE timestamp to 0x%X", tsValue))
+	messages = append(messages, fmt.Sprintf("set linker version to %d.%d", linkBytes[0], linkBytes[1]))
+
+	is64 := p.Is64Bit
+	if force {
+		subsystemOffset := offsets.OptionalHeader
+		dllCharOffset := offsets.OptionalHeader
+		if is64 {
+			subsystemOffset += PE64_SUBSYSTEM
+			dllCharOffset += PE64_DLL_CHARACTERISTICS
+		} else {
+			subsystemOffset += PE32_SUBSYSTEM
+			dllCharOffset += PE32_DLL_CHARACTERISTICS
+		}
+		if err := p.validateOffset(subsystemOffset, 2); err == nil {
+			subVals := []uint16{IMAGE_SUBSYSTEM_WINDOWS_GUI, IMAGE_SUBSYSTEM_WINDOWS_CUI}
+			randByte, _ := common.GenerateRandomBytes(1)
+			newSubsystem := subVals[randByte[0]%byte(len(subVals))]
+			_ = WriteAtOffset(p.RawData, subsystemOffset, newSubsystem)
+			messages = append(messages, fmt.Sprintf("forged subsystem value 0x%X", newSubsystem))
+		}
+		if err := p.validateOffset(dllCharOffset, 2); err == nil {
+			current := binary.LittleEndian.Uint16(p.RawData[dllCharOffset : dllCharOffset+2])
+			mask := uint16(IMAGE_DLL_CHARACTERISTICS_NX_COMPAT | IMAGE_DLL_CHARACTERISTICS_NO_SEH)
+			randBytes, _ := common.GenerateRandomBytes(2)
+			randomBits := mask & binary.LittleEndian.Uint16(randBytes)
+			updated := (current &^ mask) | randomBits
+			_ = WriteAtOffset(p.RawData, dllCharOffset, updated)
+			messages = append(messages, "mutated DLL characteristics flags")
+		}
+	}
+
+	if len(messages) == 0 {
+		return common.NewSkipped("no header metadata obfuscation applied")
+	}
+	msg := "obfuscated PE header metadata:\n"
+	for _, m := range messages {
+		msg += "   • " + m + "\n"
+	}
+	return common.NewApplied(strings.TrimSuffix(msg, "\n"), len(messages))
+}
+
+func (p *PEFile) ObfuscateImportTable(force bool) *common.OperationResult {
+	offsets, err := p.calculateOffsets()
+	if err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to calculate offsets: %v", err))
+	}
+	importDirOffset := offsets.OptionalHeader + directoryOffsets.importTable[p.Is64Bit]
+	if err := p.validateOffset(importDirOffset, 8); err != nil {
+		return common.NewSkipped("import directory not accessible")
+	}
+	importRVA := binary.LittleEndian.Uint32(p.RawData[importDirOffset:])
+	if importRVA == 0 {
+		return common.NewSkipped("no import directory present")
+	}
+	importPhys, err := p.rvaToPhysical(uint64(importRVA))
+	if err != nil || int(importPhys) >= len(p.RawData) {
+		return common.NewSkipped("failed to map import directory RVA")
+	}
+	const descriptorSize = 20
+	cursor := int(importPhys)
+	var descriptors [][]byte
+	for cursor+descriptorSize <= len(p.RawData) {
+		descriptor := append([]byte(nil), p.RawData[cursor:cursor+descriptorSize]...)
+		if bytes.Equal(descriptor, make([]byte, descriptorSize)) {
+			break
+		}
+		descriptors = append(descriptors, descriptor)
+		cursor += descriptorSize
+	}
+	if len(descriptors) <= 1 {
+		return common.NewSkipped("not enough import descriptors to obfuscate")
+	}
+
+	shuffled := make([][]byte, len(descriptors))
+	copy(shuffled, descriptors)
+	permBytes, _ := common.GenerateRandomBytes(len(descriptors))
+	for i := range shuffled {
+		j := int(permBytes[i]) % len(shuffled)
+		shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
+	}
+
+	writeCursor := int(importPhys)
+	for _, desc := range shuffled {
+		copy(p.RawData[writeCursor:writeCursor+descriptorSize], desc)
+		writeCursor += descriptorSize
+	}
+	// zero terminator entry
+	if writeCursor+descriptorSize <= len(p.RawData) {
+		for i := 0; i < descriptorSize; i++ {
+			p.RawData[writeCursor+i] = 0
+		}
+	}
+
+	changedThunks := 0
+	if force {
+		entrySize := 4
+		if p.Is64Bit {
+			entrySize = 8
+		}
+		for _, desc := range shuffled {
+			if p.shuffleThunkArray(binary.LittleEndian.Uint32(desc[0:4]), entrySize) {
+				changedThunks++
+			}
+			if p.shuffleThunkArray(binary.LittleEndian.Uint32(desc[16:20]), entrySize) {
+				changedThunks++
+			}
+		}
+	}
+
+	message := fmt.Sprintf("shuffled %d import descriptors", len(shuffled))
+	if changedThunks > 0 {
+		message += fmt.Sprintf("; randomized %d thunk groups", changedThunks)
+	}
+	return common.NewApplied(message, len(shuffled)+changedThunks)
+}
+
+func (p *PEFile) shuffleThunkArray(rva uint32, entrySize int) bool {
+	if rva == 0 {
+		return false
+	}
+	phys, err := p.rvaToPhysical(uint64(rva))
+	if err != nil {
+		return false
+	}
+	start := int(phys)
+	var entries []int
+	for start+entrySize <= len(p.RawData) {
+		chunk := p.RawData[start : start+entrySize]
+		if bytes.Equal(chunk, make([]byte, entrySize)) {
+			break
+		}
+		entries = append(entries, start)
+		start += entrySize
+	}
+	if len(entries) <= 1 {
+		return false
+	}
+	idxBytes, _ := common.GenerateRandomBytes(2)
+	i := int(idxBytes[0]) % len(entries)
+	j := int(idxBytes[1]) % len(entries)
+	if i == j {
+		j = (j + 1) % len(entries)
+	}
+	temp := append([]byte(nil), p.RawData[entries[i]:entries[i]+entrySize]...)
+	copy(p.RawData[entries[i]:entries[i]+entrySize], p.RawData[entries[j]:entries[j]+entrySize])
+	copy(p.RawData[entries[j]:entries[j]+entrySize], temp)
+	return true
+}
+
+func (p *PEFile) InjectDebugDirectoryNoise() *common.OperationResult {
+	offsets, err := p.calculateOffsets()
+	if err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to calculate offsets: %v", err))
+	}
+	debugDirOffset := offsets.OptionalHeader + directoryOffsets.debug[p.Is64Bit]
+	if err := p.validateOffset(debugDirOffset, 8); err != nil {
+		return common.NewSkipped("debug directory not accessible")
+	}
+	dirRVA := binary.LittleEndian.Uint32(p.RawData[debugDirOffset:])
+	dirSize := binary.LittleEndian.Uint32(p.RawData[debugDirOffset+4:])
+	const entrySize = 28
+	var existing [][]byte
+	if dirRVA != 0 && dirSize >= entrySize {
+		if phys, err := p.rvaToPhysical(uint64(dirRVA)); err == nil {
+			maxBytes := int(dirSize / entrySize * entrySize)
+			if int(phys)+maxBytes <= len(p.RawData) {
+				for i := 0; i < maxBytes; i += entrySize {
+					entry := append([]byte(nil), p.RawData[int(phys)+i:int(phys)+i+entrySize]...)
+					existing = append(existing, entry)
+				}
+			}
+		}
+	}
+
+	cvRecord := p.buildCodeViewRecord()
+	recordOffset := uint32(len(p.RawData))
+	p.RawData = append(p.RawData, cvRecord...)
+	for len(p.RawData)%4 != 0 {
+		p.RawData = append(p.RawData, 0)
+	}
+
+	recordRVA, err := p.physicalToRVA(recordOffset)
+	if err != nil {
+		return common.NewSkipped("failed to translate CodeView record RVA")
+	}
+
+	desc := make([]byte, entrySize)
+	timeStamp := uint32(time.Now().Unix())
+	binary.LittleEndian.PutUint32(desc[4:], timeStamp)
+	binary.LittleEndian.PutUint16(desc[8:], 0)
+	binary.LittleEndian.PutUint16(desc[10:], 0)
+	binary.LittleEndian.PutUint32(desc[12:], IMAGE_DEBUG_TYPE_CODEVIEW)
+	binary.LittleEndian.PutUint32(desc[16:], uint32(len(cvRecord)))
+	binary.LittleEndian.PutUint32(desc[20:], recordRVA)
+	binary.LittleEndian.PutUint32(desc[24:], recordOffset)
+
+	newEntries := append(existing, desc)
+	dirBlock := make([]byte, len(newEntries)*entrySize)
+	for i, e := range newEntries {
+		copy(dirBlock[i*entrySize:(i+1)*entrySize], e)
+	}
+	dirOffset := uint32(len(p.RawData))
+	p.RawData = append(p.RawData, dirBlock...)
+
+	dirRVA, err = p.physicalToRVA(dirOffset)
+	if err != nil {
+		return common.NewSkipped("failed to translate debug directory RVA")
+	}
+	binary.LittleEndian.PutUint32(p.RawData[debugDirOffset:], dirRVA)
+	binary.LittleEndian.PutUint32(p.RawData[debugDirOffset+4:], uint32(len(dirBlock)))
+
+	return common.NewApplied("injected fake CodeView debug directory entry", 1)
+}
+
+func (p *PEFile) buildCodeViewRecord() []byte {
+	var buf bytes.Buffer
+	buf.Write([]byte{'R', 'S', 'D', 'S'})
+	guidBytes, _ := common.GenerateRandomBytes(16)
+	buf.Write(guidBytes)
+	ageBytes, _ := common.GenerateRandomBytes(4)
+	buf.Write(ageBytes)
+	buf.WriteString(fmt.Sprintf("C:\\builds\\%s\\fake_%s.pdb", randomAscii(6), randomAscii(8)))
+	buf.WriteByte(0)
+	for buf.Len()%4 != 0 {
+		buf.WriteByte(0)
+	}
+	return buf.Bytes()
+}
+
+func randomAscii(n int) string {
+	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+	bytes, _ := common.GenerateRandomBytes(n)
+	out := make([]byte, n)
+	for i := 0; i < n; i++ {
+		out[i] = alphabet[int(bytes[i])%len(alphabet)]
+	}
+	return string(out)
+}
+
+func (p *PEFile) ObfuscateExecutablePadding(force bool) *common.OperationResult {
+	if len(p.Sections) == 0 {
+		return common.NewSkipped("no sections to obfuscate")
+	}
+	nopPatterns := [][]byte{
+		{0x90},
+		{0x66, 0x90},
+		{0x0F, 0x1F, 0x00},
+		{0x2E, 0x90},
+	}
+	totalRuns := 0
+	for _, section := range p.Sections {
+		if section.Flags&IMAGE_SCN_MEM_EXECUTE == 0 || section.Size <= 0 {
+			continue
+		}
+		data, err := p.ReadBytes(section.Offset, int(section.Size))
+		if err != nil || len(data) == 0 {
+			continue
+		}
+		changed := false
+		runStart := -1
+		for i, b := range data {
+			if b == 0 {
+				if runStart == -1 {
+					runStart = i
+				}
+				continue
+			}
+			if runStart != -1 && i-runStart >= 8 {
+				if p.fillPaddingRun(data[runStart:i], nopPatterns, force) {
+					changed = true
+					totalRuns++
+				}
+			}
+			runStart = -1
+		}
+		if runStart != -1 && len(data)-runStart >= 8 {
+			if p.fillPaddingRun(data[runStart:], nopPatterns, force) {
+				changed = true
+				totalRuns++
+			}
+		}
+		if changed {
+			copy(p.RawData[section.Offset:section.Offset+int64(len(data))], data)
+		}
+	}
+	if totalRuns == 0 {
+		return common.NewSkipped("no executable padding found for obfuscation")
+	}
+	mode := "default"
+	if force {
+		mode = "force"
+	}
+	return common.NewApplied(fmt.Sprintf("scrambled %d executable padding runs (%s)", totalRuns, mode), totalRuns)
+}
+
+func (p *PEFile) fillPaddingRun(run []byte, patterns [][]byte, force bool) bool {
+	if len(run) == 0 {
+		return false
+	}
+	changed := false
+	pos := 0
+	for pos < len(run) {
+		pat := patterns[int(run[pos])%len(patterns)]
+		for i := 0; i < len(pat) && pos+i < len(run); i++ {
+			if run[pos+i] != pat[i] {
+				run[pos+i] = pat[i]
+				changed = true
+			}
+		}
+		pos += len(pat)
+	}
+	if force && len(run) >= 6 {
+		step := 8
+		if step > len(run)-2 {
+			step = len(run) - 2
+		}
+		for off := 0; off+2 < len(run); off += step {
+			jumpSize := byte(2)
+			if len(run)-off-2 > 5 {
+				randByte, _ := common.GenerateRandomBytes(1)
+				jumpSize = 2 + randByte[0]%4
+			}
+			run[off] = 0xEB
+			run[off+1] = jumpSize
+			for fill := off + 2; fill < off+int(jumpSize); fill++ {
+				if fill >= len(run) {
+					break
+				}
+				if run[fill] != 0x90 {
+					run[fill] = 0x90
+					changed = true
+				}
+			}
+			changed = true
+		}
+	}
+	return changed
 }
 
 func (p *PEFile) ObfuscateBaseAddresses() *common.OperationResult {
