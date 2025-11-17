@@ -51,10 +51,23 @@ The `-o` step disguises binaries after strip/compact have removed obvious marker
 - Randomizes `.text/.data/.rodata` names (within ELF character limits) and rewrites the Section Header String Table to hide the mapping.
 - Reorders non-critical sections and adjusts the section header table accordingly.
 
-### 4.2 Symbol and String Tables
+### 4.2 Program-Header Misdirection
 
-- Scrubs `.symtab`, `.dynsym`, `.strtab`, `.dynstr` entries by replacing human-readable names with random identifiers while keeping symbol lengths intact.
-- Force mode also blanks relocation target names and forces PLT/GOT entries to reference stub trampolines.
+- Program headers are reordered to make PT_NOTE entries appear in different positions and to shuffle the order of PT_LOAD records without touching executable segments.
+- Alignment fields are re-randomized (still page-aligned) and non-loadable segments receive randomized `p_paddr` values so tools that expect canonical addresses get confused.
+- Force mode can relocate metadata-only segments (PT_NOTE/PT_GNU_EH_FRAME) to fresh regions at the end of the file while leaving PT_LOAD untouched; relocated sections are zeroed in-place and copied elsewhere.
+
+### 4.3 Symbol and String Tables
+
+- `.dynsym` entries are shuffled (skipping the mandatory null entry) and the relocation tables are patched so every relocation now points at the new symbol index. Unused entries are rewritten into fake local symbols that reference padding addresses.
+- `.symtab`/`.strtab` continue to receive the previous random-name scrubber.
+- Force mode additionally XOR-encrypts `.dynstr` names for non-essential symbols, marks the section with `SHF_COMPRESSED`, inserts a synthetic compression header when there is sufficient slack, and updates `DT_STRTAB` so loaders still find the renamed buffer.
+
+### 4.4 Section/String Table Wiping
+
+- Obfuscation keeps an in-memory cache of section names. Force mode takes advantage of this by zeroing `.shstrtab` right before `Save`, ensuring on-disk names are blank even though subsequent operations can still resolve indices.
+
+### 4.5 Metadata Tampering
 
 ### 4.3 Metadata Tampering
 
@@ -62,12 +75,12 @@ The `-o` step disguises binaries after strip/compact have removed obvious marker
 - Modifies `.note.gnu.build-id` contents and size, optionally duplicating them with conflicting data.
 - Force mode injects synthetic `.note.*` entries referencing random vendors or CPU extensions.
 
-### 4.4 Instruction Padding
+### 4.6 Instruction Padding
 
 - Similar to PE, we pad text segments with architecture-friendly no-ops (for x86_64: `nop`, `lea rdi,[rdi]`). The logic is alignment aware.
 - Force mode can slide function bodies around by redirecting symbol entries to new offsets.
 
-### 4.5 Loader Camouflage
+### 4.7 Loader Camouflage
 
 - Adds bogus PT_NOTE segments referencing non-existent interpreters; default mode keeps PT_INTERP intact while force may duplicate it with misleading paths (yet still preserving the real interpreter to keep binaries executable).
 

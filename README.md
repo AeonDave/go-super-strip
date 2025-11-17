@@ -72,8 +72,8 @@ gosstrip [ -s[=key=value,...] -c[=key=value,...] -o[=key=value,...] -r=pattern1[
 - **Force** – allows destructive trimming (PE resources/imports, ELF segment merging and `.shstrtab` scrubbing) and overwrites slack with random data before truncation.
 
 ### Obfuscation
-- **Default** – renames sections, randomizes header metadata, shuffles strings/import descriptors, and fills executable padding runs with randomized NOP sequences.
-- **Force** – enables extra techniques (forged subsystem/DLL flags, fake CodeView RSDS entries, forceful import/IAT shuffling, JMP-based junk padding). Force mode still targets runnable binaries, but extremely sensitive loaders might react differently.
+- **Default** – renames sections, randomizes header metadata, shuffles strings/import descriptors, fills executable padding runs with randomized NOP sequences, and now (ELF) misdirects PT_NOTE/PT_LOAD tables plus reorders `.dynsym` entries while keeping relocations in sync.
+- **Force** – enables extra techniques (forged subsystem/DLL flags, fake CodeView RSDS entries, forceful import/IAT shuffling, JMP-based junk padding) and, for ELF, encrypts non-essential `.dynstr` names, clones metadata segments, and wipes `.shstrtab` before saving. Force mode still targets runnable binaries, but extremely sensitive loaders might react differently.
 ### Pack Options
 
 When using `-p`, specify options in `key=value` format separated by commas. Quote the value on PowerShell/CMD to avoid comma parsing issues. If `-p` is provided without options, defaults are applied automatically.

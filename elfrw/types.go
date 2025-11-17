@@ -149,23 +149,25 @@ const (
 //goland:noinspection GoSnakeCaseUsage,GoUnusedConst
 const (
 	// Section header flags
-	SHF_WRITE     = 0x1
-	SHF_ALLOC     = 0x2
-	SHF_EXECINSTR = 0x4
-	SHF_STRINGS   = 0x20
+	SHF_WRITE      = 0x1
+	SHF_ALLOC      = 0x2
+	SHF_EXECINSTR  = 0x4
+	SHF_STRINGS    = 0x20
+	SHF_COMPRESSED = 0x800
 )
 
 //goland:noinspection GoSnakeCaseUsage,GoUnusedConst
 const (
 	// Program header types
-	PT_NULL    = 0
-	PT_LOAD    = 1
-	PT_DYNAMIC = 2
-	PT_INTERP  = 3
-	PT_NOTE    = 4
-	PT_SHLIB   = 5
-	PT_PHDR    = 6
-	PT_TLS     = 7
+	PT_NULL         = 0
+	PT_LOAD         = 1
+	PT_DYNAMIC      = 2
+	PT_INTERP       = 3
+	PT_NOTE         = 4
+	PT_SHLIB        = 5
+	PT_PHDR         = 6
+	PT_TLS          = 7
+	PT_GNU_EH_FRAME = 0x6474e550
 )
 
 //goland:noinspection GoSnakeCaseUsage,GoUnusedConst
@@ -206,13 +208,40 @@ const (
 //goland:noinspection GoSnakeCaseUsage
 const (
 	// Dynamic table tags
-	DT_NULL     = 0 // Marks end of dynamic section
-	DT_NEEDED   = 1 // Name of needed library
-	DT_PLTRELSZ = 2 // Size in bytes of PLT relocs
-	DT_PLTGOT   = 3 // Processor defined value
-	DT_HASH     = 4 // Address of symbol hash table
-	DT_STRTAB   = 5 // Address of string table
-	DT_SYMTAB   = 6 // Address of symbol table
+	DT_NULL         = 0  // Marks end of dynamic section
+	DT_NEEDED       = 1  // Name of needed library
+	DT_PLTRELSZ     = 2  // Size in bytes of PLT relocs
+	DT_PLTGOT       = 3  // Processor defined value
+	DT_HASH         = 4  // Address of symbol hash table
+	DT_STRTAB       = 5  // Address of string table
+	DT_SYMTAB       = 6  // Address of symbol table
+	DT_RELA         = 7  // Address of Rela relocations
+	DT_RELASZ       = 8  // Total size of Rela relocations
+	DT_RELAENT      = 9  // Size of one Rela relocation
+	DT_STRSZ        = 10 // Size of string table
+	DT_SYMENT       = 11 // Size of a symbol table entry
+	DT_INIT         = 12 // Address of initialization function
+	DT_FINI         = 13 // Address of termination function
+	DT_SONAME       = 14 // Shared object name
+	DT_RPATH        = 15 // Library search path (deprecated)
+	DT_SYMBOLIC     = 16 // Symbol resolution order
+	DT_REL          = 17 // Address of Rel relocations
+	DT_RELSZ        = 18 // Total size of Rel relocations
+	DT_RELENT       = 19 // Size of one Rel relocation
+	DT_PLTREL       = 20 // Type of PLT relocations
+	DT_DEBUG        = 21 // Debugging information
+	DT_TEXTREL      = 22 // Indicates text relocations
+	DT_JMPREL       = 23 // Address of PLT relocations
+	DT_BIND_NOW     = 24 // Bind now
+	DT_INIT_ARRAY   = 25
+	DT_FINI_ARRAY   = 26
+	DT_INIT_ARRAYSZ = 27
+	DT_FINI_ARRAYSZ = 28
+	DT_RUNPATH      = 29
+	DT_FLAGS        = 30
+	DT_VERDEF       = 0x6ffffffc
+	DT_VERNEED      = 0x6ffffffe
+	DT_VERSYM       = 0x6ffffff0
 )
 
 //goland:noinspection GoSnakeCaseUsage
@@ -236,8 +265,12 @@ const (
 	// Program/Section header field offsets and sizes
 	ELF64_P_OFFSET = 8
 	ELF64_P_FILESZ = 32
+	ELF64_P_MEMSZ  = 40
+	ELF64_P_ALIGN  = 48
 	ELF32_P_OFFSET = 4
 	ELF32_P_FILESZ = 16
+	ELF32_P_MEMSZ  = 20
+	ELF32_P_ALIGN  = 28
 
 	// Program header field offsets
 	ELF64_P_VADDR = 16 // Virtual address offset in 64-bit program header
@@ -318,6 +351,60 @@ func getDynamicTagName(tag int64) string {
 		return "DT_STRTAB"
 	case DT_SYMTAB:
 		return "DT_SYMTAB"
+	case DT_RELA:
+		return "DT_RELA"
+	case DT_RELASZ:
+		return "DT_RELASZ"
+	case DT_RELAENT:
+		return "DT_RELAENT"
+	case DT_STRSZ:
+		return "DT_STRSZ"
+	case DT_SYMENT:
+		return "DT_SYMENT"
+	case DT_INIT:
+		return "DT_INIT"
+	case DT_FINI:
+		return "DT_FINI"
+	case DT_SONAME:
+		return "DT_SONAME"
+	case DT_RPATH:
+		return "DT_RPATH"
+	case DT_SYMBOLIC:
+		return "DT_SYMBOLIC"
+	case DT_REL:
+		return "DT_REL"
+	case DT_RELSZ:
+		return "DT_RELSZ"
+	case DT_RELENT:
+		return "DT_RELENT"
+	case DT_PLTREL:
+		return "DT_PLTREL"
+	case DT_DEBUG:
+		return "DT_DEBUG"
+	case DT_TEXTREL:
+		return "DT_TEXTREL"
+	case DT_JMPREL:
+		return "DT_JMPREL"
+	case DT_BIND_NOW:
+		return "DT_BIND_NOW"
+	case DT_INIT_ARRAY:
+		return "DT_INIT_ARRAY"
+	case DT_FINI_ARRAY:
+		return "DT_FINI_ARRAY"
+	case DT_INIT_ARRAYSZ:
+		return "DT_INIT_ARRAYSZ"
+	case DT_FINI_ARRAYSZ:
+		return "DT_FINI_ARRAYSZ"
+	case DT_RUNPATH:
+		return "DT_RUNPATH"
+	case DT_FLAGS:
+		return "DT_FLAGS"
+	case DT_VERDEF:
+		return "DT_VERDEF"
+	case DT_VERNEED:
+		return "DT_VERNEED"
+	case DT_VERSYM:
+		return "DT_VERSYM"
 	default:
 		return fmt.Sprintf("DT_UNKNOWN_%X", tag)
 	}

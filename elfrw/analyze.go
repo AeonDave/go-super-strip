@@ -580,14 +580,14 @@ func (e *ELFFile) printELFHeaders() {
 
 	// Check 6: Dynamic ranges within image
 	checks++
-	if idx, ok := e.findSectionByName(".dynamic"); ok {
+	if idx, ok := e.locateSection(".dynamic", SHT_DYNAMIC); ok {
 		sec := e.Sections[idx]
 		if sec.Offset < 0 || sec.Offset+sec.Size > e.FileSize {
 			warnings = append(warnings, "Dynamic Section:  ⚠️ .dynamic out of file bounds")
 			failures++
 		}
 	}
-	if idx, ok := e.findSectionByName(".dynstr"); ok {
+	if idx, ok := e.locateSection(".dynstr", SHT_STRTAB); ok {
 		sec := e.Sections[idx]
 		if sec.Offset < 0 || sec.Offset+sec.Size > e.FileSize {
 			warnings = append(warnings, "Dynamic Strings:  ⚠️ .dynstr out of file bounds")
@@ -957,30 +957,24 @@ func (e *ELFFile) printDynamicAnalysis() {
 
 	// Analyze dynamic sections
 	var (
-		hasDynamic    = false
-		hasDynSym     = false
-		hasDynStr     = false
+		hasDynamic    = e.hasSection(".dynamic", SHT_DYNAMIC)
+		hasDynSym     = e.hasSection(".dynsym", SHT_DYNSYM)
+		hasDynStr     = func() bool { _, ok := e.dynamicStringTableIndex(); return ok }()
 		hasGot        = false
 		hasPlt        = false
-		hasRela       = false
-		hasVersioning = false
+		hasRela       = e.hasAnySectionByType(SHT_RELA, SHT_REL)
+		hasVersioning = e.hasSection(".gnu.version", 0) || e.hasSection(".gnu.version_r", 0) || e.hasSection(".gnu.version_d", 0)
 	)
 
-	for _, section := range e.Sections {
-		switch section.Name {
-		case ".dynamic":
-			hasDynamic = true
-		case ".dynsym":
-			hasDynSym = true
-		case ".dynstr":
-			hasDynStr = true
-		case ".got", ".got.plt":
+	for _, entry := range e.DynamicEntries {
+		switch entry.Tag {
+		case DT_PLTGOT:
 			hasGot = true
-		case ".plt", ".plt.got", ".plt.sec":
+		case DT_PLTRELSZ, DT_PLTREL, DT_JMPREL:
 			hasPlt = true
-		case ".rela.dyn", ".rela.plt", ".rel.dyn", ".rel.plt":
+		case DT_RELA, DT_RELASZ, DT_RELAENT, DT_REL, DT_RELSZ, DT_RELENT:
 			hasRela = true
-		case ".gnu.version", ".gnu.version_r", ".gnu.version_d":
+		case DT_VERDEF, DT_VERNEED, DT_VERSYM:
 			hasVersioning = true
 		}
 	}
@@ -1257,18 +1251,17 @@ func (e *ELFFile) printExportsAnalysis() {
 func (e *ELFFile) parseDynamicLibraries() []string {
 	var libraries []string
 
-	_, found := e.findSectionByName(".dynamic")
-	if !found {
+	if _, found := e.locateSection(".dynamic", SHT_DYNAMIC); !found {
 		return libraries
 	}
 
-	strIndex, found := e.findSectionByName(".dynstr")
+	strIndex, found := e.dynamicStringTableIndex()
 	if !found {
 		return libraries
 	}
 
 	for _, entry := range e.DynamicEntries {
-		if entry.Tag == DT_NEEDED { // DT_NEEDED
+		if entry.Tag == DT_NEEDED {
 			if libName := e.readStringFromSection(strIndex, int(entry.Value)); libName != "" {
 				libraries = append(libraries, libName)
 			}
@@ -1281,14 +1274,24 @@ func (e *ELFFile) parseDynamicLibraries() []string {
 func (e *ELFFile) parseDynamicSymbols() []Symbol {
 	var symbols []Symbol
 
-	dynsymIndex, found := e.findSectionByName(".dynsym")
+	dynsymIndex, found := e.locateSection(".dynsym", SHT_DYNSYM)
 	if !found {
 		return symbols
 	}
 
-	strIndex, found := e.findSectionByName(".dynstr")
-	if !found {
-		return symbols
+	var strIndex uint16
+	symSection := e.getSectionByIndex(dynsymIndex)
+	if symSection != nil && symSection.Link != 0 {
+		if strSec := e.getSectionByIndex(uint16(symSection.Link)); strSec != nil {
+			strIndex = uint16(strSec.Index)
+		}
+	}
+	if strIndex == 0 {
+		if idx, ok := e.dynamicStringTableIndex(); ok {
+			strIndex = idx
+		} else {
+			return symbols
+		}
 	}
 
 	symbols = e.parseSymbolsFromSection(dynsymIndex, strIndex)
@@ -1529,20 +1532,29 @@ func (e *ELFFile) parseSymbolsFromSections() []Symbol {
 
 func (e *ELFFile) parseSymbolTable(symtabName, strtabName string) []Symbol {
 	var symbols []Symbol
-	var symtabSection *Section
-	var strtabSection *Section
 
-	for _, section := range e.Sections {
-		if section.Name == symtabName {
-			symtabSection = &section
-		}
-		if section.Name == strtabName {
-			strtabSection = &section
+	symIdx, found := e.locateSection(symtabName, inferSymbolSectionType(symtabName))
+	if !found {
+		return symbols
+	}
+	symtabSection := e.getSectionByIndex(symIdx)
+	if symtabSection == nil {
+		return symbols
+	}
+
+	var strtabSection *Section
+	if symtabSection.Link != 0 {
+		strtabSection = e.getSectionByIndex(uint16(symtabSection.Link))
+	}
+	if strtabSection == nil {
+		if idx, ok := e.locateSection(strtabName, SHT_STRTAB); ok {
+			strtabSection = e.getSectionByIndex(idx)
 		}
 	}
-	if symtabSection == nil || strtabSection == nil {
-		return symbols // Symbol table or string table not found
+	if strtabSection == nil {
+		return symbols
 	}
+
 	if strtabSection.Offset+strtabSection.Size > int64(len(e.RawData)) {
 		return symbols // Invalid string table
 	}
@@ -1620,6 +1632,85 @@ func (e *ELFFile) findSectionByName(name string) (uint16, bool) {
 		}
 	}
 	return 0, false
+}
+
+func (e *ELFFile) findSectionByType(sectionType uint32) (uint16, bool) {
+	for _, section := range e.Sections {
+		if section.Type == sectionType {
+			return uint16(section.Index), true
+		}
+	}
+	if e.ELF != nil {
+		for idx, section := range e.ELF.Sections {
+			if uint32(section.SectionHeader.Type) == sectionType {
+				return uint16(idx), true
+			}
+		}
+	}
+	return 0, false
+}
+
+func (e *ELFFile) locateSection(name string, sectionType uint32) (uint16, bool) {
+	if idx, ok := e.findSectionByName(name); ok {
+		return idx, true
+	}
+	if sectionType != 0 {
+		return e.findSectionByType(sectionType)
+	}
+	return 0, false
+}
+
+func (e *ELFFile) getSectionByIndex(idx uint16) *Section {
+	for i := range e.Sections {
+		if uint16(e.Sections[i].Index) == idx {
+			return &e.Sections[i]
+		}
+	}
+	return nil
+}
+
+func (e *ELFFile) dynamicStringTableIndex() (uint16, bool) {
+	if dynsymIdx, ok := e.locateSection(".dynsym", SHT_DYNSYM); ok {
+		if symSection := e.getSectionByIndex(dynsymIdx); symSection != nil && symSection.Link != 0 {
+			if target := e.getSectionByIndex(uint16(symSection.Link)); target != nil {
+				return uint16(target.Index), true
+			}
+		}
+	}
+	if idx, ok := e.locateSection(".dynstr", SHT_STRTAB); ok {
+		return idx, true
+	}
+	return 0, false
+}
+
+func inferSymbolSectionType(name string) uint32 {
+	if strings.Contains(name, "dyn") {
+		return SHT_DYNSYM
+	}
+	return SHT_SYMTAB
+}
+
+func (e *ELFFile) hasSection(name string, sectionType uint32) bool {
+	if name != "" {
+		if _, ok := e.findSectionByName(name); ok {
+			return true
+		}
+	}
+	if sectionType != 0 {
+		if _, ok := e.findSectionByType(sectionType); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *ELFFile) hasAnySectionByType(types ...uint32) bool {
+	for _, t := range types {
+		if _, ok := e.findSectionByType(t); ok {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *ELFFile) readStringFromSection(sectionIndex uint16, offset int) string {
