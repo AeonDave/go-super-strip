@@ -100,13 +100,6 @@ func (e *ELFFile) ObfuscateAll(force bool) *common.OperationResult {
 		}
 	}
 
-	//if force {
-	//	if baseResult := e.obfuscateBaseAddresses(); baseResult != nil && baseResult.Applied {
-	//		result.AddDetail(baseResult.Message, baseResult.Count, true)
-	//		totalCount += baseResult.Count
-	//	}
-	//}
-
 	if totalCount == 0 {
 		return common.NewSkipped("no obfuscation operations applied")
 	}
@@ -120,26 +113,6 @@ func (e *ELFFile) ObfuscateAll(force bool) *common.OperationResult {
 		}
 	}
 	return result
-}
-
-func (e *ELFFile) getELFOffsets() ELFOffsets {
-	if e.Is64Bit {
-		return ELFOffsets{
-			ELFHeaderSize:        ELF64_EHDR_SIZE,
-			SectionHeadersOffset: ELF64_E_SHOFF,
-			ProgramHeadersOffset: ELF64_E_PHOFF,
-			NumberOfSections:     0,
-			NumberOfSegments:     0,
-		}
-	} else {
-		return ELFOffsets{
-			ELFHeaderSize:        ELF32_EHDR_SIZE,
-			SectionHeadersOffset: ELF32_E_SHOFF,
-			ProgramHeadersOffset: ELF32_E_PHOFF,
-			NumberOfSections:     0,
-			NumberOfSegments:     0,
-		}
-	}
 }
 
 func (e *ELFFile) obfuscateSectionNames() *common.OperationResult {
@@ -185,88 +158,6 @@ func (e *ELFFile) obfuscateSectionNames() *common.OperationResult {
 	for _, renamed := range renamedSectionsLog {
 		result.AddDetail(fmt.Sprintf("renamed section: %s", renamed), 1, false)
 	}
-	return result
-}
-
-func (e *ELFFile) obfuscateBaseAddresses() *common.OperationResult {
-	if err := e.validateELF(); err != nil {
-		return common.NewSkipped(fmt.Sprintf("ELF validation failed: %v", err))
-	}
-
-	randomOffset, err := generateRandomOffset()
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to generate random offset: %v", err))
-	}
-
-	// Read program header information directly from ELF header
-	var phdrTableOffset uint64
-	var phdrEntrySize uint16
-
-	if e.Is64Bit {
-		phdrTableOffset = e.readValue(ELF64_E_PHOFF, e.Is64Bit)
-		phdrEntrySize = e.readValue16(ELF64_E_PHENTSIZE)
-	} else {
-		phdrTableOffset = e.readValue(ELF32_E_PHOFF, e.Is64Bit)
-		phdrEntrySize = e.readValue16(ELF32_E_PHENTSIZE)
-	}
-
-	var modifiedSegments []string
-
-	// Update loadable segments
-	for i, segment := range e.Segments {
-		if !segment.Loadable {
-			continue
-		}
-
-		if _, err := e.getProgramHeader(segment.Index); err != nil {
-			continue
-		}
-
-		phdrPos := phdrTableOffset + uint64(segment.Index)*uint64(phdrEntrySize)
-
-		// Update virtual address
-		vaddrPos := phdrPos + getVAddrOffset(e.Is64Bit)
-		originalVaddr := e.readValue(int(vaddrPos), e.Is64Bit)
-		newVaddr := originalVaddr + randomOffset
-
-		if err := e.writeValue(vaddrPos, newVaddr, e.Is64Bit); err != nil {
-			return common.NewSkipped(fmt.Sprintf("failed to update virtual address: %v", err))
-		}
-
-		// Update physical address
-		paddrPos := phdrPos + getPAddrOffset(e.Is64Bit)
-		if err := e.writeValue(paddrPos, newVaddr, e.Is64Bit); err != nil {
-			return common.NewSkipped(fmt.Sprintf("failed to update physical address: %v", err))
-		}
-
-		e.Segments[i].Offset = segment.Offset
-		modifiedSegments = append(modifiedSegments, fmt.Sprintf("segment%d(0x%x→0x%x)", i, originalVaddr, newVaddr))
-	}
-
-	// Update entry point - read directly from ELF header
-	var entryPointOffset int
-	if e.Is64Bit {
-		entryPointOffset = ELF64_E_ENTRY // e_entry offset in ELF64 header
-	} else {
-		entryPointOffset = ELF32_E_ENTRY // e_entry offset in ELF32 header
-	}
-
-	originalEntryPoint := e.readValue(entryPointOffset, e.Is64Bit)
-	if originalEntryPoint != 0 {
-		newEntryPoint := originalEntryPoint + randomOffset
-		if err := e.writeValue(uint64(entryPointOffset), newEntryPoint, e.Is64Bit); err != nil {
-			return common.NewSkipped(fmt.Sprintf("failed to update entry point: %v", err))
-		}
-		modifiedSegments = append(modifiedSegments, fmt.Sprintf("entry(0x%x→0x%x)", originalEntryPoint, newEntryPoint))
-	}
-
-	if len(modifiedSegments) == 0 {
-		return common.NewSkipped("no loadable segments or entry point found")
-	}
-
-	message := fmt.Sprintf("randomized base addresses: %s", strings.Join(modifiedSegments, ", "))
-	result := common.NewApplied(message, len(modifiedSegments))
-	result.SetCategory("OTHER")
 	return result
 }
 

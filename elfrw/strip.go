@@ -1,7 +1,6 @@
 package elfrw
 
 import (
-	"crypto/rand"
 	"fmt"
 	"gosstrip/common"
 	"regexp"
@@ -83,25 +82,23 @@ func (e *ELFFile) StripByteRegex(pattern *regexp.Regexp, useRandom bool, force b
 }
 
 func (e *ELFFile) fillRegion(offset uint64, size int, useRandom bool) error {
-	if offset+uint64(size) > uint64(len(e.RawData)) {
+	if size <= 0 {
+		return nil
+	}
+	end := offset + uint64(size)
+	if end > uint64(len(e.RawData)) {
 		return fmt.Errorf("write beyond file limits: offset %d, size %d, file size %d",
 			offset, size, len(e.RawData))
 	}
 
-	if size == 0 {
-		return nil
-	}
-
+	start := int(offset)
+	region := e.RawData[start:int(end)]
 	if useRandom {
-		fillBytes := make([]byte, size)
-		if _, err := rand.Read(fillBytes); err != nil {
+		if err := common.RandomFillData(region); err != nil {
 			return fmt.Errorf("failed to generate random bytes: %w", err)
 		}
-		copy(e.RawData[offset:offset+uint64(size)], fillBytes)
 	} else {
-		// Zero fill
-		zeroBytes := make([]byte, size)
-		copy(e.RawData[offset:offset+uint64(size)], zeroBytes)
+		common.ZeroFillData(region)
 	}
 	return nil
 }
