@@ -43,17 +43,7 @@ func AnalyzePE(filePath string, opts common.AnalysisOptions) (*common.AnalysisRe
 	peFile.IsPacked = peFile.detectPacking()
 	switch opts.Mode {
 	case common.AnalysisModeDeep:
-		text, err := common.CaptureOutput(func() error {
-			return peFile.printDeepReport()
-		})
-		if err != nil {
-			return nil, err
-		}
-		return &common.AnalysisResult{
-			FileType: "PE",
-			Mode:     common.AnalysisModeDeep,
-			Text:     text,
-		}, nil
+		return peFile.buildDeepReport(), nil
 	default:
 		return peFile.buildSimpleReport(), nil
 	}

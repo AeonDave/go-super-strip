@@ -682,8 +682,8 @@ cat hash_*.txt | sort | uniq | wc -l  # Should equal 5
 Use the bundled matrix runner to capture canonical CLI flows (analyze → obfuscate and analyze → strip → compact → obfuscate) for both PE and ELF targets in default and force modes. The script builds fresh fixtures with `x86_64-w64-mingw32-gcc` and either local `gcc` or WSL’s toolchain, then stores every command transcript under timestamped folders for later review.
 
 ```bash
-bash tests/cli_matrix.sh
-# => logs under tests/logs/cli_matrix_YYYYMMDD_HHMMSS/
+bash test/cli_matrix.sh
+# => logs under test/logs/cli_matrix_YYYYMMDD_HHMMSS/
 ```
 
 Inspect the resulting logs to compare analyzer output before/after each stage or to archive regression evidence for future troubleshooting.

@@ -154,20 +154,44 @@ func countImportedFunctions(imports []ImportInfo) int {
 	return total
 }
 
-func (p *PEFile) printDeepReport() error {
+func (p *PEFile) buildDeepReport() *common.AnalysisResult {
 	p.calculateSectionEntropy()
 	p.IsPacked = p.detectPacking()
-	p.printBasicInfo()
-	p.printPEHeaders()
-	p.printDynamicAnalysis()
-	p.printSectionAnalysis()
-	p.printSectionAnomalies()
-	p.printImportsAnalysis()
-	p.printExportAnalysis()
-	p.printSymbolAnalysis()
-	common.PrintSuspiciousStrings(p.RawData)
-	p.printPackingAnalysis()
-	return nil
+
+	builder := common.NewReportBuilder("PE", common.AnalysisModeDeep)
+	sections := []struct {
+		title string
+		fn    func() error
+	}{
+		{"📁 BINARY INFORMATION", func() error { p.printBasicInfo(); return nil }},
+		{"🏗️  PE HEADER INFORMATION", func() error { p.printPEHeaders(); return nil }},
+		{"🧠 DYNAMIC ANALYSIS", func() error { p.printDynamicAnalysis(); return nil }},
+		{"📊 SECTION ANALYSIS", func() error { p.printSectionAnalysis(); return nil }},
+		{"🚨 SECTION ANOMALY ANALYSIS", func() error { p.printSectionAnomalies(); return nil }},
+		{"📦 IMPORTS ANALYSIS", func() error { p.printImportsAnalysis(); return nil }},
+		{"🔍 EXPORT ANALYSIS", func() error { p.printExportAnalysis(); return nil }},
+		{"🔤 SYMBOL ANALYSIS", func() error { p.printSymbolAnalysis(); return nil }},
+		{"🔎 SUSPICIOUS CONTENT ANALYSIS", func() error { common.PrintSuspiciousStrings(p.RawData); return nil }},
+		{"📦 PACKING HEURISTICS", func() error { p.printPackingAnalysis(); return nil }},
+	}
+
+	for _, section := range sections {
+		builder.CaptureSection(section.title, section.fn)
+	}
+
+	info := make([]SectionInfo, len(p.Sections))
+	for i, s := range p.Sections {
+		info[i] = SectionInfo{
+			Name:         s.Name,
+			FileOffset:   int64(s.FileOffset),
+			Size:         s.Size,
+			IsExecutable: s.IsExecutable,
+			IsWritable:   s.IsWritable,
+		}
+	}
+	builder.MergeWarnings(analyzeSectionAnomalies(info))
+
+	return builder.Result()
 }
 
 func (p *PEFile) calculateSectionEntropy() {
@@ -716,11 +740,12 @@ func (p *PEFile) detectLanguageAndCompiler() (language, compiler string) {
 		return
 	}
 
-	if strings.Contains(dataStr, "System.") ||
+	hasCLR := p.hasCLRMetadata() || p.importsCLRBootstrap()
+	if hasCLR && (strings.Contains(dataStr, "System.") ||
 		strings.Contains(dataStr, "mscorlib") ||
 		strings.Contains(dataStr, "Microsoft.") ||
 		strings.Contains(dataStr, ".ctor") ||
-		strings.Contains(dataStr, "System.Private.CoreLib") {
+		strings.Contains(dataStr, "System.Private.CoreLib")) {
 		language = "C#/.NET"
 		if strings.Contains(dataStr, ".NET Framework") {
 			compiler = ".NET Framework"
@@ -832,6 +857,34 @@ func (p *PEFile) detectLanguageAndCompiler() (language, compiler string) {
 	}
 
 	return "", ""
+}
+
+func (p *PEFile) hasCLRMetadata() bool {
+	for _, dir := range p.directories {
+		if dir.Type == IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR && dir.RVA != 0 && dir.Size != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *PEFile) importsCLRBootstrap() bool {
+	for _, imp := range p.Imports {
+		dll := strings.ToLower(imp.DLL)
+		lib := strings.ToLower(imp.LibraryName)
+		if dll == "mscoree.dll" || lib == "mscoree.dll" {
+			return true
+		}
+		if dll == "clr.dll" || lib == "clr.dll" {
+			return true
+		}
+	}
+	for _, export := range p.Exports {
+		if strings.EqualFold(export.Name, "_CorExeMain") || strings.EqualFold(export.Name, "_CorDllMain") {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *PEFile) printSymbolAnalysis() {

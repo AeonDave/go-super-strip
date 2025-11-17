@@ -92,5 +92,5 @@ The `-o` step disguises binaries after strip/compact have removed obvious marker
 ## 6. Testing
 
 - Unit: `perw/obfuscate_test.go` ensures imports still resolve after shuffling; additional fixtures confirm debug directory pollution and instruction padding toggles.
-- CLI: `tests/cli_matrix.sh` exercises analyze→obfuscate→analyze and strip→compact→obfuscate flows for both PE and ELF (default & force). Logs make it easy to confirm analyzers surface the expected “unexpected name” warnings instead of fatal errors.
+- CLI: `test/cli_matrix.sh` exercises analyze→obfuscate→analyze and strip→compact→obfuscate flows for both PE and ELF (default & force). Logs make it easy to confirm analyzers surface the expected “unexpected name” warnings instead of fatal errors.
 - Always run `go test ./...` plus the matrix script when modifying obfuscation code.

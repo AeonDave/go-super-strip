@@ -53,63 +53,56 @@ func generateSyntheticSectionName(used map[string]bool) (string, error) {
 }
 
 func (e *ELFFile) ObfuscateAll(force bool) *common.OperationResult {
-	originalSize := uint64(len(e.RawData))
-	totalCount := 0
-	result := common.NewApplied(fmt.Sprintf("%d bytes processed", originalSize), 0)
 	if err := e.validateELF(); err != nil {
 		return common.NewSkipped(fmt.Sprintf("ELF validation failed: %v", err))
 	}
-	if sectionResult := e.obfuscateSectionNames(); sectionResult != nil && sectionResult.Applied {
-		for _, detail := range sectionResult.Details {
-			result.AddDetail(detail.Message, detail.Count, detail.IsRisky)
-		}
-		totalCount += sectionResult.Count
-	}
-	if paddingResult := e.obfuscateSectionPadding(); paddingResult != nil && paddingResult.Applied {
-		result.AddDetail(paddingResult.Message, paddingResult.Count, false)
-		totalCount += paddingResult.Count
-	}
-	if stringsResult := e.obfuscateRuntimeStrings(); stringsResult != nil && stringsResult.Applied {
-		result.AddDetail(stringsResult.Message, stringsResult.Count, false)
-		totalCount += stringsResult.Count
-	}
-	if headerResult := e.obfuscateReservedHeaderFields(); headerResult != nil && headerResult.Applied {
-		result.AddDetail(headerResult.Message, headerResult.Count, false)
-		totalCount += headerResult.Count
-	}
-	if phResult := e.obfuscateProgramHeaders(force, originalSize); phResult != nil && phResult.Applied {
-		for _, detail := range phResult.Details {
-			result.AddDetail(detail.Message, detail.Count, detail.IsRisky)
-		}
-		totalCount += phResult.Count
-	}
-	if dynsymResult := e.obfuscateDynamicSymbols(force); dynsymResult != nil && dynsymResult.Applied {
-		for _, detail := range dynsymResult.Details {
-			result.AddDetail(detail.Message, detail.Count, detail.IsRisky)
-		}
-		totalCount += dynsymResult.Count
-	}
-	if force {
-		if scrubResult := e.scrambleSectionStringTableForce(); scrubResult != nil && scrubResult.Applied {
-			result.AddDetail(scrubResult.Message, scrubResult.Count, true)
-			totalCount += scrubResult.Count
-		}
-		if wipeResult := e.wipeSectionStringTableBeforeSave(); wipeResult != nil && wipeResult.Applied {
-			result.AddDetail(wipeResult.Message, wipeResult.Count, true)
-			totalCount += wipeResult.Count
-		}
+	originalSize := uint64(len(e.RawData))
+	pipeline := common.NewPipeline()
+	result := &common.OperationResult{
+		Message: "ELF obfuscation",
+		Details: []common.OperationDetail{},
 	}
 
-	if totalCount == 0 {
+	pipeline.AddStep("section names", func() (*common.OperationResult, error) {
+		return e.obfuscateSectionNames(), nil
+	})
+	pipeline.AddStep("section padding", func() (*common.OperationResult, error) {
+		return e.obfuscateSectionPadding(), nil
+	})
+	pipeline.AddStep("runtime strings", func() (*common.OperationResult, error) {
+		return e.obfuscateRuntimeStrings(), nil
+	})
+	pipeline.AddStep("header fields", func() (*common.OperationResult, error) {
+		return e.obfuscateReservedHeaderFields(), nil
+	})
+	pipeline.AddStep("program headers", func() (*common.OperationResult, error) {
+		return e.obfuscateProgramHeaders(force, originalSize), nil
+	})
+	pipeline.AddStep("dynamic symbols", func() (*common.OperationResult, error) {
+		return e.obfuscateDynamicSymbols(force), nil
+	})
+	if force {
+		pipeline.AddStep("section string scramble", func() (*common.OperationResult, error) {
+			return e.scrambleSectionStringTableForce(), nil
+		})
+		pipeline.AddStep("section string wipe", func() (*common.OperationResult, error) {
+			return e.wipeSectionStringTableBeforeSave(), nil
+		})
+	}
+
+	if err := pipeline.Execute(result); err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to obfuscate ELF: %v", err))
+	}
+	if !result.Applied {
 		return common.NewSkipped("no obfuscation operations applied")
 	}
-	result.Count = totalCount
-	result.Message = fmt.Sprintf("%d operations applied", totalCount)
+
+	result.Message = fmt.Sprintf("ELF obfuscation completed: %d bytes processed", originalSize)
 	if saveErr := e.Save(true, int64(len(e.RawData))); saveErr != nil {
-		result.AddDetail(fmt.Sprintf("Failed to save with headers: %v", saveErr), 0, true)
+		result.AddDetail(fmt.Sprintf("failed to save with headers: %v", saveErr), 0, true)
 		if saveErr = e.Save(false, int64(len(e.RawData))); saveErr != nil {
-			result.AddDetail(fmt.Sprintf("Failed to save without headers: %v", saveErr), 0, true)
-			return common.NewSkipped("Obfuscation succeeded but failed to save file")
+			result.AddDetail(fmt.Sprintf("failed to save without headers: %v", saveErr), 0, true)
+			return common.NewSkipped("obfuscation succeeded but failed to save file")
 		}
 	}
 	return result
@@ -830,6 +823,31 @@ func (e *ELFFile) rewriteSymbolAsPadding(data []byte, dynstr *Section) bool {
 	return true
 }
 
+func (e *ELFFile) reorderVersionTable(section *Section, original []byte, entries []dynsymEntry) {
+	if section == nil || section.Offset < 0 {
+		return
+	}
+	entryCount := len(entries)
+	if entryCount == 0 || len(original) < entryCount*2 {
+		return
+	}
+	reordered := make([]byte, len(original))
+	for newIdx, entry := range entries {
+		srcStart := entry.originalIndex * 2
+		dstStart := newIdx * 2
+		if srcStart+2 > len(original) || dstStart+2 > len(reordered) {
+			continue
+		}
+		copy(reordered[dstStart:dstStart+2], original[srcStart:srcStart+2])
+	}
+	start := section.Offset
+	end := start + int64(len(reordered))
+	if end > int64(len(e.RawData)) {
+		return
+	}
+	copy(e.RawData[start:end], reordered)
+}
+
 func (e *ELFFile) randomizeDynstrName(dynstr *Section, nameOffset uint32) bool {
 	start := dynstr.Offset + int64(nameOffset)
 	if start < 0 || start >= int64(len(e.RawData)) {
@@ -990,11 +1008,11 @@ type dynsymEntry struct {
 }
 
 func (e *ELFFile) obfuscateDynamicSymbols(force bool) *common.OperationResult {
-	dynsymIdx, found := e.findSectionByName(".dynsym")
+	dynsymIdx, found := e.findSectionIndexByType(SHT_DYNSYM)
 	if !found {
 		return common.NewSkipped("no .dynsym section present")
 	}
-	dynstrIdx, found := e.findSectionByName(".dynstr")
+	dynstrIdx, found := e.dynamicStringTableIndex()
 	if !found {
 		return common.NewSkipped("no .dynstr section present")
 	}
@@ -1046,6 +1064,12 @@ func (e *ELFFile) obfuscateDynamicSymbols(force bool) *common.OperationResult {
 
 	// Rewrite relocation references with the new ordering.
 	relocationUpdates := e.rewriteDynsymRelocations(uint16(dynsymIdx), indexMap)
+
+	if versionIdx, ok := e.findSectionIndexByType(SHT_GNU_VERSYM); ok {
+		if data, err := e.getSectionContent(uint16(versionIdx)); err == nil && len(data) >= entryCount*2 {
+			e.reorderVersionTable(&e.Sections[versionIdx], data, entries)
+		}
+	}
 
 	result := common.NewApplied("updated dynamic symbols", 0)
 	result.SetCategory("SYMBOLS")

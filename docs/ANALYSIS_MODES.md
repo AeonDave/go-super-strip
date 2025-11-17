@@ -91,7 +91,7 @@ Implementation: `elfrw/analyze.go`.
 
 ## 6. Manual Validation
 
-Use `tests/cli_matrix.sh` to capture before/after analyze logs automatically. For ad-hoc checks:
+Use `test/cli_matrix.sh` to capture before/after analyze logs automatically. For ad-hoc checks:
 
 ```bash
 ./gosstrip -a testfiles/simple_go.exe > logs/pe_analyze.txt

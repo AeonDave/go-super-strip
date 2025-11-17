@@ -628,7 +628,7 @@ func runAnalyze(cmd *analyzeCommand) error {
 func writeAnalysisResult(result *common.AnalysisResult, format, outputPath string) error {
 	switch format {
 	case "", "text":
-		text := renderAnalysisText(result)
+		text := common.RenderAnalysisText(result)
 		if outputPath != "" {
 			return os.WriteFile(outputPath, []byte(text), 0644)
 		}
@@ -647,56 +647,6 @@ func writeAnalysisResult(result *common.AnalysisResult, format, outputPath strin
 	default:
 		return fmt.Errorf("unsupported analyze format %q", format)
 	}
-}
-
-func renderAnalysisText(result *common.AnalysisResult) string {
-	var builder strings.Builder
-	header := fmt.Sprintf("%s ANALYSIS (%s mode)", result.FileType, strings.ToUpper(string(result.Mode)))
-	builder.WriteString(header)
-	builder.WriteByte('\n')
-	builder.WriteString(strings.Repeat("=", len(header)))
-	builder.WriteString("\n\n")
-	if len(result.Blocks) > 0 {
-		for _, block := range result.Blocks {
-			builder.WriteString(block.Title)
-			builder.WriteByte('\n')
-			builder.WriteString(strings.Repeat("-", len(block.Title)))
-			builder.WriteByte('\n')
-			for _, line := range block.Lines {
-				builder.WriteString(line)
-				if !strings.HasSuffix(line, "\n") {
-					builder.WriteByte('\n')
-				}
-			}
-			builder.WriteByte('\n')
-		}
-	} else if result.Text != "" {
-		builder.WriteString(result.Text)
-		if !strings.HasSuffix(result.Text, "\n") {
-			builder.WriteByte('\n')
-		}
-	}
-
-	if len(result.Warnings) > 0 {
-		builder.WriteString("Warnings:\n")
-		for _, w := range result.Warnings {
-			builder.WriteString(" - ")
-			builder.WriteString(w)
-			builder.WriteByte('\n')
-		}
-		builder.WriteByte('\n')
-	}
-	if len(result.Errors) > 0 {
-		builder.WriteString("Errors:\n")
-		for _, w := range result.Errors {
-			builder.WriteString(" - ")
-			builder.WriteString(w)
-			builder.WriteByte('\n')
-		}
-		builder.WriteByte('\n')
-	}
-
-	return builder.String()
 }
 
 func runPipeline(cmd *pipelineCommand) error {
@@ -719,53 +669,49 @@ func runPipeline(cmd *pipelineCommand) error {
 		return fmt.Errorf("unsupported file type: %s", workingPath)
 	}
 
-	var completed []string
+	session := newCommandSession(getFileType(isPE))
 	if cmd.Strip != nil {
-		if err := runStrip(workingPath, cmd.Strip, isPE); err != nil {
-			return err
-		}
-		completed = append(completed, "strip")
+		session.addStep("strip", func() (*common.OperationResult, error) {
+			return runStrip(workingPath, cmd.Strip, isPE)
+		})
 	}
 	if cmd.Compact != nil {
-		if err := runCompact(workingPath, cmd.Compact, isPE); err != nil {
-			return err
-		}
-		completed = append(completed, "compact")
+		session.addStep("compact", func() (*common.OperationResult, error) {
+			return runCompact(workingPath, cmd.Compact, isPE)
+		})
 	}
 	if cmd.Obfuscate != nil {
-		if err := runObfuscate(workingPath, cmd.Obfuscate, isPE); err != nil {
-			return err
-		}
-		completed = append(completed, "obfuscate")
+		session.addStep("obfuscation", func() (*common.OperationResult, error) {
+			return runObfuscate(workingPath, cmd.Obfuscate, isPE)
+		})
 	}
 	if cmd.Regex != nil && len(cmd.Regex.Patterns) > 0 {
-		if err := runRegex(workingPath, cmd.Regex.Patterns, isPE); err != nil {
-			return err
-		}
-		completed = append(completed, "regex")
+		session.addStep("regex", func() (*common.OperationResult, error) {
+			return runRegex(workingPath, cmd.Regex.Patterns, isPE)
+		})
 	}
 	if cmd.Insert != nil {
-		if err := runInsert(workingPath, cmd.Insert, isPE); err != nil {
-			return err
-		}
-		completed = append(completed, "insert")
+		session.addStep("insert", func() (*common.OperationResult, error) {
+			return runInsert(workingPath, cmd.Insert, isPE)
+		})
 	}
 	if cmd.Overlay != nil {
-		if err := runOverlay(workingPath, cmd.Overlay, isPE); err != nil {
-			return err
-		}
-		completed = append(completed, "overlay")
+		session.addStep("overlay", func() (*common.OperationResult, error) {
+			return runOverlay(workingPath, cmd.Overlay, isPE)
+		})
 	}
 	if cmd.Pack != nil {
-		if err := runPack(workingPath, cmd.Pack); err != nil {
-			return err
-		}
-		completed = append(completed, "pack")
+		session.addStep("pack", func() (*common.OperationResult, error) {
+			return runPack(workingPath, cmd.Pack)
+		})
 	}
 
-	if len(completed) > 0 {
-		fmt.Printf("\nCompleted operations: %s\n", strings.Join(completed, ", "))
+	summary, err := session.execute()
+	if err != nil {
+		return err
 	}
+	fmt.Println("\n=== Pipeline Summary ===")
+	printOperationResult(session.fileType, "pipeline", summary)
 	return nil
 }
 
@@ -784,97 +730,94 @@ func detectFileKind(path string) (bool, bool, error) {
 	return false, isELF, nil
 }
 
-func runStrip(path string, opts *StripOptions, isPE bool) error {
-	fmt.Println("\n=== Strip Operations ===")
-	var result *common.OperationResult
+func runStrip(path string, opts *StripOptions, isPE bool) (*common.OperationResult, error) {
 	if isPE {
-		result = perw.StripPE(path, opts.Force)
-	} else {
-		result = elfrw.StripELF(path, opts.Force)
+		return perw.StripPE(path, opts.Force), nil
 	}
-	printOperationResult(getFileType(isPE), "strip", result)
-	return nil
+	return elfrw.StripELF(path, opts.Force), nil
 }
 
-func runCompact(path string, opts *CompactOptions, isPE bool) error {
-	fmt.Println("\n=== Compact Operations ===")
+func runCompact(path string, opts *CompactOptions, isPE bool) (*common.OperationResult, error) {
 	fillRandom := strings.EqualFold(opts.Fill, "random")
 	keepResources := opts.KeepResources
-	var result *common.OperationResult
 	if isPE {
-		result = perw.CompactPE(path, opts.Force, fillRandom, keepResources)
-	} else {
-		result = elfrw.CompactELF(path, opts.Force, fillRandom, keepResources)
+		return perw.CompactPE(path, opts.Force, fillRandom, keepResources), nil
 	}
-	printOperationResult(getFileType(isPE), "compact", result)
-	return nil
+	return elfrw.CompactELF(path, opts.Force, fillRandom, keepResources), nil
 }
 
-func runObfuscate(path string, opts *ObfuscateOptions, isPE bool) error {
-	fmt.Println("\n=== Obfuscation Operations ===")
-	var result *common.OperationResult
+func runObfuscate(path string, opts *ObfuscateOptions, isPE bool) (*common.OperationResult, error) {
 	if isPE {
-		result = perw.ObfuscatePE(path, opts.Force)
-	} else {
-		result = elfrw.ObfuscateELF(path, opts.Force)
+		return perw.ObfuscatePE(path, opts.Force), nil
 	}
-	printOperationResult(getFileType(isPE), "obfuscation", result)
-	return nil
+	return elfrw.ObfuscateELF(path, opts.Force), nil
 }
 
-func runRegex(path string, patterns []string, isPE bool) error {
-	fmt.Println("\n=== Regex Operations ===")
+func runRegex(path string, patterns []string, isPE bool) (*common.OperationResult, error) {
+	if len(patterns) == 0 {
+		return common.NewSkipped("no regex patterns provided"), nil
+	}
+	aggregate := common.NewApplied("regex operations", 0)
 	for _, pattern := range patterns {
-		fmt.Printf("Applying pattern: %s\n", pattern)
 		var result *common.OperationResult
 		if isPE {
 			result = perw.RegexPE(path, pattern)
 		} else {
 			result = elfrw.RegexELF(path, pattern)
 		}
-		printOperationResult(getFileType(isPE), "regex", result)
+		if result == nil {
+			continue
+		}
+		if result.Applied {
+			aggregate.Applied = true
+			aggregate.Count += result.Count
+			label := fmt.Sprintf("pattern %s: %s", pattern, result.Message)
+			aggregate.AddDetail(label, result.Count, false)
+			for _, detail := range result.Details {
+				aggregate.AddDetail(detail.Message, detail.Count, detail.IsRisky)
+			}
+		} else if result.Message != "" {
+			aggregate.AddDetail(fmt.Sprintf("pattern %s skipped: %s", pattern, result.Message), 0, false)
+		}
 	}
-	return nil
+	if !aggregate.Applied {
+		return common.NewSkipped("no regex operations applied"), nil
+	}
+	aggregate.Message = fmt.Sprintf("applied %d regex patterns", len(patterns))
+	return aggregate, nil
 }
 
-func runInsert(path string, opts *InsertOptions, isPE bool) error {
-	fmt.Printf("\n=== Insert Operations ===\nSection: %s\n", opts.Name)
+func runInsert(path string, opts *InsertOptions, isPE bool) (*common.OperationResult, error) {
 	payload := opts.Data
 	if opts.File != "" {
 		payload = opts.File
 	}
-	var result *common.OperationResult
 	if isPE {
-		result = perw.InsertPE(path, opts.Name, payload, opts.Password)
-	} else {
-		result = elfrw.InsertELF(path, opts.Name, payload, opts.Password)
+		return perw.InsertPE(path, opts.Name, payload, opts.Password), nil
 	}
-	printOperationResult(getFileType(isPE), "insert", result)
-	return nil
+	return elfrw.InsertELF(path, opts.Name, payload, opts.Password), nil
 }
 
-func runOverlay(path string, opts *OverlayOptions, isPE bool) error {
-	fmt.Println("\n=== Overlay Operations ===")
+func runOverlay(path string, opts *OverlayOptions, isPE bool) (*common.OperationResult, error) {
 	payload := opts.Data
 	if opts.File != "" {
 		payload = opts.File
 	}
-	var result *common.OperationResult
 	if isPE {
-		result = perw.OverlayPE(path, payload, opts.Password)
-	} else {
-		result = elfrw.OverlayELF(path, payload, opts.Password)
+		return perw.OverlayPE(path, payload, opts.Password), nil
 	}
-	printOperationResult(getFileType(isPE), "overlay", result)
-	return nil
+	return elfrw.OverlayELF(path, payload, opts.Password), nil
 }
 
-func runPack(path string, opts *PackOptions) error {
-	fmt.Println("\n=== Pack Operations ===")
+func runPack(path string, opts *PackOptions) (*common.OperationResult, error) {
 	if err := pack.Pack(path, opts.Options, path); err != nil {
-		return fmt.Errorf("pack operation failed: %w", err)
+		return nil, fmt.Errorf("pack operation failed: %w", err)
 	}
-	return nil
+	result := common.NewApplied("pack completed", 1)
+	if opts.Options != "" {
+		result.AddDetail(fmt.Sprintf("options: %s", opts.Options), 0, false)
+	}
+	return result, nil
 }
 
 func printOperationResult(fileType, name string, result *common.OperationResult) {
@@ -954,4 +897,48 @@ func printUsage() {
 	fmt.Println("  -p=opt1=val1,...        Pack executable")
 	fmt.Println()
 	fmt.Println("Specify at least one operation (other than analyze). Use output to write results to a new file; otherwise the input is modified in place.")
+}
+
+type commandSession struct {
+	fileType  string
+	pipeline  *common.Pipeline
+	aggregate *common.OperationResult
+}
+
+func newCommandSession(fileType string) *commandSession {
+	return &commandSession{
+		fileType: fileType,
+		pipeline: common.NewPipeline(),
+		aggregate: &common.OperationResult{
+			Message: fmt.Sprintf("%s pipeline", fileType),
+			Details: []common.OperationDetail{},
+		},
+	}
+}
+
+func (s *commandSession) addStep(name string, fn func() (*common.OperationResult, error)) {
+	s.pipeline.AddStep(name, func() (*common.OperationResult, error) {
+		result, err := fn()
+		if err != nil {
+			return nil, err
+		}
+		if result != nil {
+			printOperationResult(s.fileType, name, result)
+		} else {
+			fmt.Printf("[%s] %s: no result provided\n", s.fileType, name)
+		}
+		return result, nil
+	})
+}
+
+func (s *commandSession) execute() (*common.OperationResult, error) {
+	if err := s.pipeline.Execute(s.aggregate); err != nil {
+		return nil, err
+	}
+	if s.aggregate.Applied {
+		s.aggregate.Message = fmt.Sprintf("%s pipeline summary", strings.ToUpper(s.fileType))
+	} else {
+		s.aggregate.Message = "no operations applied"
+	}
+	return s.aggregate, nil
 }

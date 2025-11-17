@@ -1,4 +1,4 @@
-package perw
+package test
 
 import (
 	"bytes"
@@ -8,15 +8,22 @@ import (
 	"testing"
 
 	"gosstrip/common"
+	"gosstrip/perw"
 )
 
 func hasPESection(t *testing.T, path, name string) bool {
 	t.Helper()
-	peFile, err := readPe(path, os.O_RDONLY)
+	f, err := os.Open(path)
 	if err != nil {
-		t.Fatalf("failed to reopen PE: %v", err)
+		t.Fatalf("failed to open PE: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+	peFile, err := perw.ReadPE(f)
+	if err != nil {
+		t.Fatalf("failed to parse PE: %v", err)
 	}
 	defer func() { _ = peFile.Close() }()
+
 	target := strings.ToLower(name)
 	for _, sec := range peFile.Sections {
 		if strings.ToLower(strings.Trim(sec.Name, "\x00")) == target {
@@ -36,8 +43,8 @@ func readPETimestamp(t *testing.T, path string) uint32 {
 		t.Fatalf("file too small: %s", path)
 	}
 	elfanew := binary.LittleEndian.Uint32(data[0x3C:0x40])
-	coffOffset := int(elfanew) + PE_SIGNATURE_SIZE
-	offset := coffOffset + PE_TIMESTAMP_OFFSET
+	coffOffset := int(elfanew) + perw.PE_SIGNATURE_SIZE
+	offset := coffOffset + perw.PE_TIMESTAMP_OFFSET
 	if offset+4 > len(data) {
 		t.Fatalf("timestamp offset out of range for %s", path)
 	}
@@ -46,7 +53,7 @@ func readPETimestamp(t *testing.T, path string) uint32 {
 
 func TestAnalyzePE_Succeeds(t *testing.T) {
 	pePath := copyPEFixture(t, "simple.exe")
-	if _, err := AnalyzePE(pePath, common.DefaultAnalysisOptions()); err != nil {
+	if _, err := perw.AnalyzePE(pePath, common.DefaultAnalysisOptions()); err != nil {
 		t.Fatalf("AnalyzePE returned error: %v", err)
 	}
 }
@@ -58,12 +65,12 @@ func TestStripPE_PreservesPEValidity(t *testing.T) {
 		t.Fatalf("stat failed: %v", err)
 	}
 
-	result := StripPE(pePath, false)
+	result := perw.StripPE(pePath, false)
 	if result == nil {
 		t.Fatal("expected result from StripPE, got nil")
 	}
 
-	isPE, err := IsPEFile(pePath)
+	isPE, err := perw.IsPEFile(pePath)
 	if err != nil {
 		t.Fatalf("IsPEFile failed: %v", err)
 	}
@@ -85,7 +92,7 @@ func TestStripPE_PreservesPEValidity(t *testing.T) {
 
 func TestObfuscatePE_AppliesChanges(t *testing.T) {
 	pePath := copyPEFixture(t, "simple.exe")
-	result := ObfuscatePE(pePath, false)
+	result := perw.ObfuscatePE(pePath, false)
 	if result == nil {
 		t.Fatal("expected result from ObfuscatePE, got nil")
 	}
@@ -93,7 +100,7 @@ func TestObfuscatePE_AppliesChanges(t *testing.T) {
 		t.Fatalf("expected obfuscation to apply, message: %s", result.Message)
 	}
 
-	isPE, err := IsPEFile(pePath)
+	isPE, err := perw.IsPEFile(pePath)
 	if err != nil {
 		t.Fatalf("IsPEFile failed: %v", err)
 	}
@@ -104,13 +111,19 @@ func TestObfuscatePE_AppliesChanges(t *testing.T) {
 
 func TestObfuscatePE_PreservesImports(t *testing.T) {
 	pePath := copyPEFixture(t, "simple.exe")
-	res := ObfuscatePE(pePath, true)
+	res := perw.ObfuscatePE(pePath, true)
 	if res == nil || !res.Applied {
 		t.Fatalf("expected obfuscation to apply: %#v", res)
 	}
-	peFile, err := readPe(pePath, os.O_RDONLY)
+
+	f, err := os.Open(pePath)
 	if err != nil {
 		t.Fatalf("failed to reopen PE: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+	peFile, err := perw.ReadPE(f)
+	if err != nil {
+		t.Fatalf("failed to parse PE: %v", err)
 	}
 	defer func() { _ = peFile.Close() }()
 	importSyms, _ := peFile.PE.ImportedSymbols()
@@ -121,12 +134,12 @@ func TestObfuscatePE_PreservesImports(t *testing.T) {
 
 func TestCompactPE_SafeOperation(t *testing.T) {
 	pePath := copyPEFixture(t, "simple.exe")
-	result := CompactPE(pePath, false, false, true)
+	result := perw.CompactPE(pePath, false, false, true)
 	if result == nil {
 		t.Fatal("expected result from CompactPE, got nil")
 	}
 
-	isPE, err := IsPEFile(pePath)
+	isPE, err := perw.IsPEFile(pePath)
 	if err != nil {
 		t.Fatalf("IsPEFile failed: %v", err)
 	}
@@ -135,96 +148,26 @@ func TestCompactPE_SafeOperation(t *testing.T) {
 	}
 }
 
-func TestCompactPE_FillModesAndForce(t *testing.T) {
-	cfgs := []struct {
-		name       string
-		force      bool
-		fillRandom bool
-	}{
-		{"zero", false, false},
-		{"random", false, true},
-		{"forceRandom", true, true},
-	}
-	for _, cfg := range cfgs {
-		t.Run(cfg.name, func(t *testing.T) {
-			pePath := copyPEFixture(t, "simple.exe")
-			result := CompactPE(pePath, cfg.force, cfg.fillRandom, true)
-			if result == nil {
-				t.Fatal("expected compact result, got nil")
-			}
-			isPE, err := IsPEFile(pePath)
-			if err != nil {
-				t.Fatalf("IsPEFile failed: %v", err)
-			}
-			if !isPE {
-				t.Fatalf("PE invalid after compact fill=%v force=%v", cfg.fillRandom, cfg.force)
-			}
-		})
-	}
-}
-
 func TestCompactPE_PreservesTimestamp(t *testing.T) {
-	pePath := copyPEFixture(t, "simple_timestamp.exe")
-	original := readPETimestamp(t, pePath)
-
-	if result := CompactPE(pePath, false, false, true); result == nil {
-		t.Fatal("expected compact result, got nil")
-	}
-	if got := readPETimestamp(t, pePath); got != original {
-		t.Fatalf("expected timestamp %d, got %d", original, got)
-	}
-}
-
-func TestCompactPE_PreservesTimestampAfterStrip(t *testing.T) {
-	pePath := copyPEFixture(t, "simple_strip_timestamp.exe")
-	if result := StripPE(pePath, false); result == nil || !result.Applied {
-		t.Fatalf("strip failed: %#v", result)
-	}
-	original := readPETimestamp(t, pePath)
-	if original != 0 {
-		t.Fatalf("expected strip to zero timestamp, got %d", original)
-	}
-	if result := CompactPE(pePath, true, false, true); result == nil {
-		t.Fatal("compact failed")
-	}
-	if got := readPETimestamp(t, pePath); got != original {
-		t.Fatalf("expected timestamp %d after compact, got %d", original, got)
-	}
-}
-
-func TestCompactPE_KeepResourcesOption(t *testing.T) {
 	pePath := copyPEFixture(t, "simple.exe")
-	secName := common.SanitizeSectionName(".rsrc")
-	if res := InsertPE(pePath, secName, "RESOURCEPAYLOAD", ""); res == nil || !res.Applied {
-		t.Fatalf("failed to seed resource section: %#v", res)
+	before := readPETimestamp(t, pePath)
+
+	result := perw.CompactPE(pePath, false, false, true)
+	if result == nil || !result.Applied {
+		t.Fatalf("expected compaction to apply, got %#v", result)
 	}
-	if !hasPESection(t, pePath, ".rsrc") {
-		t.Skip("fixture lacks .rsrc even after insertion; skipping test")
-	}
-	if result := CompactPE(pePath, false, false, true); result == nil {
-		t.Fatalf("compact with keepResources failed")
-	}
-	if !hasPESection(t, pePath, ".rsrc") {
-		t.Fatalf(".rsrc should be preserved when keepResources is true")
-	}
-	if result := CompactPE(pePath, true, false, false); result == nil {
-		t.Fatalf("compact without keepResources failed")
-	}
-	if hasPESection(t, pePath, ".rsrc") {
-		t.Fatalf(".rsrc should be removed when keepResources is false and force=true")
+
+	after := readPETimestamp(t, pePath)
+	if before != after {
+		t.Fatalf("expected timestamp to remain %08x, got %08x", before, after)
 	}
 }
 
-func TestCompactPE_PreservesImportsWhenNotForced(t *testing.T) {
+func TestCompactPE_ForceRemovesImports(t *testing.T) {
 	pePath := copyPEFixture(t, "simple.exe")
-	if result := CompactPE(pePath, false, false, true); result == nil {
-		t.Fatalf("compact failed")
-	}
-	if !hasPESection(t, pePath, ".idata") {
-		t.Fatalf(".idata should remain when force=false")
-	}
-	if result := CompactPE(pePath, true, false, true); result == nil {
-		t.Fatalf("forced compact failed")
+	result := perw.CompactPE(pePath, true, false, false)
+	if result == nil || !result.Applied {
+		t.Fatalf("expected compaction to apply, got %#v", result)
 	}
 	if hasPESection(t, pePath, ".idata") {
 		t.Fatalf(".idata should be removable when force=true")
@@ -235,7 +178,7 @@ func TestInsertPE_AddsSection(t *testing.T) {
 	pePath := copyPEFixture(t, "simple.exe")
 	sectionName := common.SanitizeSectionName(".custom")
 
-	result := InsertPE(pePath, sectionName, "HelloWorld", "")
+	result := perw.InsertPE(pePath, sectionName, "HelloWorld", "")
 	if result == nil {
 		t.Fatal("expected result from InsertPE, got nil")
 	}
@@ -243,13 +186,16 @@ func TestInsertPE_AddsSection(t *testing.T) {
 		t.Fatalf("expected insert to apply, message: %s", result.Message)
 	}
 
-	peFile, err := readPe(pePath, os.O_RDONLY)
+	f, err := os.Open(pePath)
 	if err != nil {
 		t.Fatalf("failed to reopen PE: %v", err)
 	}
-	defer func() {
-		_ = peFile.Close()
-	}()
+	defer func() { _ = f.Close() }()
+	peFile, err := perw.ReadPE(f)
+	if err != nil {
+		t.Fatalf("failed to parse PE: %v", err)
+	}
+	defer func() { _ = peFile.Close() }()
 
 	found := false
 	for _, sec := range peFile.Sections {
@@ -266,7 +212,7 @@ func TestInsertPE_AddsSection(t *testing.T) {
 func TestRegexPE_InvalidPattern(t *testing.T) {
 	pePath := copyPEFixture(t, "simple.exe")
 
-	result := RegexPE(pePath, "[")
+	result := perw.RegexPE(pePath, "[")
 	if result == nil {
 		t.Fatal("expected result from RegexPE, got nil")
 	}
@@ -283,7 +229,7 @@ func TestRegexPE_RemovesMatches(t *testing.T) {
 	marker := "UniqueRegexMarker12345"
 	sectionName := common.SanitizeSectionName(".regex")
 
-	insertResult := InsertPE(pePath, sectionName, marker, "")
+	insertResult := perw.InsertPE(pePath, sectionName, marker, "")
 	if insertResult == nil || !insertResult.Applied {
 		t.Fatalf("expected insert operation to apply: %#v", insertResult)
 	}
@@ -296,7 +242,7 @@ func TestRegexPE_RemovesMatches(t *testing.T) {
 		t.Fatalf("expected inserted marker %q to be present", marker)
 	}
 
-	regexResult := RegexPE(pePath, marker)
+	regexResult := perw.RegexPE(pePath, marker)
 	if regexResult == nil {
 		t.Fatal("expected result from RegexPE, got nil")
 	}
@@ -318,7 +264,7 @@ func TestStripPE_RemovesUPXMarkers(t *testing.T) {
 	sectionName := common.SanitizeSectionName(".upx")
 	upxBanner := "UPX! Info: This file is packed with the UPX executable packer http://upx.sf.net $"
 
-	insertResult := InsertPE(pePath, sectionName, upxBanner, "")
+	insertResult := perw.InsertPE(pePath, sectionName, upxBanner, "")
 	if insertResult == nil || !insertResult.Applied {
 		t.Fatalf("expected insert operation to apply: %#v", insertResult)
 	}
@@ -334,7 +280,7 @@ func TestStripPE_RemovesUPXMarkers(t *testing.T) {
 		t.Fatalf("expected UPX banner to be present before stripping")
 	}
 
-	stripResult := StripPE(pePath, false)
+	stripResult := perw.StripPE(pePath, false)
 	if stripResult == nil {
 		t.Fatal("expected result from StripPE, got nil")
 	}

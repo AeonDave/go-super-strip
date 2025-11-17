@@ -100,7 +100,7 @@ func runELFBinary(t *testing.T, path string) {
 			t.Fatalf("failed to resolve ELF path: %v", err)
 		}
 		cmd := fmt.Sprintf("'%s'", toWSLPath(abs))
-		if err := runWSLCommand(cmd); err != nil {
+		if err := wslRun(cmd); err != nil {
 			t.Fatalf("failed to run ELF via WSL: %v", err)
 		}
 	default:

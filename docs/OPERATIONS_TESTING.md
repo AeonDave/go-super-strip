@@ -8,7 +8,7 @@ This document explains how we validate every CLI feature (analyze, strip, compac
 |-------|---------|-------------|
 | Unit tests | Validate individual helpers (section classifiers, header writers, regex scrubbers). | `go test ./perw ./elfrw ./pack ./common` |
 | Integration tests | Exercise the CLI on compiled fixtures, ensuring operations run in canonical order and binaries remain valid. | `go test ./test` |
-| Regression scripts | Produce human-readable logs for manual inspection and keep a corpus of before/after analyzer output. | `tests/cli_matrix.sh`, `test_polymorphism.sh` |
+| Regression scripts | Produce human-readable logs for manual inspection and keep a corpus of before/after analyzer output. | `test/cli_matrix.sh`, `test_polymorphism.sh` |
 
 Always run `go test ./...` before opening a PR. Use the scripts when you need to inspect real binaries or compare analyzer output between commits.
 
@@ -26,7 +26,7 @@ Fixtures compile on the fly. The ELF path uses WSL’s `gcc` when running on Win
 
 ## 3. CLI Matrix Script
 
-`tests/cli_matrix.sh` is a new helper that builds `gosstrip`, compiles fresh PE/ELF fixtures, and runs two canonical flows in default and force mode:
+`test/cli_matrix.sh` is a helper that builds `gosstrip`, compiles fresh PE/ELF fixtures, and runs two canonical flows in default and force mode:
 
 1. `analyze → obfuscate → analyze`
 2. `analyze → strip → compact → obfuscate → analyze`
@@ -36,7 +36,7 @@ All command transcripts (stdout/stderr plus timestamps) land in `tests/logs/cli_
 Usage:
 
 ```bash
-bash tests/cli_matrix.sh
+bash test/cli_matrix.sh
 ```
 
 Ensure `x86_64-w64-mingw32-gcc`, `gcc`, and (on Windows) `wsl.exe` are available.
@@ -74,7 +74,7 @@ On Linux/WSL, repeat with `testfiles/simple.c` compiled for ELF. Compare analyze
 When adding a new feature or option:
 
 1. Extend the CLI integration test suite with a new scenario.
-2. Update `tests/cli_matrix.sh` if the feature affects the canonical flows.
+2. Update `test/cli_matrix.sh` if the feature affects the canonical flows.
 3. Document how to inspect the behavior manually (add a snippet to the relevant technique doc).
 4. Reference new tests/scripts here so doc readers know how to run them.
 

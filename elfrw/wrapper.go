@@ -44,17 +44,7 @@ func AnalyzeELF(file string, opts common.AnalysisOptions) (*common.AnalysisResul
 	elfFile.IsPacked = elfFile.detectPacking()
 	switch opts.Mode {
 	case common.AnalysisModeDeep:
-		text, err := common.CaptureOutput(func() error {
-			return elfFile.printDeepReport()
-		})
-		if err != nil {
-			return nil, err
-		}
-		return &common.AnalysisResult{
-			FileType: "ELF",
-			Mode:     common.AnalysisModeDeep,
-			Text:     text,
-		}, nil
+		return elfFile.buildDeepReport(), nil
 	default:
 		return elfFile.buildSimpleReport(), nil
 	}

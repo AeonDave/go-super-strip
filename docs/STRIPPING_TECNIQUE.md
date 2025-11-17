@@ -98,4 +98,4 @@ After each strip pass we:
 - Flag which sections are now “eligible for compaction” (size zero, marked by `MarkSectionStripped`). Compact relies on this metadata to know what it may delete.
 - Re-run lightweight analyzers to ensure entry points still resolve to valid sections.
 
-Unit coverage: see `perw/operations_test.go`, `elfrw/operations_test.go`, and the CLI matrix script (`tests/cli_matrix.sh`) for end-to-end verification. These tests cover default vs. force and multiple fill strategies.
+Unit coverage: see `perw/operations_test.go`, `elfrw/operations_test.go`, and the CLI matrix script (`test/cli_matrix.sh`) for end-to-end verification. These tests cover default vs. force and multiple fill strategies.

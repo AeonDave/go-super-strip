@@ -11,14 +11,33 @@ import (
 func (p *PEFile) Compact(force bool, fillRandom bool, keepResources bool) *common.OperationResult {
 	origTimestamp, tsOffset := p.readTimeDateStamp()
 
-	result, err := p.sectionRemoval(force, fillRandom, keepResources)
-	if err != nil {
+	pipeline := common.NewPipeline()
+	result := &common.OperationResult{
+		Message: "PE compaction",
+		Details: []common.OperationDetail{},
+	}
+
+	pipeline.AddStep("section removal", func() (*common.OperationResult, error) {
+		return p.sectionRemoval(force, fillRandom, keepResources)
+	})
+	pipeline.AddStep("restore timestamp", func() (*common.OperationResult, error) {
+		p.restoreTimeDateStamp(origTimestamp, tsOffset)
+		return nil, nil
+	})
+	if force {
+		pipeline.AddStep("scrub headers", func() (*common.OperationResult, error) {
+			p.scrubSectionHeaderNames()
+			return nil, nil
+		})
+	}
+
+	if err := pipeline.Execute(result); err != nil {
 		return common.NewSkipped(fmt.Sprintf("Failed to compact: %v", err))
 	}
-	p.restoreTimeDateStamp(origTimestamp, tsOffset)
-	if force {
-		p.scrubSectionHeaderNames()
+	if !result.Applied {
+		return common.NewSkipped("no compactable sections found")
 	}
+	result.Message = "PE compaction completed"
 	return result
 }
 
@@ -72,7 +91,8 @@ func (p *PEFile) identifyStripSections(force bool, keepResources bool) (removabl
 	criticalSections := p.identifyCriticalSections(force, keepResources)
 	resourceRule, hasResourceRule := rules[ResourceSections]
 
-	for i, section := range p.Sections {
+	for i := range p.Sections {
+		section := &p.Sections[i]
 		if _, ok := protected[i]; ok && !force {
 			keepable = append(keepable, i)
 			continue
@@ -90,21 +110,13 @@ func (p *PEFile) identifyStripSections(force bool, keepResources bool) (removabl
 		isRemovable := false
 		if section.Stripped {
 			isRemovable = true
-		} else if p.isCorruptedSection(section) {
+		} else if p.isCorruptedSection(*section) {
 			isRemovable = true
-		} else if force && p.isNullOrZeroSection(section) {
+		} else if force && p.isNullOrZeroSection(*section) {
 			isRemovable = true
 		} else {
 			for sectionType, rule := range rules {
-				if rule.IsRisky && !force {
-					continue
-				}
-
-				if !p.shouldStripForFileType(sectionType) {
-					continue
-				}
-
-				if common.MatchesPattern(section.Name, rule.ExactNames, rule.PrefixNames) {
+				if p.sectionMatchesRule(sectionType, section, rule, force) {
 					isRemovable = true
 					break
 				}
@@ -461,7 +473,7 @@ func (p *PEFile) removeSingleSection(sectionIdx int, totalRemovedSize *int64, fi
 		if fillRandom {
 			fillMode = RandomFill
 		}
-		if err := p.fillRegion(sectionToRemove.Offset, int(sectionToRemove.Size), fillMode); err != nil {
+		if err := p.wipeSectionData(&sectionToRemove, fillMode); err != nil {
 			return fmt.Errorf("failed to fill section %s: %w", sectionToRemove.Name, err)
 		}
 		p.Sections[sectionIdx].Stripped = true

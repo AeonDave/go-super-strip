@@ -13,88 +13,56 @@ const (
 	MAX_NULL_CHECK_SIZE = 65536
 )
 
+type elfCompactContext struct {
+	originalSize int64
+	removedNames []string
+	warnings     []string
+}
+
 func (e *ELFFile) Compact(force bool, fillRandom bool) *common.OperationResult {
 	if len(e.Sections) == 0 {
 		return common.NewSkipped("no sections to process")
 	}
 
-	originalSize := int64(len(e.RawData))
-	removable := e.identifyCompactableSections(force)
-	if len(removable) == 0 {
+	ctx := &elfCompactContext{
+		originalSize: int64(len(e.RawData)),
+	}
+	pipeline := common.NewPipeline()
+	result := &common.OperationResult{
+		Message: "ELF compaction",
+		Details: []common.OperationDetail{},
+	}
+
+	pipeline.AddStep("remove sections", func() (*common.OperationResult, error) {
+		return e.compactRemovalPhase(ctx, force, fillRandom)
+	})
+	pipeline.AddStep("rebuild headers", func() (*common.OperationResult, error) {
+		return e.compactRebuildPhase()
+	})
+	pipeline.AddStep("validate", func() (*common.OperationResult, error) {
+		return e.compactValidationPhase(ctx)
+	})
+
+	if err := pipeline.Execute(result); err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to compact ELF: %v", err))
+	}
+	if !result.Applied {
 		return common.NewSkipped("no compactable sections found")
 	}
 
-	sort.Sort(sort.Reverse(sort.IntSlice(removable)))
-	removedNames := e.getRemovedSectionNames(removable)
-	totalRemoved := int64(0)
-
-	// Create result object
-	result := common.NewApplied("ELF Compaction", len(removable))
-	result.SetCategory("SECTIONS")
-
-	// Track warnings
-	var warnings []string
-
-	for _, idx := range removable {
-		if err := e.removeCompactSection(idx, &totalRemoved, fillRandom); err != nil {
-			warning := fmt.Sprintf("Failed to remove section %d (%s): %v", idx, e.Sections[idx].Name, err)
-			warnings = append(warnings, warning)
-		}
-	}
-	e.updateSections(removable)
-	e.trimZeroTailBeyond(e.logicalFileEnd())
-
-	maxEnd := 0
-	for _, seg := range e.Segments {
-		end := int(seg.Offset + seg.FileSize)
-		if end > maxEnd {
-			maxEnd = end
-		}
-	}
-	if len(e.RawData) > maxEnd {
-		removedOverlay := int64(len(e.RawData) - maxEnd)
-		e.RawData = e.RawData[:maxEnd]
-		totalRemoved += removedOverlay
-	}
-
-	if err := e.rebuildSectionHeaderTable(); err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to rebuild section header table: %v", err))
-	}
-
-	if err := e.updateELFHeaderSectionCount(uint16(len(e.Sections))); err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to update ELF header section count: %v", err))
-	}
-
-	// Keep Section Header Table even under force to maintain runtime compatibility.
-
 	newSize := int64(len(e.RawData))
-	// Report actual on-disk reduction to avoid misleading percentages
-	removedBytes := originalSize - newSize
+	removedBytes := ctx.originalSize - newSize
 	if removedBytes < 0 {
 		removedBytes = 0
 	}
 	percent := 0.0
-	if originalSize > 0 {
-		percent = float64(removedBytes) / float64(originalSize) * 100.0
-	}
-
-	// Add details to result
-	for _, name := range removedNames {
-		result.AddDetail(fmt.Sprintf("removed section: %s", name), 1, false)
+	if ctx.originalSize > 0 {
+		percent = float64(removedBytes) / float64(ctx.originalSize) * 100.0
 	}
 	result.AddDetail(fmt.Sprintf("size reduced: %d -> %d bytes (%d bytes removed, %.1f%% reduction)",
-		originalSize, newSize, removedBytes, percent), 1, false)
-
-	// Add any warnings
-	for _, warning := range warnings {
-		result.AddDetail(warning, 0, true)
-	}
-	for _, warning := range e.validatePostCompact() {
-		result.AddDetail(warning, 0, true)
-	}
-
-	// Update the main message
-	result.Message = fmt.Sprintf("removed %d sections", len(removable))
+		ctx.originalSize, newSize, removedBytes, percent), 1, false)
+	result.SetCategory("SECTIONS")
+	result.Message = fmt.Sprintf("removed %d sections", len(ctx.removedNames))
 
 	if force {
 		e.scrubSectionStringTable()
@@ -392,6 +360,66 @@ func (e *ELFFile) identifyCriticalSections(force bool) map[int]struct{} {
 	}
 
 	return critical
+}
+
+func (e *ELFFile) compactRemovalPhase(ctx *elfCompactContext, force bool, fillRandom bool) (*common.OperationResult, error) {
+	removable := e.identifyCompactableSections(force)
+	if len(removable) == 0 {
+		return common.NewSkipped("no compactable sections found"), nil
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(removable)))
+	ctx.removedNames = e.getRemovedSectionNames(removable)
+	totalRemoved := int64(0)
+	var warnings []string
+	for _, idx := range removable {
+		if err := e.removeCompactSection(idx, &totalRemoved, fillRandom); err != nil {
+			warning := fmt.Sprintf("Failed to remove section %d (%s): %v", idx, e.Sections[idx].Name, err)
+			warnings = append(warnings, warning)
+		}
+	}
+	e.updateSections(removable)
+	e.trimZeroTailBeyond(e.logicalFileEnd())
+	maxEnd := 0
+	for _, seg := range e.Segments {
+		end := int(seg.Offset + seg.FileSize)
+		if end > maxEnd {
+			maxEnd = end
+		}
+	}
+	if len(e.RawData) > maxEnd {
+		removedOverlay := int64(len(e.RawData) - maxEnd)
+		e.RawData = e.RawData[:maxEnd]
+		totalRemoved += removedOverlay
+	}
+	ctx.warnings = append(ctx.warnings, warnings...)
+	result := common.NewApplied(fmt.Sprintf("removed %d sections", len(ctx.removedNames)), len(ctx.removedNames))
+	for _, name := range ctx.removedNames {
+		result.AddDetail(fmt.Sprintf("removed section: %s", name), 1, false)
+	}
+	return result, nil
+}
+
+func (e *ELFFile) compactRebuildPhase() (*common.OperationResult, error) {
+	if err := e.rebuildSectionHeaderTable(); err != nil {
+		return nil, err
+	}
+	if err := e.updateELFHeaderSectionCount(uint16(len(e.Sections))); err != nil {
+		return nil, err
+	}
+	return common.NewApplied("rebuilt section header table", 0), nil
+}
+
+func (e *ELFFile) compactValidationPhase(ctx *elfCompactContext) (*common.OperationResult, error) {
+	allWarnings := append([]string{}, ctx.warnings...)
+	allWarnings = append(allWarnings, e.validatePostCompact()...)
+	if len(allWarnings) == 0 {
+		return common.NewSkipped("validation clean"), nil
+	}
+	result := common.NewApplied("post-compaction warnings", 0)
+	for _, warning := range allWarnings {
+		result.AddDetail(warning, 0, true)
+	}
+	return result, nil
 }
 
 func (e *ELFFile) maxLoadSegmentEnd() int64 {

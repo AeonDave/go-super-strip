@@ -33,71 +33,49 @@ var headerOffsets = struct {
 
 func (p *PEFile) ObfuscateAll(force bool) *common.OperationResult {
 	originalSize := uint64(len(p.RawData))
-	var operations []string
-	totalCount := 0
-
-	if result := p.ObfuscateSectionNames(); result != nil && result.Applied {
-		operations = append(operations, result.Message)
-		totalCount += result.Count
+	pipeline := common.NewPipeline()
+	result := &common.OperationResult{
+		Message: "PE obfuscation",
+		Details: []common.OperationDetail{},
 	}
 
-	if result := p.ObfuscateSectionPadding(); result != nil && result.Applied {
-		operations = append(operations, result.Message)
-		totalCount += result.Count
-	}
-
-	if result := p.ObfuscateRuntimeStrings(); result != nil && result.Applied {
-		operations = append(operations, result.Message)
-		totalCount += result.Count
-	}
-
-	if result := p.ObfuscateHeaderMetadata(force); result != nil && result.Applied {
-		operations = append(operations, result.Message)
-		totalCount += result.Count
-	}
-
-	if result := p.ObfuscateImportTable(force); result != nil && result.Applied {
-		operations = append(operations, result.Message)
-		totalCount += result.Count
-	}
-
-	if result := p.ObfuscateExecutablePadding(force); result != nil && result.Applied {
-		operations = append(operations, result.Message)
-		totalCount += result.Count
-	}
-
+	pipeline.AddStep("section names", func() (*common.OperationResult, error) {
+		return p.ObfuscateSectionNames(), nil
+	})
+	pipeline.AddStep("section padding", func() (*common.OperationResult, error) {
+		return p.ObfuscateSectionPadding(), nil
+	})
+	pipeline.AddStep("runtime strings", func() (*common.OperationResult, error) {
+		return p.ObfuscateRuntimeStrings(), nil
+	})
+	pipeline.AddStep("header metadata", func() (*common.OperationResult, error) {
+		return p.ObfuscateHeaderMetadata(force), nil
+	})
+	pipeline.AddStep("imports", func() (*common.OperationResult, error) {
+		return p.ObfuscateImportTable(force), nil
+	})
+	pipeline.AddStep("executable padding", func() (*common.OperationResult, error) {
+		return p.ObfuscateExecutablePadding(force), nil
+	})
 	if force {
-		if result := p.InjectDebugDirectoryNoise(); result != nil && result.Applied {
-			operations = append(operations, result.Message)
-			totalCount += result.Count
-		}
+		pipeline.AddStep("debug directory", func() (*common.OperationResult, error) {
+			return p.InjectDebugDirectoryNoise(), nil
+		})
 	}
 
-	//if force {
-	//	if result := p.ObfuscateBaseAddresses(); result != nil && result.Applied {
-	//		message := fmt.Sprintf("⚠️  %s (risky)", result.Message)
-	//		operations = append(operations, message)
-	//		totalCount += result.Count
-	//	}
-	//}
-
-	if len(operations) == 0 {
+	if err := pipeline.Execute(result); err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to obfuscate PE: %v", err))
+	}
+	if !result.Applied {
 		return common.NewSkipped("no obfuscation operations applied")
 	}
 
-	message := fmt.Sprintf("PE obfuscation completed: %d bytes processed\n%s",
-		originalSize, p.formatObfuscationOperations(operations))
-
-	result := common.NewApplied(message, totalCount)
-
-	// Save the file with the changes
-	if result.Applied {
-		if saveErr := p.Save(true, int64(len(p.RawData))); saveErr != nil {
-			fmt.Printf("⚠️ Warning: Failed to save with headers: %v\n", saveErr)
-			if saveErr = p.Save(false, int64(len(p.RawData))); saveErr != nil {
-				fmt.Printf("⚠️ Warning: Failed to save without headers: %v\n", saveErr)
-				return common.NewSkipped("Obfuscation succeeded but failed to save file")
-			}
+	result.Message = fmt.Sprintf("PE obfuscation completed: %d bytes processed", originalSize)
+	if err := p.Save(true, int64(len(p.RawData))); err != nil {
+		result.AddDetail(fmt.Sprintf("failed to save with headers: %v", err), 0, true)
+		if err = p.Save(false, int64(len(p.RawData))); err != nil {
+			result.AddDetail(fmt.Sprintf("failed to save without headers: %v", err), 0, true)
+			return common.NewSkipped("obfuscation succeeded but failed to save file")
 		}
 	}
 
@@ -710,63 +688,4 @@ func (p *PEFile) findSectionByName(name string) *Section {
 		}
 	}
 	return nil
-}
-
-func (p *PEFile) formatObfuscationOperations(operations []string) string {
-	if len(operations) == 0 {
-		return "No operations performed"
-	}
-
-	var result strings.Builder
-	grouped := map[string][]string{
-		"section": {},
-		"string":  {},
-		"other":   {},
-	}
-
-	for _, op := range operations {
-		switch {
-		case strings.Contains(op, "renamed") && strings.Contains(op, "sections"):
-			grouped["section"] = append(grouped["section"], op)
-		case strings.Contains(op, "obfuscated") && strings.Contains(op, "strings"):
-			grouped["string"] = append(grouped["string"], op)
-		default:
-			grouped["other"] = append(grouped["other"], op)
-		}
-	}
-
-	if len(grouped["section"]) > 0 {
-		result.WriteString("📦 SECTION OBFUSCATION:\n")
-		for _, op := range grouped["section"] {
-			prefix := "   ✓ "
-			if strings.HasPrefix(op, "⚠️") {
-				prefix = "   "
-			}
-			result.WriteString(prefix + op + "\n")
-		}
-	}
-
-	if len(grouped["string"]) > 0 {
-		result.WriteString("🔤 STRING OBFUSCATION:\n")
-		for _, op := range grouped["string"] {
-			prefix := "   ✓ "
-			if strings.HasPrefix(op, "⚠️") {
-				prefix = "   "
-			}
-			result.WriteString(prefix + op + "\n")
-		}
-	}
-
-	if len(grouped["other"]) > 0 {
-		result.WriteString("🛠️  OTHER OBFUSCATION:\n")
-		for _, op := range grouped["other"] {
-			prefix := "   ✓ "
-			if strings.HasPrefix(op, "⚠️") {
-				prefix = "   "
-			}
-			result.WriteString(prefix + op + "\n")
-		}
-	}
-
-	return strings.TrimSuffix(result.String(), "\n")
 }

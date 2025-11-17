@@ -1,5 +1,7 @@
 package perw
 
+import "gosstrip/common"
+
 type SectionType int
 
 const (
@@ -40,113 +42,49 @@ type RegexStripRule struct {
 	IsRisky     bool
 }
 
-func GetSectionStripRule() map[SectionType]SectionStripRule {
-	return map[SectionType]SectionStripRule{
-		DebugSections: {
-			ExactNames:  []string{".stab", ".stabstr"},
-			PrefixNames: []string{".debug", ".zdebug", ".gnu.debuglto_"},
-			Description: "debugging information",
-			StripForDLL: true,
-			StripForEXE: true,
-			IsRisky:     false,
-			Fill:        ZeroFill,
-		},
-		SymbolSections: {
-			ExactNames:  []string{".symtab", ".strtab", ".shstrtab", ".dynsym", ".dynstr", ".hash", ".gnu.hash", ".gnu.version", ".gnu.version_d", ".gnu.version_r", ".interp"},
-			PrefixNames: []string{".gnu.linkonce."},
-			Description: "symbol table information",
-			StripForDLL: true,
-			StripForEXE: true,
-			IsRisky:     false,
-			Fill:        ZeroFill,
-		},
-		RelocationSections: {
-			ExactNames:  []string{".reloc"},
-			PrefixNames: []string{},
-			Description: "base relocation information",
-			StripForDLL: true,
-			StripForEXE: true,
-			IsRisky:     true,
-			Fill:        ZeroFill,
-		},
-		TLSSections: {
-			ExactNames:  []string{".tls"},
-			PrefixNames: []string{},
-			Description: "Thread Local Storage sections",
-			StripForDLL: true,
-			StripForEXE: true,
-			IsRisky:     true,
-			Fill:        ZeroFill,
-		},
-		NonEssentialSections: {
-			ExactNames:  []string{".comment", ".note", ".drectve", ".shared", ".sxdata", ".gcc_except_table", ".note.gnu.build-id", ".note.ABI-tag", ".note.gnu.gold-version", ".gnu_debuglink", ".gnu_debugaltlink"},
-			PrefixNames: []string{".note.", ".gnu.warning.", ".mdebug."},
-			Description: "non-essential metadata (safe)",
-			StripForDLL: true,
-			StripForEXE: true,
-			IsRisky:     false,
-			Fill:        ZeroFill,
-		},
-		ExceptionSections: {
-			ExactNames:  []string{".pdata", ".xdata"},
-			PrefixNames: []string{".eh_frame"},
-			Description: "structured exception handling data",
-			StripForDLL: true,
-			StripForEXE: true,
-			IsRisky:     true,
-			Fill:        ZeroFill,
-		},
-		BuildInfoSections: {
-			ExactNames:  []string{".buildid", ".gfids", ".giats", ".gljmp", ".textbss", ".noptrdata", ".typelink", ".itablink", ".gosymtab", ".gopclntab"},
-			PrefixNames: []string{".go.", ".gopkg."},
-			Description: "build information and toolchain metadata",
-			StripForDLL: true,
-			StripForEXE: true,
-			IsRisky:     false,
-			Fill:        ZeroFill,
-		},
-		CertificateSections: {
-			ExactNames:  []string{".certificate"},
-			PrefixNames: []string{},
-			Description: "certificate information",
-			StripForDLL: true,
-			StripForEXE: true,
-			IsRisky:     true,
-			Fill:        ZeroFill,
-		},
-		RuntimeSections: {
-			ExactNames:  []string{".rustc", ".rust_eh_personality", ".llvm_addrsig", ".llvm.embedded.object", ".jcr", ".tm_clone_table", ".data.rel.ro"},
-			PrefixNames: []string{".rust.", ".llvm.", ".msvcrt.", ".mingw32."},
-			Description: "runtime and compiler-specific sections",
-			StripForDLL: true,
-			StripForEXE: true,
-			IsRisky:     false,
-			Fill:        ZeroFill,
-		},
-		ResourceSections: {
-			ExactNames:  []string{".rsrc", ".rsrc$01", ".rsrc$02", ".rsrc$DATA"},
-			PrefixNames: []string{".rsrc$"},
-			Description: "embedded resources (icons/manifests)",
-			StripForDLL: true,
-			StripForEXE: true,
-			IsRisky:     true,
-			Fill:        ZeroFill,
-		},
-		ImportSections: {
-			ExactNames: []string{
-				".idata", ".edata", ".didat", ".idata$2", ".idata$4", ".idata$5",
-				".apiset", ".apilist", ".apfframe", ".rdata$iat",
-			},
-			PrefixNames: []string{".idata$"},
-			Description: "import/export descriptor metadata",
-			StripForDLL: true,
-			StripForEXE: true,
-			IsRisky:     true,
-			Fill:        ZeroFill,
-		},
-	}
+var peSectionKeyMap = map[string]SectionType{
+	common.SectionKeyDebug:        DebugSections,
+	common.SectionKeySymbol:       SymbolSections,
+	common.SectionKeyBuildInfo:    BuildInfoSections,
+	common.SectionKeyNonEssential: NonEssentialSections,
+	common.SectionKeyException:    ExceptionSections,
+	common.SectionKeyRelocation:   RelocationSections,
+	common.SectionKeyTLS:          TLSSections,
+	common.SectionKeyCertificate:  CertificateSections,
+	common.SectionKeyRuntime:      RuntimeSections,
+	common.SectionKeyResource:     ResourceSections,
+	common.SectionKeyImport:       ImportSections,
 }
 
+func mapFillKind(kind common.FillKind) FillMode {
+	if kind == common.FillRandom {
+		return RandomFill
+	}
+	return ZeroFill
+}
+
+func GetSectionStripRule() map[SectionType]SectionStripRule {
+	rules := make(map[SectionType]SectionStripRule)
+	for _, spec := range common.SectionSpecs() {
+		sectionType, ok := peSectionKeyMap[spec.Key]
+		if !ok {
+			continue
+		}
+		if !(spec.Targets.Has(common.TargetPEExe) || spec.Targets.Has(common.TargetPEDLL)) {
+			continue
+		}
+		rules[sectionType] = SectionStripRule{
+			ExactNames:  spec.ExactNames,
+			PrefixNames: spec.PrefixNames,
+			Description: spec.Description,
+			StripForDLL: spec.Targets.Has(common.TargetPEDLL),
+			StripForEXE: spec.Targets.Has(common.TargetPEExe),
+			IsRisky:     spec.IsRisky,
+			Fill:        mapFillKind(spec.Fill),
+		}
+	}
+	return rules
+}
 func GetRegexStripRules() []RegexStripRule {
 	return []RegexStripRule{
 		{
@@ -266,6 +204,15 @@ func GetRegexStripRules() []RegexStripRule {
 			Description: "Compiler fingerprint strings (force)",
 			Fill:        ZeroFill,
 			IsRisky:     true,
+		},
+		{
+			Patterns: []string{
+				`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`,
+				`/(?:lib|usr/lib|lib64|usr/lib64)[^"\s\x00]*ld-(?:linux|musl)[^"\s\x00]*`,
+			},
+			Description: "Contact strings and loader fingerprints",
+			Fill:        ZeroFill,
+			IsRisky:     false,
 		},
 		// Source file paths (safer and more comprehensive)
 		{

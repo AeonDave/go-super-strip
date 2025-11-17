@@ -698,7 +698,7 @@ func (e *ELFFile) parseBasicSegmentsFromRaw() error {
 
 func (e *ELFFile) parseDynamicEntries() []DynamicEntry {
 	var entries []DynamicEntry
-	dynIndex, found := e.findSectionByName(".dynamic")
+	dynIndex, found := e.locateSection(".dynamic", SHT_DYNAMIC)
 	if !found {
 		return entries
 	}

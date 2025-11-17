@@ -1,4 +1,4 @@
-package elfrw
+package test
 
 import (
 	"bytes"
@@ -8,9 +8,10 @@ import (
 	"testing"
 
 	"gosstrip/common"
+	"gosstrip/elfrw"
 )
 
-func TestOverlayELF_AppendsData(t *testing.T) {
+func TestOverlayELF_AppendsDataString(t *testing.T) {
 	elfPath := copyELFFixture(t, "simple_c")
 
 	randomBytes, err := common.GenerateRandomBytes(32)
@@ -19,7 +20,7 @@ func TestOverlayELF_AppendsData(t *testing.T) {
 	}
 	overlay := hex.EncodeToString(randomBytes)
 
-	result := OverlayELF(elfPath, overlay, "")
+	result := elfrw.OverlayELF(elfPath, overlay, "")
 	if result == nil || !result.Applied {
 		t.Fatalf("expected overlay operation to apply, got: %#v", result)
 	}
@@ -37,7 +38,7 @@ func TestOverlayELF_AppendsData(t *testing.T) {
 func TestOverlayELF_EmptyDataSkipped(t *testing.T) {
 	elfPath := copyELFFixture(t, "simple_c")
 
-	result := OverlayELF(elfPath, "", "")
+	result := elfrw.OverlayELF(elfPath, "", "")
 	if result == nil {
 		t.Fatal("expected result from OverlayELF, got nil")
 	}
@@ -58,7 +59,7 @@ func TestOverlayELF_AppendsFileContents(t *testing.T) {
 		t.Fatalf("failed to create overlay file: %v", err)
 	}
 
-	result := OverlayELF(elfPath, overlayFile, "")
+	result := elfrw.OverlayELF(elfPath, overlayFile, "")
 	if result == nil || !result.Applied {
 		t.Fatalf("expected overlay operation to apply, got: %#v", result)
 	}

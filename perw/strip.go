@@ -28,18 +28,16 @@ func (p *PEFile) StripSectionsByType(sectionType SectionType, fillMode FillMode,
 	var strippedSections []string
 	for idx := range p.Sections {
 		section := &p.Sections[idx]
-		if !common.MatchesPattern(section.Name, matcher.ExactNames, matcher.PrefixNames) {
+		if !p.sectionMatchesRule(sectionType, section, matcher, force) {
 			continue
 		}
 
-		if section.Offset > 0 && section.Size > 0 {
-			if err := p.fillRegion(section.Offset, int(section.Size), fillMode); err != nil {
-				return common.NewSkipped(fmt.Sprintf("failed to fill section %s: %v", section.Name, err))
-			}
-			section.Stripped = true
-			strippedCount++
-			strippedSections = append(strippedSections, section.Name)
+		if err := p.wipeSectionData(section, fillMode); err != nil {
+			return common.NewSkipped(fmt.Sprintf("failed to fill section %s: %v", section.Name, err))
 		}
+		section.Stripped = true
+		strippedCount++
+		strippedSections = append(strippedSections, section.Name)
 	}
 	if strippedCount == 0 {
 		return common.NewSkipped(fmt.Sprintf("no %s found", matcher.Description))
@@ -81,9 +79,39 @@ func (p *PEFile) StripByPattern(pattern *regexp.Regexp, fillMode FillMode) (int,
 
 func (p *PEFile) StripAll(force bool) *common.OperationResult {
 	originalSize := uint64(len(p.RawData))
-	var operations []string
-	totalCount := 0
+	pipeline := common.NewPipeline()
+	aggregate := &common.OperationResult{
+		Message: "PE strip",
+		Details: []common.OperationDetail{},
+	}
+
+	pipeline.AddStep("sections", func() (*common.OperationResult, error) {
+		return p.runStripSectionPhase(force), nil
+	})
+	pipeline.AddStep("headers", func() (*common.OperationResult, error) {
+		return p.StripAllHeaders(), nil
+	})
+	pipeline.AddStep("directories", func() (*common.OperationResult, error) {
+		return p.StripAllDirs(), nil
+	})
+	pipeline.AddStep("regex", func() (*common.OperationResult, error) {
+		return p.StripAllRegexRules(force), nil
+	})
+
+	if err := pipeline.Execute(aggregate); err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to strip PE: %v", err))
+	}
+	if !aggregate.Applied {
+		return common.NewSkipped("no stripping operations applied")
+	}
+
+	aggregate.Message = fmt.Sprintf("PE strip completed: %d bytes processed", originalSize)
+	return aggregate
+}
+
+func (p *PEFile) runStripSectionPhase(force bool) *common.OperationResult {
 	sectionRules := GetSectionStripRule()
+	result := common.NewApplied("section stripping", 0)
 	for sectionType, rule := range sectionRules {
 		if rule.IsRisky && !force {
 			continue
@@ -91,38 +119,25 @@ func (p *PEFile) StripAll(force bool) *common.OperationResult {
 		if !p.shouldStripForFileType(sectionType) {
 			continue
 		}
-		result := p.StripSectionsByType(sectionType, rule.Fill, force)
-		if result != nil && result.Applied {
-			message := result.Message
-			if rule.IsRisky {
-				message = fmt.Sprintf("⚠️  %s (risky)", message)
+		res := p.StripSectionsByType(sectionType, rule.Fill, force)
+		if res == nil {
+			continue
+		}
+		if res.Applied {
+			result.Applied = true
+			result.Count += res.Count
+			if res.Message != "" {
+				result.AddDetail(res.Message, res.Count, rule.IsRisky)
 			}
-			operations = append(operations, message)
-			totalCount += result.Count
+			for _, detail := range res.Details {
+				result.AddDetail(detail.Message, detail.Count, detail.IsRisky)
+			}
 		}
 	}
-	// StripAll stripAllHeaders
-	if timeDateStampResult := p.StripAllHeaders(); timeDateStampResult != nil && timeDateStampResult.Applied {
-		operations = append(operations, timeDateStampResult.Message)
-		totalCount += timeDateStampResult.Count
+	if !result.Applied {
+		return common.NewSkipped("no sections stripped")
 	}
-	// StripAll Debug Directory
-	if debugDirResult := p.StripAllDirs(); debugDirResult != nil && debugDirResult.Applied {
-		operations = append(operations, debugDirResult.Message)
-		totalCount += debugDirResult.Count
-	}
-	// StripAll regex-based patterns
-	if regexResult := p.StripAllRegexRules(force); regexResult != nil && regexResult.Applied {
-		operations = append(operations, regexResult.Message)
-		totalCount += regexResult.Count
-	}
-	if len(operations) == 0 {
-		return common.NewSkipped("no stripping operations applied")
-	}
-	message := fmt.Sprintf("PE strip completed: %d bytes processed\n%s",
-		originalSize, p.formatStripOperations(operations))
-
-	return common.NewApplied(message, totalCount)
+	return result
 }
 
 func (p *PEFile) StripAllRegexRules(force bool) *common.OperationResult {
@@ -423,21 +438,12 @@ func (p *PEFile) StripSingleRegexRule(regex string) *common.OperationResult {
 }
 
 func (p *PEFile) fillRegion(offset int64, size int, mode FillMode) error {
-	if offset < 0 || size <= 0 || offset+int64(size) > int64(len(p.RawData)) {
-		return fmt.Errorf("invalid region: offset %d, size %d, total %d", offset, size, len(p.RawData))
-	}
-	region := p.RawData[offset : offset+int64(size)]
 	switch mode {
-	case ZeroFill:
-		common.ZeroFillData(region)
-	case RandomFill:
-		if err := common.RandomFillData(region); err != nil {
-			return fmt.Errorf("failed to generate random bytes: %w", err)
-		}
+	case ZeroFill, RandomFill:
+		return common.FillRegion(p.RawData, offset, size, mode == RandomFill)
 	default:
 		return fmt.Errorf("unknown fill mode: %v", mode)
 	}
-	return nil
 }
 
 func (p *PEFile) shouldStripForFileType(sectionType SectionType) bool {

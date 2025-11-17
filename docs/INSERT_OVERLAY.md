@@ -55,4 +55,4 @@ Without a password, payloads are stored verbatim.
 ## 6. Testing
 
 - CLI integration tests verify insertion/overlay by checking the data appears in the modified binary.
-- Developers can run `tests/cli_matrix.sh` to capture analyze output and ensure inserted sections are recognized.
+- Developers can run `test/cli_matrix.sh` to capture analyze output and ensure inserted sections are recognized.

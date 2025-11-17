@@ -1,5 +1,7 @@
 package elfrw
 
+import "gosstrip/common"
+
 type SectionType int
 
 const (
@@ -39,105 +41,53 @@ type RegexStripRule struct {
 	IsRisky     bool
 }
 
-func getSectionStripRule() map[SectionType]SectionStripRule {
-	return map[SectionType]SectionStripRule{
-		DebugSections: {
-			ExactNames:  []string{},
-			PrefixNames: []string{".debug", ".zdebug"},
-			Description: "debugging information",
-			StripForSO:  true,
-			StripForBIN: true,
-			IsRisky:     false,
-			Fill:        ZeroFill,
-		},
-		SymbolSections: {
-			ExactNames:  []string{".symtab", ".strtab"},
-			PrefixNames: []string{},
-			Description: "symbol table information",
-			StripForSO:  false, // Keep for shared objects as they may be needed
-			StripForBIN: true,
-			IsRisky:     false,
-			Fill:        ZeroFill,
-		},
-		RelocationSections: {
-			ExactNames:  []string{},
-			PrefixNames: []string{".rel.", ".rela."},
-			Description: "relocation information",
-			StripForSO:  false, // Very risky for shared objects
-			StripForBIN: true,  // Can be risky for executables too
-			IsRisky:     true,
-			Fill:        ZeroFill,
-		},
-		TLSSections: {
-			ExactNames:  []string{".tdata", ".tbss"},
-			PrefixNames: []string{},
-			Description: "Thread Local Storage sections",
-			StripForSO:  false,
-			StripForBIN: false, // TLS is often essential
-			IsRisky:     true,
-			Fill:        ZeroFill,
-		},
-		NonEssentialSections: {
-			ExactNames:  []string{".comment", ".gnu_debuglink", ".gnu_debugaltlink"},
-			PrefixNames: []string{".note.", ".gnu.warning"},
-			Description: "non-essential metadata",
-			StripForSO:  true,
-			StripForBIN: true,
-			IsRisky:     false,
-			Fill:        ZeroFill,
-		},
-		ExceptionSections: {
-			ExactNames:  []string{".eh_frame", ".eh_frame_hdr", ".gcc_except_table"},
-			PrefixNames: []string{},
-			Description: "exception handling data",
-			StripForSO:  false, // Exception handling often needed in shared libs
-			StripForBIN: true,  // Can be risky for executables with C++
-			IsRisky:     true,
-			Fill:        ZeroFill,
-		},
-		BuildInfoSections: {
-			ExactNames:  []string{""},
-			PrefixNames: []string{".go.", ".gopkg."},
-			Description: "build information and toolchain metadata",
-			StripForSO:  true,
-			StripForBIN: true,
-			IsRisky:     false,
-			Fill:        ZeroFill,
-		},
-		NoteSections: {
-			ExactNames:  []string{".note"},
-			PrefixNames: []string{".note."},
-			Description: "note sections with metadata",
-			StripForSO:  true,
-			StripForBIN: true,
-			IsRisky:     false,
-			Fill:        ZeroFill,
-		},
-		RuntimeSections: {
-			ExactNames:  []string{".rustc", ".rust_eh_personality", ".llvm_addrsig", ".llvm.embedded.object", ".jcr", ".tm_clone_table", ".data.rel.ro.local"},
-			PrefixNames: []string{".rust.", ".llvm."},
-			Description: "runtime and compiler-specific sections",
-			StripForSO:  true,
-			StripForBIN: true,
-			IsRisky:     false,
-			Fill:        ZeroFill,
-		},
-		LoaderSections: {
-			ExactNames: []string{
-				".interp", ".dynamic", ".dynsym", ".dynstr", ".gnu.version", ".gnu.version_d",
-				".gnu.version_r", ".gnu.hash", ".hash", ".got", ".got.plt", ".plt", ".plt.got",
-				".plt.sec", ".rela.plt", ".rela.dyn", ".rel.plt", ".rel.dyn",
-			},
-			PrefixNames: []string{".plt.", ".rel.", ".rela."},
-			Description: "dynamic loader metadata (imports/PLT/GOT)",
-			StripForSO:  false,
-			StripForBIN: true,
-			IsRisky:     true,
-			Fill:        ZeroFill,
-		},
-	}
+var elfSectionKeyMap = map[string]SectionType{
+	common.SectionKeyDebug:        DebugSections,
+	common.SectionKeySymbol:       SymbolSections,
+	common.SectionKeyBuildInfo:    BuildInfoSections,
+	common.SectionKeyNonEssential: NonEssentialSections,
+	common.SectionKeyException:    ExceptionSections,
+	common.SectionKeyRelocation:   RelocationSections,
+	common.SectionKeyTLS:          TLSSections,
+	common.SectionKeyNote:         NoteSections,
+	common.SectionKeyRuntime:      RuntimeSections,
+	common.SectionKeyLoader:       LoaderSections,
 }
 
+func mapFill(kind common.FillKind) FillMode {
+	if kind == common.FillRandom {
+		return RandomFill
+	}
+	return ZeroFill
+}
+
+func getSectionStripRule() map[SectionType]SectionStripRule {
+	rules := make(map[SectionType]SectionStripRule)
+	for _, spec := range common.SectionSpecs() {
+		sectionType, ok := elfSectionKeyMap[spec.Key]
+		if !ok {
+			continue
+		}
+		if !(spec.Targets.Has(common.TargetELFBin) || spec.Targets.Has(common.TargetELFSO)) {
+			continue
+		}
+		rule := SectionStripRule{
+			ExactNames:  spec.ExactNames,
+			PrefixNames: spec.PrefixNames,
+			Description: spec.Description,
+			StripForSO:  spec.Targets.Has(common.TargetELFSO),
+			StripForBIN: spec.Targets.Has(common.TargetELFBin),
+			IsRisky:     spec.IsRisky,
+			Fill:        mapFill(spec.Fill),
+		}
+		if sectionType == BuildInfoSections {
+			rule.ExactNames = nil
+			rule.PrefixNames = []string{".go.", ".gopkg."}
+		}
+		rules[sectionType] = rule
+	}
+	return rules
+}
 func GetRegexStripRules() []RegexStripRule {
 	return []RegexStripRule{
 		{
@@ -264,6 +214,15 @@ func GetRegexStripRules() []RegexStripRule {
 			Description: "compiler fingerprint strings (force)",
 			Fill:        ZeroFill,
 			IsRisky:     true,
+		},
+		{
+			Patterns: []string{
+				`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`,
+				`/(?:lib|usr/lib|lib64|usr/lib64)[^"\s\x00]*ld-(?:linux|musl)[^"\s\x00]*`,
+			},
+			Description: "Contact strings and loader fingerprints",
+			Fill:        ZeroFill,
+			IsRisky:     false,
 		},
 		// Common library markers
 		{

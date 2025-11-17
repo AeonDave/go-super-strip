@@ -8,20 +8,42 @@ import (
 	"strings"
 )
 
-func (e *ELFFile) printDeepReport() error {
+func (e *ELFFile) buildDeepReport() *common.AnalysisResult {
 	e.calculateSectionEntropy()
 	e.IsPacked = e.detectPacking()
-	e.printBasicInfo()
-	e.printELFHeaders()
-	e.printDynamicAnalysis()
-	e.printImportsAnalysis()
-	e.printExportsAnalysis()
-	e.printSectionHeaders()
-	e.printSectionAnomalies()
-	e.printSymbolAnalysis()
-	common.PrintSuspiciousStrings(e.RawData)
-	e.printPackingAnalysis()
-	return nil
+
+	builder := common.NewReportBuilder("ELF", common.AnalysisModeDeep)
+	sections := []struct {
+		title string
+		fn    func() error
+	}{
+		{"📁 BINARY INFORMATION", func() error { e.printBasicInfo(); return nil }},
+		{"🏗️  ELF HEADER INFORMATION", func() error { e.printELFHeaders(); return nil }},
+		{"🧠 DYNAMIC ANALYSIS", func() error { e.printDynamicAnalysis(); return nil }},
+		{"📦 IMPORTS ANALYSIS", func() error { e.printImportsAnalysis(); return nil }},
+		{"🚀 EXPORTS ANALYSIS", func() error { e.printExportsAnalysis(); return nil }},
+		{"📊 SECTION HEADERS", func() error { e.printSectionHeaders(); return nil }},
+		{"🚨 SECTION ANOMALY ANALYSIS", func() error { e.printSectionAnomalies(); return nil }},
+		{"🔤 SYMBOL ANALYSIS", func() error { e.printSymbolAnalysis(); return nil }},
+		{"🔎 SUSPICIOUS CONTENT ANALYSIS", func() error { common.PrintSuspiciousStrings(e.RawData); return nil }},
+		{"📦 PACKING HEURISTICS", func() error { e.printPackingAnalysis(); return nil }},
+	}
+	for _, section := range sections {
+		builder.CaptureSection(section.title, section.fn)
+	}
+
+	info := make([]SectionInfo, len(e.Sections))
+	for i, s := range e.Sections {
+		info[i] = SectionInfo{
+			Name:              s.Name,
+			Offset:            s.Offset,
+			Size:              s.Size,
+			Alignment:         s.Alignment,
+			CommonSectionInfo: s.CommonSectionInfo,
+		}
+	}
+	builder.MergeWarnings(analyzeSectionAnomalies(info, e.FileSize))
+	return builder.Result()
 }
 
 func analyzeSectionAnomalies(sections []SectionInfo, fileSize int64) []string {

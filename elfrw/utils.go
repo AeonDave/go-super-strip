@@ -113,6 +113,15 @@ func (e *ELFFile) getFileType() uint16 {
 	return uint16(e.ELF.FileHeader.Type)
 }
 
+func (e *ELFFile) findSectionIndexByType(sectionType uint32) (int, bool) {
+	for idx, sec := range e.Sections {
+		if sec.Type == sectionType {
+			return idx, true
+		}
+	}
+	return 0, false
+}
+
 func (e *ELFFile) isLittleEndian() bool {
 	return e.RawData[5] == 0x01 // EI_DATA field, 1 for LSB
 }

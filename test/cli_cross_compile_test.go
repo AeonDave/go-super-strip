@@ -53,35 +53,35 @@ func TestCLIOptionsOnCompiledFixtures(t *testing.T) {
 			Name: "compact_fill_random",
 			Args: []string{"-c=fill=random"},
 			Verify: func(t *testing.T, _ compiledFixture, _ string, output string) {
-				assertContains(t, output, "Completed operations: compact")
+				assertContains(t, output, "• compact:")
 			},
 		},
 		{
 			Name: "strip",
 			Args: []string{"-s"},
 			Verify: func(t *testing.T, _ compiledFixture, _ string, output string) {
-				assertContains(t, output, "Completed operations: strip")
+				assertContains(t, output, "• strip:")
 			},
 		},
 		{
 			Name: "compact",
 			Args: []string{"-c"},
 			Verify: func(t *testing.T, _ compiledFixture, _ string, output string) {
-				assertContains(t, output, "Completed operations: compact")
+				assertContains(t, output, "• compact:")
 			},
 		},
 		{
 			Name: "obfuscate",
 			Args: []string{"-o"},
 			Verify: func(t *testing.T, _ compiledFixture, _ string, output string) {
-				assertContains(t, output, "Completed operations: obfuscate")
+				assertContains(t, output, "• obfuscation:")
 			},
 		},
 		{
 			Name: "insert",
 			Args: []string{"-i=name=.agg,data=.section_marker"},
 			Verify: func(t *testing.T, _ compiledFixture, binaryPath string, output string) {
-				assertContains(t, output, "Completed operations: insert")
+				assertContains(t, output, "• insert:")
 				data := readFile(t, binaryPath)
 				if !bytes.Contains(data, []byte(".section_marker")) {
 					t.Fatalf("expected inserted marker to be present in %s", binaryPath)
@@ -92,7 +92,7 @@ func TestCLIOptionsOnCompiledFixtures(t *testing.T) {
 			Name: "overlay",
 			Args: []string{"-l=data=OVERLAY_PAYLOAD"},
 			Verify: func(t *testing.T, _ compiledFixture, binaryPath string, output string) {
-				assertContains(t, output, "Completed operations: overlay")
+				assertContains(t, output, "• overlay:")
 				data := readFile(t, binaryPath)
 				if !bytes.Contains(data, []byte("OVERLAY_PAYLOAD")) {
 					t.Fatalf("expected overlay payload to be present in %s", binaryPath)
@@ -109,7 +109,7 @@ func TestCLIOptionsOnCompiledFixtures(t *testing.T) {
 				}
 			},
 			Verify: func(t *testing.T, _ compiledFixture, binaryPath string, output string) {
-				assertContains(t, output, "Completed operations: regex")
+				assertContains(t, output, "• regex:")
 				data := readFile(t, binaryPath)
 				if bytes.Contains(data, []byte("APPENDED_PATTERN")) {
 					t.Fatalf("expected regex pattern to be removed in %s", binaryPath)
@@ -120,7 +120,7 @@ func TestCLIOptionsOnCompiledFixtures(t *testing.T) {
 			Name: "pack",
 			Args: []string{"-p=compression=none,encryption=none,polymorphic=false,padding=false"},
 			Verify: func(t *testing.T, fixture compiledFixture, binaryPath string, output string) {
-				assertContains(t, output, "=== Pack Operations ===")
+				assertContains(t, output, "• pack:")
 				data := readFile(t, binaryPath)
 				if !bytes.HasPrefix(data, []byte(testStubPrefix)) {
 					t.Fatalf("expected packed stub to start with %q, got %q", testStubPrefix, data[:min(16, len(data))])
@@ -144,7 +144,12 @@ func TestCLIOptionsOnCompiledFixtures(t *testing.T) {
 				}
 			},
 			Verify: func(t *testing.T, _ compiledFixture, binaryPath string, output string) {
-				assertContains(t, output, "Completed operations: strip, compact, obfuscate, regex, insert, overlay")
+				assertContains(t, output, "• strip:")
+				assertContains(t, output, "• compact:")
+				assertContains(t, output, "• obfuscation:")
+				assertContains(t, output, "• regex:")
+				assertContains(t, output, "• insert:")
+				assertContains(t, output, "• overlay:")
 				data := readFile(t, binaryPath)
 				if bytes.Contains(data, []byte("PIPELINE_REGEX_TARGET")) {
 					t.Fatalf("expected PIPELINE_REGEX_TARGET to be removed after regex")
@@ -293,7 +298,7 @@ func buildCSource(t *testing.T, baseName, targetOS string) string {
 			t.Fatalf("failed to resolve output path: %v", err)
 		}
 		cmd := fmt.Sprintf("gcc -O2 '%s' -o '%s' -lm", toWSLPath(sourceAbs), toWSLPath(outputAbs))
-		if err := runWSLCommand(cmd); err != nil {
+		if err := wslRun(cmd); err != nil {
 			t.Fatalf("failed to build c fixture %s via WSL: %v", baseName, err)
 		}
 		if err := os.Chmod(output, 0o700); err != nil {
@@ -378,28 +383,4 @@ func ensureTool(t *testing.T, tool string) {
 	if _, err := exec.LookPath(tool); err != nil {
 		t.Skipf("required tool %s not available: %v", tool, err)
 	}
-}
-
-func hasWSL() bool {
-	_, err := exec.LookPath("wsl.exe")
-	return err == nil
-}
-
-func toWSLPath(win string) string {
-	if len(win) < 3 || win[1] != ':' {
-		return win
-	}
-	drive := strings.ToLower(string(win[0]))
-	path := strings.ReplaceAll(win[2:], "\\", "/")
-	return "/mnt/" + drive + path
-}
-
-func runWSLCommand(cmd string) error {
-	c := exec.Command("wsl.exe", "bash", "-lc", cmd)
-	c.Env = os.Environ()
-	out, err := c.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("WSL command failed: %v\n%s", err, string(out))
-	}
-	return nil
 }

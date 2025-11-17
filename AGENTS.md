@@ -48,6 +48,8 @@ All code is Go, so plan to run `gofmt` on edited files.
   ELF flows. When editing, ensure windows/linux code paths keep producing runnable binaries.
 - **Sensitive operations**: The tool modifies binary files in-place. When adding new logic,
   verify offsets/lengths carefully and add protective checks (e.g., clamp writes to file size).
+- **Manual regression logs**: `test/cli_matrix.sh` builds PE/ELF fixtures and runs analyze→obfuscate
+  and strip→compact→obfuscate flows (default & force). Use it when you need fresh pipeline logs.
 
 ---
 

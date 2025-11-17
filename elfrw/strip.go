@@ -11,49 +11,63 @@ func (e *ELFFile) StripAll(force bool) *common.OperationResult {
 	protectedTables := e.snapshotProtectedStringTables()
 	defer e.restoreProtectedStringTables(protectedTables)
 
-	// Start with a PE-like summary title (bytes processed) for consistency
 	originalSize := uint64(len(e.RawData))
-	totalCount := 0
-	result := common.NewApplied(fmt.Sprintf("ELF strip completed: %d bytes processed", originalSize), 0)
+	pipeline := common.NewPipeline()
+	aggregate := &common.OperationResult{
+		Message: "ELF strip",
+		Details: []common.OperationDetail{},
+	}
 
+	pipeline.AddStep("sections", func() (*common.OperationResult, error) {
+		return e.runStripSectionPhase(force), nil
+	})
+	pipeline.AddStep("headers", func() (*common.OperationResult, error) {
+		return e.stripAllHeaders(), nil
+	})
+	pipeline.AddStep("regex", func() (*common.OperationResult, error) {
+		return e.stripAllRegexRules(force), nil
+	})
+
+	if err := pipeline.Execute(aggregate); err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to strip ELF: %v", err))
+	}
+	if !aggregate.Applied {
+		return common.NewSkipped("no stripping operations applied")
+	}
+
+	aggregate.Message = fmt.Sprintf("ELF strip completed: %d bytes processed", originalSize)
+	return aggregate
+}
+
+func (e *ELFFile) runStripSectionPhase(force bool) *common.OperationResult {
 	sectionRules := getSectionStripRule()
+	result := common.NewApplied("section stripping", 0)
+	isSharedObject := e.IsSharedObject()
 	for sectionType, rule := range sectionRules {
 		if rule.IsRisky && !force {
 			continue
 		}
-		isSharedObject := e.IsSharedObject()
 		if (isSharedObject && !rule.StripForSO) || (!isSharedObject && !rule.StripForBIN) {
 			continue
 		}
 		sectionResult := e.stripSectionsByType(sectionType, rule.Fill == RandomFill)
-		if sectionResult != nil && sectionResult.Applied {
-			result.AddDetail(sectionResult.Message, sectionResult.Count, rule.IsRisky)
-			totalCount += sectionResult.Count
+		if sectionResult == nil {
+			continue
+		}
+		if sectionResult.Applied {
+			result.Applied = true
+			result.Count += sectionResult.Count
+			if sectionResult.Message != "" {
+				result.AddDetail(sectionResult.Message, sectionResult.Count, rule.IsRisky)
+			}
+			for _, detail := range sectionResult.Details {
+				result.AddDetail(detail.Message, detail.Count, detail.IsRisky)
+			}
 		}
 	}
-
-	if headersResult := e.stripAllHeaders(); headersResult != nil && headersResult.Applied {
-		for _, detail := range headersResult.Details {
-			result.AddDetail(detail.Message, detail.Count, detail.IsRisky)
-		}
-		totalCount += headersResult.Count
+	if !result.Applied {
+		return common.NewSkipped("no sections stripped")
 	}
-
-	if regexResult := e.stripAllRegexRules(force); regexResult != nil && regexResult.Applied {
-		for _, detail := range regexResult.Details {
-			result.AddDetail(detail.Message, detail.Count, detail.IsRisky)
-		}
-		totalCount += regexResult.Count
-	}
-
-	if totalCount == 0 {
-		return common.NewSkipped("no stripping operations applied")
-	}
-
-	// Update the message with the actual count
-	result.Message = fmt.Sprintf("%d operations applied", totalCount)
-	result.Count = totalCount
-
 	return result
 }
 
@@ -82,25 +96,7 @@ func (e *ELFFile) StripByteRegex(pattern *regexp.Regexp, useRandom bool, force b
 }
 
 func (e *ELFFile) fillRegion(offset uint64, size int, useRandom bool) error {
-	if size <= 0 {
-		return nil
-	}
-	end := offset + uint64(size)
-	if end > uint64(len(e.RawData)) {
-		return fmt.Errorf("write beyond file limits: offset %d, size %d, file size %d",
-			offset, size, len(e.RawData))
-	}
-
-	start := int(offset)
-	region := e.RawData[start:int(end)]
-	if useRandom {
-		if err := common.RandomFillData(region); err != nil {
-			return fmt.Errorf("failed to generate random bytes: %w", err)
-		}
-	} else {
-		common.ZeroFillData(region)
-	}
-	return nil
+	return common.FillRegion(e.RawData, int64(offset), size, useRandom)
 }
 
 func (e *ELFFile) stripSectionData(sectionIndex int, useRandom bool) error {

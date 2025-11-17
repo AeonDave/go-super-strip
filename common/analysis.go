@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
-	"unicode"
 )
 
 type AnalysisMode string
@@ -121,21 +119,4 @@ func FormatBytes(size int64) string {
 		return fmt.Sprintf("%.1f MB", float64(size)/(1024.0*1024.0))
 	}
 	return fmt.Sprintf("%.2f GB", float64(size)/(1024.0*1024.0*1024.0))
-}
-
-func SanitizePlainText(in string) string {
-	var b strings.Builder
-	for _, r := range in {
-		if r == '\u0009' || r == '\u000a' || r == '\u000d' {
-			b.WriteRune(r)
-			continue
-		}
-		if r < 32 {
-			continue
-		}
-		if unicode.IsPrint(r) && r < 0x2600 {
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
 }

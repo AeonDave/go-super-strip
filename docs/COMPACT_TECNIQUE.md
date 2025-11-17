@@ -103,6 +103,6 @@ After all deletions:
 
 - Unit: `perw/compact_test.go`, `elfrw/compact_test.go`.
 - CLI: `test/cli_cross_compile_test.go` runs strip→compact on compiled fixtures.
-- Regression logging: `tests/cli_matrix.sh` captures analyze→strip→compact→obfuscate flows and stores logs under `tests/logs/`.
+- Regression logging: `test/cli_matrix.sh` captures analyze→strip→compact→obfuscate flows and stores logs under `tests/logs/`.
 
-Always run `go test ./...` plus `bash tests/cli_matrix.sh` after modifying compaction logic so we cover both automated and manual flows.
+Always run `go test ./...` plus `bash test/cli_matrix.sh` after modifying compaction logic so we cover both automated and manual flows.

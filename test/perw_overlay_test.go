@@ -1,4 +1,4 @@
-package perw
+package test
 
 import (
 	"bytes"
@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"gosstrip/common"
+	"gosstrip/perw"
 )
 
 func TestOverlayPE_AppendsData(t *testing.T) {
@@ -19,7 +20,7 @@ func TestOverlayPE_AppendsData(t *testing.T) {
 	}
 	overlayString := hex.EncodeToString(randomBytes)
 
-	result := OverlayPE(tempPath, overlayString, "")
+	result := perw.OverlayPE(tempPath, overlayString, "")
 	if result == nil || !result.Applied {
 		t.Fatalf("expected overlay operation to apply successfully, got result: %#v", result)
 	}
@@ -37,7 +38,7 @@ func TestOverlayPE_AppendsData(t *testing.T) {
 func TestOverlayPE_EmptyDataSkipped(t *testing.T) {
 	tempPath := copyPEFixture(t, "simple.exe")
 
-	result := OverlayPE(tempPath, "", "")
+	result := perw.OverlayPE(tempPath, "", "")
 	if result == nil {
 		t.Fatal("expected result from OverlayPE, got nil")
 	}
@@ -58,7 +59,7 @@ func TestOverlayPE_AppendsFileContents(t *testing.T) {
 		t.Fatalf("failed to create overlay file: %v", err)
 	}
 
-	result := OverlayPE(tempPath, overlayFile, "")
+	result := perw.OverlayPE(tempPath, overlayFile, "")
 	if result == nil || !result.Applied {
 		t.Fatalf("expected overlay operation to apply successfully, got: %#v", result)
 	}
