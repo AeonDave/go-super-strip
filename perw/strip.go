@@ -26,7 +26,8 @@ func (p *PEFile) StripSectionsByType(sectionType SectionType, fillMode FillMode,
 
 	strippedCount := 0
 	var strippedSections []string
-	for _, section := range p.Sections {
+	for idx := range p.Sections {
+		section := &p.Sections[idx]
 		if !common.MatchesPattern(section.Name, matcher.ExactNames, matcher.PrefixNames) {
 			continue
 		}
@@ -35,6 +36,7 @@ func (p *PEFile) StripSectionsByType(sectionType SectionType, fillMode FillMode,
 			if err := p.fillRegion(section.Offset, int(section.Size), fillMode); err != nil {
 				return common.NewSkipped(fmt.Sprintf("failed to fill section %s: %v", section.Name, err))
 			}
+			section.Stripped = true
 			strippedCount++
 			strippedSections = append(strippedSections, section.Name)
 		}

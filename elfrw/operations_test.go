@@ -9,6 +9,22 @@ import (
 	"gosstrip/common"
 )
 
+func elfHasSection(t *testing.T, path, name string) bool {
+	t.Helper()
+	elfFile, err := readElf(path, os.O_RDONLY)
+	if err != nil {
+		t.Fatalf("failed to reopen ELF: %v", err)
+	}
+	defer func() { _ = elfFile.Close() }()
+	target := strings.ToLower(name)
+	for _, sec := range elfFile.Sections {
+		if strings.ToLower(sec.Name) == target {
+			return true
+		}
+	}
+	return false
+}
+
 func TestAnalyzeELF_Succeeds(t *testing.T) {
 	elfPath := copyELFFixture(t, "simple_c")
 
@@ -53,7 +69,7 @@ func TestStripELF_PreservesELFValidity(t *testing.T) {
 func TestCompactELF_SafeOperation(t *testing.T) {
 	elfPath := copyELFFixture(t, "simple_c")
 
-	result := CompactELF(elfPath, false)
+	result := CompactELF(elfPath, false, false, true)
 	if result == nil {
 		t.Fatal("expected result from CompactELF, got nil")
 	}
@@ -64,6 +80,73 @@ func TestCompactELF_SafeOperation(t *testing.T) {
 	}
 	if !isELF {
 		t.Fatal("file is no longer recognized as ELF after compaction")
+	}
+}
+
+func TestCompactELF_FillModesAndForce(t *testing.T) {
+	cfgs := []struct {
+		name       string
+		force      bool
+		fillRandom bool
+	}{
+		{"zero", false, false},
+		{"random", false, true},
+		{"forceRandom", true, true},
+	}
+	for _, cfg := range cfgs {
+		t.Run(cfg.name, func(t *testing.T) {
+			elfPath := copyELFFixture(t, "simple_c")
+			result := CompactELF(elfPath, cfg.force, cfg.fillRandom, true)
+			if result == nil {
+				t.Fatal("expected result from CompactELF, got nil")
+			}
+
+			isELF, err := IsELFFile(elfPath)
+			if err != nil {
+				t.Fatalf("IsELFFile failed: %v", err)
+			}
+			if !isELF {
+				t.Fatalf("file invalid after compact fill=%v force=%v", cfg.fillRandom, cfg.force)
+			}
+		})
+	}
+}
+
+func TestCompactELF_RemovesGoMetadata(t *testing.T) {
+	elfPath := copyELFFixture(t, "simple_c_meta")
+	if !elfHasSection(t, elfPath, ".gopclntab") {
+		t.Skip("fixture missing .gopclntab")
+	}
+	result := CompactELF(elfPath, false, false, true)
+	if result == nil {
+		t.Fatal("expected compact result, got nil")
+	}
+	if elfHasSection(t, elfPath, ".gopclntab") || elfHasSection(t, elfPath, ".typelink") {
+		t.Fatalf("expected Go metadata sections to be removed")
+	}
+}
+
+func TestCompactELF_DynamicInterpreterPreserved(t *testing.T) {
+	elfPath := copyDynamicELFFixture(t, "simple_c_dynamic")
+	if !elfHasSection(t, elfPath, ".interp") {
+		t.Skip("dynamic fixture missing .interp")
+	}
+	result := CompactELF(elfPath, false, false, true)
+	if result == nil {
+		t.Fatalf("compact failed")
+	}
+	if !elfHasSection(t, elfPath, ".interp") {
+		t.Fatalf(".interp should remain when force=false")
+	}
+}
+
+func TestCompactELF_ForceRemovesInterpreter(t *testing.T) {
+	elfPath := copyDynamicELFFixture(t, "simple_c_dynamic_force")
+	if result := CompactELF(elfPath, true, false, true); result == nil {
+		t.Fatalf("forced compact failed")
+	}
+	if elfHasSection(t, elfPath, ".interp") {
+		t.Fatalf(".interp should be removable when force=true")
 	}
 }
 

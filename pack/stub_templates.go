@@ -102,19 +102,27 @@ func (stg *StubTemplateGenerator) generateVariableNames() map[string]string {
 	prefixes := []string{"d", "x", "p", "buf", "tmp", "val", "k", "r", "s"}
 	suffixes := []string{"ata", "tr", "ff", "ey", "eg", "em", "nt", ""}
 
-	getName := func() string {
-		prefix := prefixes[stg.rng.Intn(len(prefixes))]
-		suffix := suffixes[stg.rng.Intn(len(suffixes))]
-		return prefix + suffix
+	used := make(map[string]struct{})
+	getUniqueName := func() string {
+		for {
+			prefix := prefixes[stg.rng.Intn(len(prefixes))]
+			suffix := suffixes[stg.rng.Intn(len(suffixes))]
+			name := prefix + suffix
+			if _, exists := used[name]; exists {
+				continue
+			}
+			used[name] = struct{}{}
+			return name
+		}
 	}
 
 	return map[string]string{
-		"data":   getName(),
-		"key":    getName(),
-		"i":      getName(),
-		"temp":   getName(),
-		"offset": getName(),
-		"size":   getName(),
+		"data":   getUniqueName(),
+		"key":    getUniqueName(),
+		"i":      getUniqueName(),
+		"temp":   getUniqueName(),
+		"offset": getUniqueName(),
+		"size":   getUniqueName(),
 	}
 }
 

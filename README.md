@@ -53,7 +53,7 @@ gosstrip [ -s[=key=value,...] -c[=key=value,...] -o[=key=value,...] -r=pattern1[
 |----------------------------|--------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `-a[=format=json,mode=deep]` | Analyze PE/ELF structures and emit either text (default) or JSON. With `<output>` the report is written to disk. | `format` = `text` or `json`. `mode` = `simple` (concise summaries) or `deep` (legacy verbose analyzer). Analysis cannot be combined with other features.        |
 | `-s[=force=true]`          | Strip debug symbols, Rich headers, DWARF data, etc.                                                          | `force` (bool, default `false`) permits aggressive removals.                                                                                                     |
-| `-c[=force=true]`          | Compact binaries by trimming unused regions and recalculating headers.                                       | `force` (bool) allows destructive trim such as removing ELF section tables.                                                                                      |
+| `-c[=force=true,fill=random,keep_resources=true]` | Compact binaries by trimming unused regions and recalculating headers.                                       | `force` (bool) allows destructive trim such as removing ELF section tables. `fill` = `zero` (default) or `random` controls how removed regions are overwritten before truncation. `keep_resources` preserves `.rsrc` sections unless explicitly disabled. |
 | `-o[=force=true]`          | Rename sections/symbols and randomize metadata.                                                              | `force` (bool) currently behaves like a safety toggle for future advanced modes.                                                                                 |
 | `-r=pattern1[,patternN]`   | Remove bytes that match one or more regex patterns.                                                          | Comma-separated list; the flag may be repeated to append additional patterns.                                                                                    |
 | `-i=name=...,file|data=...`| Insert a new (optionally encrypted) section.                                                                 | `name` (required, ≤8 chars in PE). Supply exactly one of `file` or `data`, plus optional `password` (ASCII or hex).                                              |
@@ -106,6 +106,12 @@ gosstrip -s binary
 
 # Run strip + compact + obfuscation and write to a copy
 gosstrip -s=force=true -c -o binary binary.hardened
+
+# Compact aggressively with random filler
+gosstrip -c=force=true,fill=random binary
+
+# Also drop embedded resources (icons/manifests)
+gosstrip -c=force=true,keep_resources=false binary
 ```
 
 Notes:

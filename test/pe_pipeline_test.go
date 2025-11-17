@@ -13,7 +13,7 @@ func TestPEPipelineOperations(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("PE pipeline verification requires a Windows host")
 	}
-	t.Setenv("GOSSTRIP_TEST_STUB", "")
+	t.Setenv("GOSSTRIP_TEST_STUB", testStubPrefix)
 
 	pePath := buildGoFixture(t, "windows", "simple.exe")
 
@@ -28,7 +28,7 @@ func TestPEPipelineOperations(t *testing.T) {
 	requireApplied(t, "strip", perw.StripPE(pePath, false))
 	assertAnalysisLooksComprehensive(t, analyze(), "post-strip analyze")
 
-	requireApplied(t, "compact", perw.CompactPE(pePath, false))
+	requireApplied(t, "compact", perw.CompactPE(pePath, false, false, true))
 	assertAnalysisLooksComprehensive(t, analyze(), "post-compact analyze")
 
 	requireApplied(t, "obfuscate", perw.ObfuscatePE(pePath, true))

@@ -61,7 +61,9 @@ type StripOptions struct {
 }
 
 type CompactOptions struct {
-	Force bool
+	Force         bool
+	Fill          string
+	KeepResources bool
 }
 
 type ObfuscateOptions struct {
@@ -382,7 +384,7 @@ func parseStrip(opt string) (*StripOptions, error) {
 }
 
 func parseCompact(opt string) (*CompactOptions, error) {
-	cfg := &CompactOptions{}
+	cfg := &CompactOptions{Fill: "zero", KeepResources: true}
 	if opt == "" {
 		return cfg, nil
 	}
@@ -398,6 +400,21 @@ func parseCompact(opt string) (*CompactOptions, error) {
 				return nil, fmt.Errorf("compact force: %w", err)
 			}
 			cfg.Force = v
+		case "fill":
+			switch strings.ToLower(value) {
+			case "zero", "":
+				cfg.Fill = "zero"
+			case "random":
+				cfg.Fill = "random"
+			default:
+				return nil, fmt.Errorf("unknown compact fill %q (expected zero or random)", value)
+			}
+		case "keep_resources", "keep-resources", "keepresources":
+			v, err := parseBool(value)
+			if err != nil {
+				return nil, fmt.Errorf("compact keep_resources: %w", err)
+			}
+			cfg.KeepResources = v
 		default:
 			return nil, fmt.Errorf("unknown compact option %q", key)
 		}
@@ -781,11 +798,13 @@ func runStrip(path string, opts *StripOptions, isPE bool) error {
 
 func runCompact(path string, opts *CompactOptions, isPE bool) error {
 	fmt.Println("\n=== Compact Operations ===")
+	fillRandom := strings.EqualFold(opts.Fill, "random")
+	keepResources := opts.KeepResources
 	var result *common.OperationResult
 	if isPE {
-		result = perw.CompactPE(path, opts.Force)
+		result = perw.CompactPE(path, opts.Force, fillRandom, keepResources)
 	} else {
-		result = elfrw.CompactELF(path, opts.Force)
+		result = elfrw.CompactELF(path, opts.Force, fillRandom, keepResources)
 	}
 	printOperationResult(getFileType(isPE), "compact", result)
 	return nil
@@ -922,12 +941,12 @@ func printUsage() {
 	fmt.Println("go-super-strip - Binary transformation pipeline")
 	fmt.Println()
 	fmt.Println("Usage:")
-	fmt.Println("  gosstrip -a[=format=json] <input> [output]")
+	fmt.Println("  gosstrip -a[=format=json,mode=deep] <input> [output]")
 	fmt.Println("  gosstrip [operations] <input> [output]")
 	fmt.Println()
 	fmt.Println("Operations (executed in order):")
 	fmt.Println("  -s=force=true           Strip sections")
-	fmt.Println("  -c=force=true           Compact file")
+	fmt.Println("  -c=force=true,fill=random,keep_resources=false Compact file")
 	fmt.Println("  -o=force=true           Obfuscate")
 	fmt.Println("  -r=rx1,rx2              Apply regex removals")
 	fmt.Println("  -i=name=.sec,file=bin   Insert section")

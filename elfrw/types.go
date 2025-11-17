@@ -35,18 +35,20 @@ type ELFOffsets struct {
 }
 
 type Section struct {
-	Name      string
-	Offset    int64
-	Size      int64
-	Address   uint64
-	Index     int
-	Type      uint32
-	Flags     uint64
-	Link      uint32
-	Info      uint32
-	Alignment uint64
-	IsAlloc   bool
+	Name              string
+	Offset            int64
+	Size              int64
+	Address           uint64
+	Index             int
+	Type              uint32
+	Flags             uint64
+	Link              uint32
+	Info              uint32
+	Alignment         uint64
+	IsAlloc           bool
+	ExecutionCritical bool
 	common.CommonSectionInfo
+	Stripped bool
 }
 
 type Segment struct {

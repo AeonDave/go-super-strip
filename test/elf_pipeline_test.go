@@ -13,7 +13,7 @@ func TestELFPipelineOperations(t *testing.T) {
 	if runtime.GOOS != "linux" && !(runtime.GOOS == "windows" && hasWSL()) {
 		t.Skip("ELF pipeline verification requires Linux or Windows with WSL")
 	}
-	t.Setenv("GOSSTRIP_TEST_STUB", "")
+	t.Setenv("GOSSTRIP_TEST_STUB", testStubPrefix)
 
 	elfPath := buildGoFixture(t, "linux", "simple")
 
@@ -28,7 +28,7 @@ func TestELFPipelineOperations(t *testing.T) {
 	requireApplied(t, "strip", elfrw.StripELF(elfPath, false))
 	assertAnalysisLooksComprehensive(t, analyze(), "post-strip analyze")
 
-	requireApplied(t, "compact", elfrw.CompactELF(elfPath, false))
+	requireApplied(t, "compact", elfrw.CompactELF(elfPath, false, false, true))
 	assertAnalysisLooksComprehensive(t, analyze(), "post-compact analyze")
 
 	requireApplied(t, "obfuscate", elfrw.ObfuscateELF(elfPath, true))

@@ -50,6 +50,13 @@ func TestCLIOptionsOnCompiledFixtures(t *testing.T) {
 			},
 		},
 		{
+			Name: "compact_fill_random",
+			Args: []string{"-c=fill=random"},
+			Verify: func(t *testing.T, _ compiledFixture, _ string, output string) {
+				assertContains(t, output, "Completed operations: compact")
+			},
+		},
+		{
 			Name: "strip",
 			Args: []string{"-s"},
 			Verify: func(t *testing.T, _ compiledFixture, _ string, output string) {

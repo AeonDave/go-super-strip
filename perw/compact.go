@@ -8,26 +8,48 @@ import (
 	"strings"
 )
 
-func (p *PEFile) Compact(force bool) *common.OperationResult {
-	result, err := p.sectionRemoval(force)
+func (p *PEFile) Compact(force bool, fillRandom bool, keepResources bool) *common.OperationResult {
+	origTimestamp, tsOffset := p.readTimeDateStamp()
+
+	result, err := p.sectionRemoval(force, fillRandom, keepResources)
 	if err != nil {
 		return common.NewSkipped(fmt.Sprintf("Failed to compact: %v", err))
 	}
+	p.restoreTimeDateStamp(origTimestamp, tsOffset)
 	return result
 }
 
-func (p *PEFile) identifyCriticalSections() map[int]struct{} {
+func (p *PEFile) identifyCriticalSections(force bool, keepResources bool) map[int]struct{} {
+	requiredNames := []string{
+		".text", ".code",
+		".data", ".rdata",
+	}
+	protectedNames := []string{
+		".idata", ".edata",
+		".pdata", ".xdata",
+		".tls",
+		".reloc",
+	}
 	critical := make(map[int]struct{})
 	for i, sec := range p.Sections {
 		name := strings.ToLower(strings.Trim(sec.Name, "\x00"))
-		switch name {
-		case ".text", ".code",
-			".data", ".rdata",
-			".idata", ".edata",
-			".pdata", ".xdata",
-			".tls",
-			".reloc":
+		for _, req := range requiredNames {
+			if name == req {
+				critical[i] = struct{}{}
+				goto nextSection
+			}
+		}
+		if !force {
+			for _, opt := range protectedNames {
+				if name == opt {
+					critical[i] = struct{}{}
+					goto nextSection
+				}
+			}
+		}
+		if keepResources && strings.HasPrefix(name, ".rsrc") {
 			critical[i] = struct{}{}
+			goto nextSection
 		}
 		if strings.Contains(name, "go.") ||
 			strings.Contains(name, "runtime") ||
@@ -36,17 +58,19 @@ func (p *PEFile) identifyCriticalSections() map[int]struct{} {
 			strings.Contains(name, ".dtors") {
 			critical[i] = struct{}{}
 		}
+	nextSection:
 	}
 	return critical
 }
 
-func (p *PEFile) identifyStripSections(force bool) (removable, keepable []int) {
+func (p *PEFile) identifyStripSections(force bool, keepResources bool) (removable, keepable []int) {
 	rules := GetSectionStripRule()
 	protected := p.sectionsReferencedByDataDirectories()
-	criticalSections := p.identifyCriticalSections()
+	criticalSections := p.identifyCriticalSections(force, keepResources)
+	resourceRule, hasResourceRule := rules[ResourceSections]
 
 	for i, section := range p.Sections {
-		if _, ok := protected[i]; ok {
+		if _, ok := protected[i]; ok && !force {
 			keepable = append(keepable, i)
 			continue
 		}
@@ -55,8 +79,15 @@ func (p *PEFile) identifyStripSections(force bool) (removable, keepable []int) {
 			continue
 		}
 
+		if keepResources && hasResourceRule && common.MatchesPattern(section.Name, resourceRule.ExactNames, resourceRule.PrefixNames) {
+			keepable = append(keepable, i)
+			continue
+		}
+
 		isRemovable := false
-		if p.isCorruptedSection(section) {
+		if section.Stripped {
+			isRemovable = true
+		} else if p.isCorruptedSection(section) {
 			isRemovable = true
 		} else if force && p.isNullOrZeroSection(section) {
 			isRemovable = true
@@ -203,13 +234,13 @@ func (p *PEFile) sectionsReferencedByDataDirectories() map[int]struct{} {
 	return protected
 }
 
-func (p *PEFile) sectionRemoval(force bool) (*common.OperationResult, error) {
+func (p *PEFile) sectionRemoval(force bool, fillRandom bool, keepResources bool) (*common.OperationResult, error) {
 	if len(p.Sections) == 0 {
 		return common.NewSkipped("no sections to process"), nil
 	}
 
 	originalSize := uint64(len(p.RawData))
-	removableSectionIndices, _ := p.identifyStripSections(force)
+	removableSectionIndices, _ := p.identifyStripSections(force, keepResources)
 
 	if len(removableSectionIndices) == 0 {
 		return common.NewSkipped("no removable sections found"), nil
@@ -230,7 +261,7 @@ func (p *PEFile) sectionRemoval(force bool) (*common.OperationResult, error) {
 	sort.Sort(sort.Reverse(sort.IntSlice(removableSectionIndices)))
 	totalRemovedSize := int64(0)
 	for _, sectionIdx := range removableSectionIndices {
-		if err := p.removeSingleSection(sectionIdx, &totalRemovedSize, fileAlignment); err != nil {
+		if err := p.removeSingleSection(sectionIdx, &totalRemovedSize, fileAlignment, fillRandom); err != nil {
 			return nil, fmt.Errorf("failed to remove section %d: %w", sectionIdx, err)
 		}
 	}
@@ -392,6 +423,9 @@ func (p *PEFile) sectionRemoval(force bool) (*common.OperationResult, error) {
 		result.AddDetail(fmt.Sprintf("trimmed overlay: %d bytes removed (no Authenticode)", trimmedOverlay), 1, false)
 	}
 	result.AddDetail("updated PE headers: SizeOfImage/SizeOfHeaders recalculated; CheckSum cleared", 1, false)
+	for _, warn := range p.validatePostCompact(removedNames) {
+		result.AddDetail(warn, 0, true)
+	}
 	return result, nil
 }
 
@@ -413,13 +447,21 @@ func (p *PEFile) extractFileAlignment() (uint32, error) {
 	return fileAlignment, nil
 }
 
-func (p *PEFile) removeSingleSection(sectionIdx int, totalRemovedSize *int64, fileAlignment uint32) error {
+func (p *PEFile) removeSingleSection(sectionIdx int, totalRemovedSize *int64, fileAlignment uint32, fillRandom bool) error {
 	if sectionIdx < 0 || sectionIdx >= len(p.Sections) {
 		return fmt.Errorf("invalid section index: %d", sectionIdx)
 	}
 
 	sectionToRemove := p.Sections[sectionIdx]
 	if sectionToRemove.Offset > 0 && sectionToRemove.Size > 0 {
+		fillMode := ZeroFill
+		if fillRandom {
+			fillMode = RandomFill
+		}
+		if err := p.fillRegion(sectionToRemove.Offset, int(sectionToRemove.Size), fillMode); err != nil {
+			return fmt.Errorf("failed to fill section %s: %w", sectionToRemove.Name, err)
+		}
+		p.Sections[sectionIdx].Stripped = true
 		alignedSize := common.AlignUp64(sectionToRemove.Size, int64(fileAlignment))
 		start := int(sectionToRemove.Offset)
 		end := int(sectionToRemove.Offset + alignedSize)
@@ -529,6 +571,112 @@ func (p *PEFile) clearDataDirectoriesForRemovedRVAs(removedRVAs map[uint32]bool)
 		}
 	}
 	return nil
+}
+
+func (p *PEFile) readTimeDateStamp() (uint32, int64) {
+	if len(p.RawData) < PE_DOS_HEADER_SIZE {
+		return 0, -1
+	}
+	peHeaderOffset := int64(binary.LittleEndian.Uint32(p.RawData[PE_ELFANEW_OFFSET : PE_ELFANEW_OFFSET+4]))
+	coffHeaderOffset := peHeaderOffset + PE_SIGNATURE_SIZE
+	timeDateStampOffset := coffHeaderOffset + PE_TIMESTAMP_OFFSET
+	if timeDateStampOffset+4 > int64(len(p.RawData)) {
+		return 0, -1
+	}
+	value := binary.LittleEndian.Uint32(p.RawData[timeDateStampOffset : timeDateStampOffset+4])
+	return value, timeDateStampOffset
+}
+
+func (p *PEFile) restoreTimeDateStamp(original uint32, offset int64) {
+	if offset < 0 {
+		return
+	}
+	_ = WriteAtOffset(p.RawData, offset, original)
+}
+
+func (p *PEFile) repackSections(fileAlignment uint32) {
+	if len(p.Sections) == 0 {
+		return
+	}
+	if fileAlignment == 0 {
+		fileAlignment = PE_FILE_ALIGNMENT_MIN
+	}
+	minOffset := int64(len(p.RawData))
+	for _, s := range p.Sections {
+		if s.Offset > 0 && s.Size > 0 && s.Offset < minOffset {
+			minOffset = s.Offset
+		}
+	}
+	if minOffset < 0 || minOffset > int64(len(p.RawData)) {
+		minOffset = int64(len(p.RawData))
+	}
+	header := make([]byte, minOffset)
+	copy(header, p.RawData[:minOffset])
+	source := append([]byte(nil), p.RawData...)
+	buffer := header
+	current := len(buffer)
+	for i := range p.Sections {
+		sec := &p.Sections[i]
+		if sec.Size <= 0 {
+			sec.Offset = 0
+			continue
+		}
+		align := int64(fileAlignment)
+		if align == 0 {
+			align = int64(PE_FILE_ALIGNMENT_MIN)
+		}
+		aligned := int(common.AlignUp64(int64(current), align))
+		if aligned > current {
+			buffer = append(buffer, make([]byte, aligned-current)...)
+			current = aligned
+		}
+		start := int(sec.Offset)
+		end := start + int(sec.Size)
+		if start < 0 {
+			start = 0
+		}
+		if end > len(source) {
+			end = len(source)
+		}
+		buffer = append(buffer, source[start:end]...)
+		sec.Offset = int64(current)
+		current += end - start
+	}
+	p.RawData = buffer
+}
+
+func (p *PEFile) validatePostCompact(removedSections []string) []string {
+	var warnings []string
+	entryVA := p.entryPoint
+	valid := false
+	for _, sec := range p.Sections {
+		if sec.VirtualSize == 0 && sec.Size == 0 {
+			continue
+		}
+		size := sec.VirtualSize
+		if size < uint32(sec.Size) {
+			size = uint32(sec.Size)
+		}
+		if entryVA >= sec.VirtualAddress && entryVA < sec.VirtualAddress+size {
+			valid = true
+			break
+		}
+	}
+	if !valid {
+		warnings = append(warnings, fmt.Sprintf("entry point 0x%X no longer maps to remaining sections", entryVA))
+	}
+	for _, name := range removedSections {
+		trimmed := strings.ToLower(strings.TrimSpace(strings.Trim(name, "\x00")))
+		switch {
+		case strings.HasPrefix(trimmed, ".rsrc"):
+			warnings = append(warnings, "resource section removed; manifests/icons may be unavailable")
+		case trimmed == ".idata" || trimmed == ".edata":
+			warnings = append(warnings, "import/export tables removed; binary may fail to resolve external APIs")
+		case trimmed == ".reloc":
+			warnings = append(warnings, "relocation data removed; ASLR may fail on some systems")
+		}
+	}
+	return warnings
 }
 
 func (p *PEFile) updateNumberOfSections(newCount int) error {

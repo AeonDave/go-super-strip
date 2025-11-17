@@ -182,3 +182,18 @@ func (e *ELFFile) readNullTerminatedString(data []byte) string {
 	}
 	return string(data)
 }
+
+func isExecutionCriticalName(name string) bool {
+	s := strings.ToLower(strings.Trim(strings.TrimSpace(name), "\x00"))
+	switch {
+	case s == ".gopclntab",
+		s == ".typelink",
+		s == ".itablink",
+		s == ".go.buildinfo",
+		s == ".go.funcinfo",
+		strings.HasPrefix(s, ".gofunc."),
+		strings.Contains(s, "go.runtime"):
+		return true
+	}
+	return false
+}

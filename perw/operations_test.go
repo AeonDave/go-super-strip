@@ -2,12 +2,47 @@ package perw
 
 import (
 	"bytes"
+	"encoding/binary"
 	"os"
 	"strings"
 	"testing"
 
 	"gosstrip/common"
 )
+
+func hasPESection(t *testing.T, path, name string) bool {
+	t.Helper()
+	peFile, err := readPe(path, os.O_RDONLY)
+	if err != nil {
+		t.Fatalf("failed to reopen PE: %v", err)
+	}
+	defer func() { _ = peFile.Close() }()
+	target := strings.ToLower(name)
+	for _, sec := range peFile.Sections {
+		if strings.ToLower(strings.Trim(sec.Name, "\x00")) == target {
+			return true
+		}
+	}
+	return false
+}
+
+func readPETimestamp(t *testing.T, path string) uint32 {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read %s: %v", path, err)
+	}
+	if len(data) < 0x40 {
+		t.Fatalf("file too small: %s", path)
+	}
+	elfanew := binary.LittleEndian.Uint32(data[0x3C:0x40])
+	coffOffset := int(elfanew) + PE_SIGNATURE_SIZE
+	offset := coffOffset + PE_TIMESTAMP_OFFSET
+	if offset+4 > len(data) {
+		t.Fatalf("timestamp offset out of range for %s", path)
+	}
+	return binary.LittleEndian.Uint32(data[offset : offset+4])
+}
 
 func TestAnalyzePE_Succeeds(t *testing.T) {
 	pePath := copyPEFixture(t, "simple.exe")
@@ -69,7 +104,7 @@ func TestObfuscatePE_AppliesChanges(t *testing.T) {
 
 func TestCompactPE_SafeOperation(t *testing.T) {
 	pePath := copyPEFixture(t, "simple.exe")
-	result := CompactPE(pePath, false)
+	result := CompactPE(pePath, false, false, true)
 	if result == nil {
 		t.Fatal("expected result from CompactPE, got nil")
 	}
@@ -80,6 +115,102 @@ func TestCompactPE_SafeOperation(t *testing.T) {
 	}
 	if !isPE {
 		t.Fatal("file is no longer a valid PE after compaction")
+	}
+}
+
+func TestCompactPE_FillModesAndForce(t *testing.T) {
+	cfgs := []struct {
+		name       string
+		force      bool
+		fillRandom bool
+	}{
+		{"zero", false, false},
+		{"random", false, true},
+		{"forceRandom", true, true},
+	}
+	for _, cfg := range cfgs {
+		t.Run(cfg.name, func(t *testing.T) {
+			pePath := copyPEFixture(t, "simple.exe")
+			result := CompactPE(pePath, cfg.force, cfg.fillRandom, true)
+			if result == nil {
+				t.Fatal("expected compact result, got nil")
+			}
+			isPE, err := IsPEFile(pePath)
+			if err != nil {
+				t.Fatalf("IsPEFile failed: %v", err)
+			}
+			if !isPE {
+				t.Fatalf("PE invalid after compact fill=%v force=%v", cfg.fillRandom, cfg.force)
+			}
+		})
+	}
+}
+
+func TestCompactPE_PreservesTimestamp(t *testing.T) {
+	pePath := copyPEFixture(t, "simple_timestamp.exe")
+	original := readPETimestamp(t, pePath)
+
+	if result := CompactPE(pePath, false, false, true); result == nil {
+		t.Fatal("expected compact result, got nil")
+	}
+	if got := readPETimestamp(t, pePath); got != original {
+		t.Fatalf("expected timestamp %d, got %d", original, got)
+	}
+}
+
+func TestCompactPE_PreservesTimestampAfterStrip(t *testing.T) {
+	pePath := copyPEFixture(t, "simple_strip_timestamp.exe")
+	if result := StripPE(pePath, false); result == nil || !result.Applied {
+		t.Fatalf("strip failed: %#v", result)
+	}
+	original := readPETimestamp(t, pePath)
+	if original != 0 {
+		t.Fatalf("expected strip to zero timestamp, got %d", original)
+	}
+	if result := CompactPE(pePath, true, false, true); result == nil {
+		t.Fatal("compact failed")
+	}
+	if got := readPETimestamp(t, pePath); got != original {
+		t.Fatalf("expected timestamp %d after compact, got %d", original, got)
+	}
+}
+
+func TestCompactPE_KeepResourcesOption(t *testing.T) {
+	pePath := copyPEFixture(t, "simple.exe")
+	secName := common.SanitizeSectionName(".rsrc")
+	if res := InsertPE(pePath, secName, "RESOURCEPAYLOAD", ""); res == nil || !res.Applied {
+		t.Fatalf("failed to seed resource section: %#v", res)
+	}
+	if !hasPESection(t, pePath, ".rsrc") {
+		t.Skip("fixture lacks .rsrc even after insertion; skipping test")
+	}
+	if result := CompactPE(pePath, false, false, true); result == nil {
+		t.Fatalf("compact with keepResources failed")
+	}
+	if !hasPESection(t, pePath, ".rsrc") {
+		t.Fatalf(".rsrc should be preserved when keepResources is true")
+	}
+	if result := CompactPE(pePath, true, false, false); result == nil {
+		t.Fatalf("compact without keepResources failed")
+	}
+	if hasPESection(t, pePath, ".rsrc") {
+		t.Fatalf(".rsrc should be removed when keepResources is false and force=true")
+	}
+}
+
+func TestCompactPE_PreservesImportsWhenNotForced(t *testing.T) {
+	pePath := copyPEFixture(t, "simple.exe")
+	if result := CompactPE(pePath, false, false, true); result == nil {
+		t.Fatalf("compact failed")
+	}
+	if !hasPESection(t, pePath, ".idata") {
+		t.Fatalf(".idata should remain when force=false")
+	}
+	if result := CompactPE(pePath, true, false, true); result == nil {
+		t.Fatalf("forced compact failed")
+	}
+	if hasPESection(t, pePath, ".idata") {
+		t.Fatalf(".idata should be removable when force=true")
 	}
 }
 

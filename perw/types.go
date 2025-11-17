@@ -55,6 +55,7 @@ type Section struct {
 	NumberOfRelocations  uint16
 	NumberOfLineNumbers  uint16
 	common.CommonSectionInfo
+	Stripped bool
 }
 
 type SectionInfo struct {
@@ -105,9 +106,9 @@ const (
 	// PE header offsets
 	PE_SIGNATURE_OFFSET       = 0  // PE signature offset in NT header
 	PE_FILE_HEADER_SIZE       = 20 // Size of COFF file header
-	PE_MACHINE_OFFSET         = 4  // Machine type offset in file header
-	PE_SECTIONS_OFFSET        = 6  // Number of sections offset
-	PE_TIMESTAMP_OFFSET       = 8  // Timestamp offset
+	PE_MACHINE_OFFSET         = 0  // Machine type offset in file header
+	PE_SECTIONS_OFFSET        = 2  // Number of sections offset
+	PE_TIMESTAMP_OFFSET       = 4  // Timestamp offset
 	PE_OPTSIZE_OFFSET         = 16 // Optional header size offset
 	PE_CHARACTERISTICS_OFFSET = 18 // Characteristics offset
 )

@@ -9,6 +9,9 @@ import (
 )
 
 func (e *ELFFile) StripAll(force bool) *common.OperationResult {
+	protectedTables := e.snapshotProtectedStringTables()
+	defer e.restoreProtectedStringTables(protectedTables)
+
 	// Start with a PE-like summary title (bytes processed) for consistency
 	originalSize := uint64(len(e.RawData))
 	totalCount := 0
@@ -55,7 +58,7 @@ func (e *ELFFile) StripAll(force bool) *common.OperationResult {
 	return result
 }
 
-func (e *ELFFile) StripByteRegex(pattern *regexp.Regexp, useRandom bool) (int, error) {
+func (e *ELFFile) StripByteRegex(pattern *regexp.Regexp, useRandom bool, force bool) (int, error) {
 	if pattern == nil {
 		return 0, fmt.Errorf("regex pattern cannot be nil")
 	}
@@ -63,6 +66,9 @@ func (e *ELFFile) StripByteRegex(pattern *regexp.Regexp, useRandom bool) (int, e
 	for _, match := range pattern.FindAllIndex(e.RawData, -1) {
 		start, end := match[0], match[1]
 		if start < 0 || end > len(e.RawData) || start >= end {
+			continue
+		}
+		if !force && e.matchProtectedStringTableRange(start, end) {
 			continue
 		}
 		if err := e.fillRegion(uint64(start), end-start, useRandom); err != nil {
@@ -106,6 +112,9 @@ func (e *ELFFile) stripSectionData(sectionIndex int, useRandom bool) error {
 	if section.Offset <= 0 || section.Size <= 0 {
 		return nil // Already stripped or no content
 	}
+	if section.Stripped {
+		return nil
+	}
 
 	// Validate section bounds
 	if uint64(section.Offset) >= uint64(len(e.RawData)) {
@@ -125,13 +134,15 @@ func (e *ELFFile) stripSectionData(sectionIndex int, useRandom bool) error {
 	}
 
 	// Mark section as stripped
-	section.Offset = 0
-	section.Size = 0
+	section.Stripped = true
 
 	return nil
 }
 
 func (e *ELFFile) stripSectionsByType(sectionType SectionType, useRandom bool) *common.OperationResult {
+	if sectionType == LoaderSections {
+		return common.NewSkipped("loader sections are required for execution and cannot be stripped")
+	}
 	if err := e.validateELF(); err != nil {
 		return common.NewSkipped(fmt.Sprintf("ELF validation failed: %v", err))
 	}
@@ -152,6 +163,10 @@ func (e *ELFFile) stripSectionsByType(sectionType SectionType, useRandom bool) *
 	var strippedSections []string
 	for i, section := range e.Sections {
 		if common.MatchesPattern(section.Name, rule.ExactNames, rule.PrefixNames) {
+			sanitized := strings.ToLower(strings.Trim(strings.TrimSpace(section.Name), "\x00"))
+			if sanitized == ".shstrtab" || section.ExecutionCritical {
+				continue
+			}
 			// Only count sections that actually contain data and haven't been stripped yet
 			changed := section.Offset > 0 && section.Size > 0
 			if err := e.stripSectionData(i, useRandom); err != nil {
@@ -304,7 +319,7 @@ func (e *ELFFile) StripSingleRegexRule(regex string) *common.OperationResult {
 		return common.NewSkipped(fmt.Sprintf("invalid regex '%s': %v", regex, err))
 	}
 
-	modifications, err := e.StripByteRegex(pattern, false) // Use zero fill by default
+	modifications, err := e.StripByteRegex(pattern, false, true) // Explicit regex requests override protections
 	if err != nil {
 		return common.NewSkipped(fmt.Sprintf("error processing '%s': %v", regex, err))
 	}
@@ -321,6 +336,9 @@ func (e *ELFFile) stripAllRegexRules(force bool) *common.OperationResult {
 	result := common.NewApplied("Regex pattern stripping", 0)
 	result.SetCategory("PATTERNS")
 
+	protected := e.snapshotProtectedStringTables()
+	defer e.restoreProtectedStringTables(protected)
+
 	for _, rule := range rules {
 		if rule.IsRisky && !force {
 			continue
@@ -333,7 +351,7 @@ func (e *ELFFile) stripAllRegexRules(force bool) *common.OperationResult {
 				continue
 			}
 
-			modifications, err := e.StripByteRegex(pattern, rule.Fill == RandomFill)
+			modifications, err := e.StripByteRegex(pattern, rule.Fill == RandomFill, force)
 			if err != nil {
 				// Just log the error and continue
 				continue
@@ -353,4 +371,69 @@ func (e *ELFFile) stripAllRegexRules(force bool) *common.OperationResult {
 		return result
 	}
 	return common.NewSkipped("no regex-based metadata found")
+}
+
+type protectedSectionSnapshot struct {
+	offset int
+	data   []byte
+}
+
+func (e *ELFFile) snapshotProtectedStringTables() []protectedSectionSnapshot {
+	var snapshots []protectedSectionSnapshot
+	for _, section := range e.Sections {
+		if !isProtectedStringTable(section.Name) {
+			continue
+		}
+		if section.Offset < 0 || section.Size <= 0 {
+			continue
+		}
+		start := int(section.Offset)
+		end := start + int(section.Size)
+		if start < 0 || end > len(e.RawData) {
+			continue
+		}
+		buf := make([]byte, end-start)
+		copy(buf, e.RawData[start:end])
+		snapshots = append(snapshots, protectedSectionSnapshot{
+			offset: start,
+			data:   buf,
+		})
+	}
+	return snapshots
+}
+
+func (e *ELFFile) restoreProtectedStringTables(snaps []protectedSectionSnapshot) {
+	for _, snap := range snaps {
+		end := snap.offset + len(snap.data)
+		if snap.offset < 0 {
+			continue
+		}
+		if end > len(e.RawData) {
+			padding := make([]byte, end-len(e.RawData))
+			e.RawData = append(e.RawData, padding...)
+		}
+		copy(e.RawData[snap.offset:end], snap.data)
+	}
+}
+
+func (e *ELFFile) matchProtectedStringTableRange(start, end int) bool {
+	for _, section := range e.Sections {
+		if !isProtectedStringTable(section.Name) {
+			continue
+		}
+		if section.Offset < 0 || section.Size <= 0 {
+			continue
+		}
+		secStart := int(section.Offset)
+		secEnd := secStart + int(section.Size)
+		if start < secEnd && end > secStart {
+			return true
+		}
+	}
+	return false
+}
+
+func isProtectedStringTable(name string) bool {
+	s := strings.ToLower(strings.Trim(strings.TrimSpace(name), "\x00"))
+	return s == ".shstrtab"
 }

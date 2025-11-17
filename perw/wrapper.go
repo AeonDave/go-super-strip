@@ -65,9 +65,9 @@ func StripPE(filePath string, force bool) *common.OperationResult {
 	})
 }
 
-func CompactPE(filePath string, force bool) *common.OperationResult {
+func CompactPE(filePath string, force bool, fillRandom bool, keepResources bool) *common.OperationResult {
 	return processPE(filePath, os.O_RDWR, func(peFile *PEFile) *common.OperationResult {
-		return peFile.Compact(force)
+		return peFile.Compact(force, fillRandom, keepResources)
 	})
 }
 

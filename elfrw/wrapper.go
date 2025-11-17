@@ -66,9 +66,9 @@ func StripELF(filePath string, force bool) *common.OperationResult {
 	})
 }
 
-func CompactELF(filePath string, force bool) *common.OperationResult {
+func CompactELF(filePath string, force bool, fillRandom bool, _ bool) *common.OperationResult {
 	return processELF(filePath, os.O_RDWR, func(elfFile *ELFFile) *common.OperationResult {
-		return elfFile.Compact(force)
+		return elfFile.Compact(force, fillRandom)
 	})
 }
 

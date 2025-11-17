@@ -499,7 +499,7 @@ func (e *ELFFile) parseSectionHeader(base uint64, index uint16, stringTableData 
 			name = string(stringTableData[nameOffset:end])
 		}
 	}
-	return Section{
+	section := Section{
 		Name:      name,
 		Offset:    int64(offset),
 		Size:      int64(size),
@@ -511,6 +511,8 @@ func (e *ELFFile) parseSectionHeader(base uint64, index uint16, stringTableData 
 		Link:      uint32(link),
 		Info:      uint32(info),
 	}
+	section.ExecutionCritical = isExecutionCriticalName(name)
+	return section
 }
 
 func (e *ELFFile) populateSectionMetadata(section *Section) {

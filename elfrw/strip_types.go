@@ -12,6 +12,7 @@ const (
 	TLSSections
 	NoteSections
 	RuntimeSections
+	LoaderSections
 )
 
 type FillMode int
@@ -119,6 +120,19 @@ func getSectionStripRule() map[SectionType]SectionStripRule {
 			StripForSO:  true,
 			StripForBIN: true,
 			IsRisky:     false,
+			Fill:        ZeroFill,
+		},
+		LoaderSections: {
+			ExactNames: []string{
+				".interp", ".dynamic", ".dynsym", ".dynstr", ".gnu.version", ".gnu.version_d",
+				".gnu.version_r", ".gnu.hash", ".hash", ".got", ".got.plt", ".plt", ".plt.got",
+				".plt.sec", ".rela.plt", ".rela.dyn", ".rel.plt", ".rel.dyn",
+			},
+			PrefixNames: []string{".plt.", ".rel.", ".rela."},
+			Description: "dynamic loader metadata (imports/PLT/GOT)",
+			StripForSO:  false,
+			StripForBIN: true,
+			IsRisky:     true,
 			Fill:        ZeroFill,
 		},
 	}

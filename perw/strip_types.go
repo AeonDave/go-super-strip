@@ -12,6 +12,8 @@ const (
 	TLSSections
 	CertificateSections
 	RuntimeSections
+	ResourceSections
+	ImportSections
 )
 
 type FillMode int
@@ -115,9 +117,31 @@ func GetSectionStripRule() map[SectionType]SectionStripRule {
 		RuntimeSections: {
 			ExactNames:  []string{".rustc", ".rust_eh_personality", ".llvm_addrsig", ".llvm.embedded.object", ".jcr", ".tm_clone_table", ".data.rel.ro"},
 			PrefixNames: []string{".rust.", ".llvm.", ".msvcrt.", ".mingw32."},
+			Description: "runtime and compiler-specific sections",
 			StripForDLL: true,
 			StripForEXE: true,
 			IsRisky:     false,
+			Fill:        ZeroFill,
+		},
+		ResourceSections: {
+			ExactNames:  []string{".rsrc", ".rsrc$01", ".rsrc$02", ".rsrc$DATA"},
+			PrefixNames: []string{".rsrc$"},
+			Description: "embedded resources (icons/manifests)",
+			StripForDLL: true,
+			StripForEXE: true,
+			IsRisky:     true,
+			Fill:        ZeroFill,
+		},
+		ImportSections: {
+			ExactNames: []string{
+				".idata", ".edata", ".didat", ".idata$2", ".idata$4", ".idata$5",
+				".apiset", ".apilist", ".apfframe", ".rdata$iat",
+			},
+			PrefixNames: []string{".idata$"},
+			Description: "import/export descriptor metadata",
+			StripForDLL: true,
+			StripForEXE: true,
+			IsRisky:     true,
 			Fill:        ZeroFill,
 		},
 	}
