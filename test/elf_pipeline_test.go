@@ -55,7 +55,7 @@ func TestELFPipelineOperations(t *testing.T) {
 
 	runELFBinary(t, elfPath)
 
-	packOpts := "compression=xz,encryption=chacha20,polymorphic=true,padding=true,inmemory=true,antidebug=true,antivm=true"
+	packOpts := "compression=xz,encryption=chacha20,polymorphic=true,padding=true,inmemory=auto"
 	if err := pack.Pack(elfPath, packOpts, elfPath); err != nil {
 		t.Fatalf("pack.Pack failed: %v", err)
 	}

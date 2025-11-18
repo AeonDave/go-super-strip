@@ -23,8 +23,8 @@ func TestDefaultConfig(t *testing.T) {
 		t.Error("Expected polymorphic stub to be enabled by default")
 	}
 
-	if config.InMemoryExecution {
-		t.Error("Expected in-memory execution to be disabled by default")
+	if config.InMemoryMode != InMemoryOff {
+		t.Error("Expected in-memory mode to default to 'off'")
 	}
 }
 
@@ -144,9 +144,6 @@ func TestParseOptions_Bool(t *testing.T) {
 	}{
 		{"poly=true", func(c *PackConfig) bool { return c.PolymorphicStub }, "polymorphic"},
 		{"poly=false", func(c *PackConfig) bool { return !c.PolymorphicStub }, "polymorphic off"},
-		{"inmemory=true", func(c *PackConfig) bool { return c.InMemoryExecution }, "inmemory"},
-		{"antidebug=true", func(c *PackConfig) bool { return c.AntiDebug }, "antidebug"},
-		{"antivm=true", func(c *PackConfig) bool { return c.AntiVM }, "antivm"},
 	}
 
 	for _, tt := range tests {
@@ -163,7 +160,7 @@ func TestParseOptions_Bool(t *testing.T) {
 }
 
 func TestParseOptions_Multiple(t *testing.T) {
-	config, err := ParseOptions("comp=lzma,encr=chacha20,level=9,poly=false")
+	config, err := ParseOptions("comp=lzma,encr=chacha20,level=9,poly=false,inmemory=auto")
 	if err != nil {
 		t.Fatalf("ParseOptions failed: %v", err)
 	}
@@ -179,6 +176,9 @@ func TestParseOptions_Multiple(t *testing.T) {
 	}
 	if config.PolymorphicStub {
 		t.Error("Expected polymorphic to be false")
+	}
+	if config.InMemoryMode != InMemoryAuto {
+		t.Errorf("Expected inmemory auto, got %s", config.InMemoryMode)
 	}
 }
 
@@ -250,4 +250,48 @@ func TestValidateConfig(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestParseOptions_InMemoryMode(t *testing.T) {
+	t.Run("auto mode", func(t *testing.T) {
+		config, err := ParseOptions("inmemory=auto")
+		if err != nil {
+			t.Fatalf("ParseOptions failed: %v", err)
+		}
+		if config.InMemoryMode != InMemoryAuto {
+			t.Fatalf("expected auto mode, got %s", config.InMemoryMode)
+		}
+	})
+	t.Run("explicit memfd", func(t *testing.T) {
+		config, err := ParseOptions("inmemory=memfd")
+		if err != nil {
+			t.Fatalf("ParseOptions failed: %v", err)
+		}
+		if config.InMemoryMode != InMemoryMemfd {
+			t.Fatalf("expected memfd, got %s", config.InMemoryMode)
+		}
+	})
+	t.Run("explicit process hollowing", func(t *testing.T) {
+		config, err := ParseOptions("inmemory=process_hollowing")
+		if err != nil {
+			t.Fatalf("ParseOptions failed: %v", err)
+		}
+		if config.InMemoryMode != InMemoryProcessHollowing {
+			t.Fatalf("expected process hollowing, got %s", config.InMemoryMode)
+		}
+	})
+	t.Run("explicit atomic bombing", func(t *testing.T) {
+		config, err := ParseOptions("inmemory=atomic_bombing")
+		if err != nil {
+			t.Fatalf("ParseOptions failed: %v", err)
+		}
+		if config.InMemoryMode != InMemoryAtomicBombing {
+			t.Fatalf("expected atomic_bombing, got %s", config.InMemoryMode)
+		}
+	})
+	t.Run("invalid mode", func(t *testing.T) {
+		if _, err := ParseOptions("inmemory=strategy1"); err == nil {
+			t.Fatal("expected error for invalid in-memory strategy")
+		}
+	})
 }

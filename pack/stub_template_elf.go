@@ -1,5 +1,13 @@
 package pack
 
+import (
+	"strings"
+
+	linstrat "gosstrip/pack/strategies/linux"
+)
+
+const elfMemfdPlaceholder = "{{MEMFD_IMPL}}"
+
 // ELFStubTemplate contiene il template base per lo stub ELF
 // Questo codice verrà compilato e iniettato con il payload compresso/cifrato
 
@@ -17,6 +25,7 @@ import (
 	"syscall"
 	"unsafe"
 	"runtime"
+	"strings"
 	
 	"github.com/ulikunitz/xz"
 	"golang.org/x/crypto/chacha20poly1305"
@@ -77,10 +86,18 @@ func main() {
 	payload := trimToOriginal(decompressed, metadata.OriginalSize)
 	
 	// 4. Esegui
-	if metadata.UseInMemory {
+	mode := strings.ToLower(strings.TrimSpace(metadata.InMemoryMode))
+	switch mode {
+	case "memfd", "auto":
 		executeInMemory(payload)
-	} else {
+	case "", "off":
 		executeFromTemp(payload)
+	default:
+		if metadata.UseInMemory {
+			executeInMemory(payload)
+		} else {
+			executeFromTemp(payload)
+		}
 	}
 }
 
@@ -93,6 +110,7 @@ type Metadata struct {
 	Key             []byte
 	Nonce           []byte
 	UseInMemory     bool
+	InMemoryMode    string
 }
 
 func parseMetadata(data []byte) *Metadata {
@@ -120,9 +138,11 @@ func parseMetadata(data []byte) *Metadata {
 	m.Nonce = make([]byte, nonceSize)
 	r.Read(m.Nonce)
 	
-	var inMem byte
-	r.ReadByte()
+	inMem, _ := r.ReadByte()
 	m.UseInMemory = (inMem == 1)
+	modeRaw := make([]byte, 16)
+	r.Read(modeRaw)
+	m.InMemoryMode = string(bytes.TrimRight(modeRaw, "\x00"))
 	
 	return m
 }
@@ -220,74 +240,7 @@ func trimToOriginal(data []byte, originalSize uint64) []byte {
 	return data
 }
 
-// executeInMemory esegue il payload direttamente dalla memoria usando memfd_create
-func executeInMemory(payload []byte) {
-	// memfd_create syscall (Linux 3.17+)
-	// Syscall numbers per architettura:
-	// - x86_64: 319
-	// - ARM64: 279
-	// - ARM: 385
-	var memfdSyscall uintptr
-	switch runtime.GOARCH {
-	case "arm64":
-		memfdSyscall = 279
-	case "arm":
-		memfdSyscall = 385
-	default: // x86_64, amd64
-		memfdSyscall = 319
-	}
-	
-	name := []byte("exec\x00")
-	
-	// MFD_CLOEXEC = 1
-	fd, _, errno := syscall.Syscall(memfdSyscall, uintptr(unsafe.Pointer(&name[0])), 1, 0)
-	if errno != 0 {
-		// Fallback to temp file if memfd_create not available
-		executeFromTemp(payload)
-		return
-	}
-	defer syscall.Close(int(fd))
-	
-	// Scrivi payload nel memfd in chunks (gestisce write parziali)
-	totalWritten := 0
-	for totalWritten < len(payload) {
-		n, err := syscall.Write(int(fd), payload[totalWritten:])
-		if err != nil {
-			executeFromTemp(payload)
-			return
-		}
-		if n <= 0 {
-			executeFromTemp(payload)
-			return
-		}
-		totalWritten += n
-	}
-	
-	// Costruisci path /proc/self/fd/N usando fmt.Sprintf equivalente manuale
-	// Per evitare import fmt, convertiamo fd in stringa manualmente
-	fdNum := int(fd)
-	fdStr := ""
-	if fdNum == 0 {
-		fdStr = "0"
-	} else {
-		digits := []byte{}
-		for fdNum > 0 {
-			digits = append([]byte{byte('0' + fdNum%10)}, digits...)
-			fdNum /= 10
-		}
-		fdStr = string(digits)
-	}
-	fdPath := "/proc/self/fd/" + fdStr
-	
-	// Esegui il binary dal memfd
-	// syscall.Exec rimpiazza il processo corrente con il nuovo binary
-	err := syscall.Exec(fdPath, os.Args, os.Environ())
-	
-	// Se arriviamo qui, Exec ha fallito - fallback
-	if err != nil {
-		executeFromTemp(payload)
-	}
-}
+` + elfMemfdPlaceholder + `
 
 // executeFromTemp esegue il payload da file temporaneo
 func executeFromTemp(payload []byte) {
@@ -313,5 +266,5 @@ func executeFromTemp(payload []byte) {
 
 // GetELFStubSource ritorna il codice sorgente dello stub ELF
 func GetELFStubSource() string {
-	return ELFStubSource
+	return strings.Replace(ELFStubSource, elfMemfdPlaceholder, linstrat.MemfdRuntime, 1)
 }

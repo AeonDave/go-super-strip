@@ -64,18 +64,6 @@ func (pe *PolymorphicEngine) GenerateStubCode(stubCode string) (string, []string
 	result = pe.shuffleHelperFunctions(result)
 	appliedTechniques = append(appliedTechniques, "function_shuffle")
 
-	// 4. Anti-debug checks (a livello Go)
-	if pe.Config.AntiDebug {
-		result = pe.addAntiDebugChecks(result)
-		appliedTechniques = append(appliedTechniques, "anti_debug")
-	}
-
-	// 5. Anti-VM checks (a livello Go)
-	if pe.Config.AntiVM {
-		result = pe.addAntiVMChecks(result)
-		appliedTechniques = append(appliedTechniques, "anti_vm")
-	}
-
 	// Nota: Le trasformazioni a livello assembly/bytecode vengono applicate
 	// DOPO la compilazione dello stub, tramite ELFPolymorphicEngine o PEPolymorphicEngine
 
@@ -212,30 +200,6 @@ func randomString(n int) string {
 		result[i] = letters[randomInt(len(letters))]
 	}
 	return string(result)
-}
-
-// addAntiDebugChecks aggiunge check anti-debug
-func (pe *PolymorphicEngine) addAntiDebugChecks(code string) string {
-	// Placeholder: in produzione, si aggiungerebbero check come:
-	// - IsDebuggerPresent() su Windows
-	// - ptrace(PTRACE_TRACEME) su Linux
-	// - Check su /proc/self/status
-
-	// Per ora, aggiungiamo solo un commento marker
-	marker := "// ANTIDEBUG_PLACEHOLDER\n"
-	return marker + code
-}
-
-// addAntiVMChecks aggiunge check anti-VM
-func (pe *PolymorphicEngine) addAntiVMChecks(code string) string {
-	// Placeholder: in produzione, si aggiungerebbero check come:
-	// - CPUID checks per hypervisor bit
-	// - Check su DMI/SMBIOS per "VMware", "VirtualBox", "QEMU"
-	// - Timing attacks (RDTSC)
-
-	// Per ora, aggiungiamo solo un commento marker
-	marker := "// ANTIVM_PLACEHOLDER\n"
-	return marker + code
 }
 
 // randomBytes genera byte casuali

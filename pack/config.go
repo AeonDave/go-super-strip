@@ -3,6 +3,19 @@ package pack
 import (
 	"fmt"
 	"strings"
+
+	stratcommon "gosstrip/pack/strategies/common"
+)
+
+// InMemoryMode describes how the packed payload should be executed.
+type InMemoryMode = stratcommon.Mode
+
+const (
+	InMemoryOff              InMemoryMode = stratcommon.ModeOff
+	InMemoryAuto             InMemoryMode = stratcommon.ModeAuto
+	InMemoryMemfd            InMemoryMode = stratcommon.ModeMemfd
+	InMemoryProcessHollowing InMemoryMode = stratcommon.ModeProcessHollowing
+	InMemoryAtomicBombing    InMemoryMode = stratcommon.ModeAtomicBombing
 )
 
 // PackConfig rappresenta la configurazione per il packing
@@ -28,12 +41,8 @@ type PackConfig struct {
 	PaddingSizeMax int  // Dimensione massima padding (bytes)
 
 	// Execution mode
-	InMemoryExecution bool // true=in-memory, false=file temporaneo
-	CleanupTemp       bool // Rimuove file temporanei dopo esecuzione
-
-	// Anti-analysis
-	AntiDebug bool // Inserisce check anti-debug
-	AntiVM    bool // Inserisce check anti-VM
+	InMemoryMode InMemoryMode // off, auto, memfd, process_hollowing
+	CleanupTemp  bool         // Rimuove file temporanei dopo esecuzione
 
 	// Output
 	OutputPath string // Path file packed (se vuoto, sovrascrive originale)
@@ -54,10 +63,8 @@ func DefaultConfig() *PackConfig {
 		RandomPadding:        true,
 		PaddingSizeMin:       512,
 		PaddingSizeMax:       4096,
-		InMemoryExecution:    false, // Default: file temporaneo (più compatibile)
+		InMemoryMode:         InMemoryOff,
 		CleanupTemp:          true,
-		AntiDebug:            false,
-		AntiVM:               false,
 		Verbose:              false,
 	}
 }
@@ -133,13 +140,13 @@ func (c *PackConfig) setOption(key, value string) error {
 	case "padding":
 		c.RandomPadding = parseBool(value)
 	case "inmemory", "inmem":
-		c.InMemoryExecution = parseBool(value)
+		mode, err := parseInMemoryMode(value)
+		if err != nil {
+			return err
+		}
+		c.InMemoryMode = mode
 	case "cleanup":
 		c.CleanupTemp = parseBool(value)
-	case "antidebug":
-		c.AntiDebug = parseBool(value)
-	case "antivm":
-		c.AntiVM = parseBool(value)
 	case "verbose", "v":
 		c.Verbose = parseBool(value)
 	default:
@@ -182,6 +189,10 @@ func (c *PackConfig) Validate() error {
 		return fmt.Errorf("padding min (%d) cannot be greater than max (%d)", c.PaddingSizeMin, c.PaddingSizeMax)
 	}
 
+	if !c.InMemoryMode.Valid() {
+		return fmt.Errorf("invalid in-memory mode: %s (valid: off, auto, memfd, process_hollowing)", c.InMemoryMode)
+	}
+
 	return nil
 }
 
@@ -207,9 +218,11 @@ func (c *PackConfig) String() string {
 	}
 	sb.WriteString("\n")
 
-	sb.WriteString(fmt.Sprintf("  In-memory execution: %t\n", c.InMemoryExecution))
-	sb.WriteString(fmt.Sprintf("  Anti-debug: %t\n", c.AntiDebug))
-	sb.WriteString(fmt.Sprintf("  Anti-VM: %t\n", c.AntiVM))
+	sb.WriteString(fmt.Sprintf("  In-memory execution: %s\n", c.InMemoryMode))
 
 	return sb.String()
+}
+
+func parseInMemoryMode(value string) (InMemoryMode, error) {
+	return stratcommon.Parse(value)
 }

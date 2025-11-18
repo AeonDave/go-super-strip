@@ -5,7 +5,7 @@ This document describes the `-p` packer, its options, and how the polymorphic st
 ## 1. CLI Grammar
 
 ```
--p=compression=xz,encryption=aes-256-gcm,polymorphic=true,inmemory=true,antidebug=true,antivm=true
+-p=compression=xz,encryption=aes-256-gcm,polymorphic=true,inmemory=auto
 ```
 
 Options (comma-separated key/value pairs):
@@ -15,9 +15,7 @@ Options (comma-separated key/value pairs):
 | `compression` | `xz`, `lzma`, `none` | Algorithm used before encryption. |
 | `encryption` | `aes-256-gcm`, `chacha20`, `none` | Protects payload at rest. |
 | `polymorphic` | `true/false` | Picks a random stub variant and randomizes control flow. |
-| `inmemory` | `true/false` | Executes the payload directly from memory (memfd/process hollowing). |
-| `antidebug` | `true/false` | Enables debugger detection hooks. |
-| `antivm` | `true/false` | Adds VM heuristics (CPUID, timing). |
+| `inmemory` | `off`, `auto`, `memfd` (Linux), `process_hollowing` (Windows) | `off` writes to temp files, `auto` selects the safest fileless strategy per OS, explicit modes pin the desired technique. |
 | `padding` | `true/false` | Adds junk data to the stub. |
 | `level` | `1-9` | Compression effort (xz/lzma only). |
 
@@ -34,7 +32,6 @@ Packing mutates the working file unless an explicit `<output>` path is supplied.
 ## 3. Stub Techniques
 
 - **Polymorphism:** random stub variant selection, variable renaming, garbage injection, control-flow flattening, and per-build AES key randomization.
-- **Anti-debug/vm:** uses Windows API (IsDebuggerPresent, NtQueryInformationProcess) and Linux `/proc` checks plus timing loops.
 - **In-memory execution:** Linux uses `memfd_create` + `fexecve`; Windows uses process hollowing with WriteProcessMemory + SetThreadContext.
 - **Instruction padding:** stub assembler contains randomized NOP sled density.
 

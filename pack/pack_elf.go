@@ -3,6 +3,8 @@ package pack
 import (
 	"fmt"
 	"os"
+
+	linstrat "gosstrip/pack/strategies/linux"
 )
 
 // PackELF packa un eseguibile ELF
@@ -52,6 +54,12 @@ func PackELF(inputPath string, config *PackConfig) (*PackResult, error) {
 		fmt.Printf("   Encrypted: %d bytes (algorithm: %s)\n", len(encrypted), config.EncryptionAlgorithm)
 	}
 
+	resolvedMode, err := linstrat.Resolve(config.InMemoryMode)
+	if err != nil {
+		return nil, err
+	}
+	inMemoryEnabled := resolvedMode.Enabled()
+
 	// 5. Crea metadata
 	metadata := &PayloadMetadata{
 		OriginalSize:    uint64(len(originalData)),
@@ -62,7 +70,8 @@ func PackELF(inputPath string, config *PackConfig) (*PackResult, error) {
 		EncryptionKey:   key,
 		EncryptionNonce: nonce,
 		PaddingOffsets:  paddingOffsets,
-		UseInMemory:     config.InMemoryExecution,
+		InMemoryMode:    resolvedMode,
+		UseInMemory:     inMemoryEnabled,
 		Checksum:        originalHash,
 	}
 
@@ -126,7 +135,7 @@ func PackELF(inputPath string, config *PackConfig) (*PackResult, error) {
 	result := NewPackResult(originalSize, packedSize, originalHash, packedHash, stubHash)
 	result.AddDetail(fmt.Sprintf("Compression: %s (level %d)", config.CompressionAlgorithm, config.CompressionLevel))
 	result.AddDetail(fmt.Sprintf("Encryption: %s", config.EncryptionAlgorithm))
-	result.AddDetail(fmt.Sprintf("Execution mode: %s", executionModeString(config)))
+	result.AddDetail(fmt.Sprintf("Execution mode: %s", linstrat.Describe(resolvedMode)))
 	result.AddDetail(fmt.Sprintf("Polymorphic techniques: %v", techniques))
 	result.AddDetail(fmt.Sprintf("Output: %s", outputPath))
 
@@ -135,11 +144,4 @@ func PackELF(inputPath string, config *PackConfig) (*PackResult, error) {
 	}
 
 	return result, nil
-}
-
-func executionModeString(config *PackConfig) string {
-	if config.InMemoryExecution {
-		return "in-memory (memfd_create)"
-	}
-	return "temporary file"
 }

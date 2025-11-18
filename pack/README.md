@@ -60,16 +60,14 @@ Supported options and defaults:
 - polymorphic=true|false (default: true)  [alias: poly]
 - junkdensity=0.0-1.0 (default: 0.2)
 - padding=true|false (default: true)
-- inmemory=true|false (default: false)  [alias: inmem]
-- antidebug=true|false (default: false)
-- antivm=true|false (default: false)
+- inmemory=off|auto|memfd|process_hollowing (default: off; memfd is Linux-only, process_hollowing is Windows-only)  [alias: inmem]
 - verbose=true|false (default: false)  [alias: v]
 
 Examples:
 - gosstrip -p target_binary
 - gosstrip -p="compression=lzma,level=9,encryption=chacha20" target_binary
 - gosstrip -p=polymorphic=true,junkdensity=0.5 target_binary
-- gosstrip -p=inmemory=true target_binary
+- gosstrip -p=inmemory=auto target_binary
 
 ### Programmatic
 

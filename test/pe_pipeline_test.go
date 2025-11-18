@@ -56,7 +56,7 @@ func TestPEPipelineOperations(t *testing.T) {
 
 	runPEBinary(t, pePath)
 
-	packOpts := "compression=xz,encryption=aes-256-gcm,polymorphic=true,padding=true,inmemory=true,antidebug=true,antivm=true"
+	packOpts := "compression=xz,encryption=aes-256-gcm,polymorphic=true,padding=true,inmemory=auto"
 	if err := pack.Pack(pePath, packOpts, pePath); err != nil {
 		t.Fatalf("pack.Pack failed: %v", err)
 	}

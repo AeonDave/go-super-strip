@@ -91,6 +91,7 @@ type PayloadMetadata struct {
 	EncryptionNonce []byte
 	PaddingOffsets  []int
 	UseInMemory     bool // Esecuzione in-memory (memfd_create/process hollowing)
+	InMemoryMode    InMemoryMode
 	Checksum        [32]byte
 }
 

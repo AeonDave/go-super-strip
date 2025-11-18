@@ -123,7 +123,7 @@ require (
 	// Le trasformazioni vengono applicate solo in GenerateStub (aggiungendo dati dopo il codice).
 
 	// Serializza metadata
-	metadataBytes := serializeMetadataForStub(metadata, config)
+	metadataBytes := serializeMetadataForStub(metadata)
 
 	// Appendi: [stub binary][encrypted payload][metadata][metadata size]
 	result := stubBinary
@@ -148,7 +148,7 @@ require (
 }
 
 // serializeMetadataForStub serializza i metadata in formato binario per lo stub
-func serializeMetadataForStub(m *PayloadMetadata, config *PackConfig) []byte {
+func serializeMetadataForStub(m *PayloadMetadata) []byte {
 	result := make([]byte, 0, 128)
 
 	// Sizes (3 x uint64 = 24 bytes)
@@ -168,12 +168,13 @@ func serializeMetadataForStub(m *PayloadMetadata, config *PackConfig) []byte {
 	result = appendUint32(result, uint32(len(m.EncryptionNonce)))
 	result = append(result, m.EncryptionNonce...)
 
-	// InMemory flag (1 byte)
-	if config.InMemoryExecution {
+	// InMemory flag (1 byte) + mode (16 bytes)
+	if m.UseInMemory {
 		result = append(result, 1)
 	} else {
 		result = append(result, 0)
 	}
+	result = appendFixedString(result, string(m.InMemoryMode), 16)
 
 	return result
 }

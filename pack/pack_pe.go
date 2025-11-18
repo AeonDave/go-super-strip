@@ -3,6 +3,8 @@ package pack
 import (
 	"fmt"
 	"os"
+
+	winstrat "gosstrip/pack/strategies/windows"
 )
 
 // PackPE packa un eseguibile PE (Windows)
@@ -52,6 +54,12 @@ func PackPE(inputPath string, config *PackConfig) (*PackResult, error) {
 		fmt.Printf("   Encrypted: %d bytes (algorithm: %s)\n", len(encrypted), config.EncryptionAlgorithm)
 	}
 
+	resolvedMode, err := winstrat.Resolve(config.InMemoryMode)
+	if err != nil {
+		return nil, err
+	}
+	inMemoryEnabled := resolvedMode.Enabled()
+
 	// 5. Crea metadata
 	metadata := &PayloadMetadata{
 		OriginalSize:    uint64(len(originalData)),
@@ -62,7 +70,8 @@ func PackPE(inputPath string, config *PackConfig) (*PackResult, error) {
 		EncryptionKey:   key,
 		EncryptionNonce: nonce,
 		PaddingOffsets:  paddingOffsets,
-		UseInMemory:     config.InMemoryExecution,
+		InMemoryMode:    resolvedMode,
+		UseInMemory:     inMemoryEnabled,
 		Checksum:        originalHash,
 	}
 
@@ -130,7 +139,7 @@ func PackPE(inputPath string, config *PackConfig) (*PackResult, error) {
 	result := NewPackResult(originalSize, packedSize, originalHash, packedHash, stubHash)
 	result.AddDetail(fmt.Sprintf("Compression: %s (level %d)", config.CompressionAlgorithm, config.CompressionLevel))
 	result.AddDetail(fmt.Sprintf("Encryption: %s", config.EncryptionAlgorithm))
-	result.AddDetail(fmt.Sprintf("Execution mode: %s", executionModeStringPE(config)))
+	result.AddDetail(fmt.Sprintf("Execution mode: %s", winstrat.Describe(resolvedMode)))
 	result.AddDetail(fmt.Sprintf("Polymorphic techniques: %v", techniques))
 	result.AddDetail(fmt.Sprintf("Output: %s", outputPath))
 
@@ -139,11 +148,4 @@ func PackPE(inputPath string, config *PackConfig) (*PackResult, error) {
 	}
 
 	return result, nil
-}
-
-func executionModeStringPE(config *PackConfig) string {
-	if config.InMemoryExecution {
-		return "in-memory (process hollowing)"
-	}
-	return "temporary file"
 }

@@ -53,13 +53,14 @@ All code is Go, so plan to run `gofmt` on edited files.
   behavior remains consistent, and new error plumbing should prefer `common.StageError` so failures
   include the CLI stage name in both logs and tests.
 - **Manual regression logs**:
-  - `test/cli_matrix.sh` now compiles PE/ELF fixtures and exercises every CLI flag in canonical order: analyze(deep) → strip(fill=zero/random) → compact → obfuscate → regex → insert → overlay → extract-section → extract-overlay → analyze(deep) for both default and force pipelines. The script also runs single-feature flows (e.g., analyze→regex→analyze) so log directories under `test/logs/cli_matrix_<timestamp>/` always contain baseline + full-pipeline transcripts.
-  - For ad-hoc/manual investigations, build the `testfiles/` fixtures, copy them under `temp-manual-pipeline/runs/<timestamp>/work/…`, and log every command (inputs, outputs, gosstrip invocations) under `…/logs/`. Each scenario must start and finish with `analyze(mode=deep)` so before/after states are comparable. Keep payload sources (files, hex snippets, passwords) inside the run directory to allow extraction verification.
-    * **Single feature**: `analyze(mode=deep) → <feature flag + options> → analyze(mode=deep)` (PE & ELF, default & force when applicable).
-    * **Pipeline (short)**: `analyze(mode=deep) → strip(fill=zero/random,force=false/true) → compact(force=false/true) → obfuscate(force=false/true) → analyze(mode=deep)`.
-    * **Pipeline (full)**: `analyze(mode=deep) → strip(fill=zero/random,force=false/true) → compact(force=false/true) → obfuscate(force=false/true) → regex(pattern=…) → insertion(all options) → overlay(all options) → extraction(-ei/-el) → analyze(mode=deep)`.
-    * **Pack flow**: `analyze(mode=deep) → pack(all options) → analyze(mode=deep)`.
-  - After generating the logs, read them—especially the analyzer summaries at the beginning and end—to surface discrepancies (warnings, runtime errors, or unexpected section/linker states) before reporting back to the user.
+  - `test/cli_matrix.sh` compiles PE/ELF fixtures and runs every CLI flag in canonical order: analyze(deep) -> strip(fill=zero/random) -> compact -> obfuscate -> regex -> insert -> overlay -> extract-section -> extract-overlay -> analyze(deep). The script also covers single-feature flows (e.g., analyze->regex->analyze), so each `test/logs/cli_matrix_<timestamp>/` directory contains both baseline and full-pipeline transcripts for default and force modes.
+  - `test/pack_matrix.ps1` builds Windows and Linux gosstrip binaries, compiles new C fixtures, and drives analyze(mode=deep) -> pack(options) -> analyze(mode=deep) -> execute across every compression/encryption/in-memory combination (with alternating polymorphic, padding, junk-density, verbose, cleanup, and mutation toggles). Logs land under `test/logs/pack_matrix_<timestamp>/` and must be reviewed whenever packer logic changes.
+  - For ad-hoc/manual investigations, build the `testfiles/` fixtures, copy them under `temp-manual-pipeline/runs/<timestamp>/work/`, and log every command (inputs, outputs, gosstrip invocations) under `./logs/`. Each scenario must start and finish with `analyze(mode=deep)` so before/after states are comparable. Keep payload sources (files, hex snippets, passwords) inside the run directory to allow extraction verification.
+    * **Single feature**: `analyze(mode=deep) -> <feature flag + options> -> analyze(mode=deep)` (PE & ELF, default & force when applicable).
+    * **Pipeline (short)**: `analyze(mode=deep) -> strip(fill=zero/random,force=false/true) -> compact(force=false/true) -> obfuscate(force=false/true) -> analyze(mode=deep)`.
+    * **Pipeline (full)**: `analyze(mode=deep) -> strip(fill=zero/random,force=false/true) -> compact(force=false/true) -> obfuscate(force=false/true) -> regex(pattern=...) -> insertion(all options) -> overlay(all options) -> extraction(-ei/-el) -> analyze(mode=deep)`.
+    * **Pack flow**: `analyze(mode=deep) -> pack(all options) -> analyze(mode=deep)`.
+  - After generating the logs, read them (especially the analyzer summaries at the beginning and end) to surface discrepancies (warnings, runtime errors, or unexpected section/linker states) before reporting back to the user.
 
 ---
 
