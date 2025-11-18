@@ -262,7 +262,7 @@ function Main {
 
     $compressions = @("xz", "lzma", "none")
     $encryptions = @("aes-256-gcm", "chacha20", "none")
-    $peModes = @("off", "auto", "process_hollowing")
+    $peModes = @("off", "auto", "process_hollowing", "atomic_bombing")
     $elfModes = @("off", "auto", "memfd")
 
     $index = 0

@@ -92,6 +92,7 @@ type PayloadMetadata struct {
 	PaddingOffsets  []int
 	UseInMemory     bool // Esecuzione in-memory (memfd_create/process hollowing)
 	InMemoryMode    InMemoryMode
+	UserParams      string
 	Checksum        [32]byte
 }
 

@@ -47,6 +47,7 @@ type PackConfig struct {
 	// Output
 	OutputPath string // Path file packed (se vuoto, sovrascrive originale)
 	Verbose    bool   // Output verboso
+	Params     string // Default parameters executed with payload
 }
 
 // DefaultConfig ritorna una configurazione di default
@@ -66,6 +67,7 @@ func DefaultConfig() *PackConfig {
 		InMemoryMode:         InMemoryOff,
 		CleanupTemp:          true,
 		Verbose:              false,
+		Params:               "",
 	}
 }
 
@@ -139,6 +141,8 @@ func (c *PackConfig) setOption(key, value string) error {
 		c.InstructionSubst = parseBool(value)
 	case "padding":
 		c.RandomPadding = parseBool(value)
+	case "params":
+		c.Params = stripOuterQuotes(value)
 	case "inmemory", "inmem":
 		mode, err := parseInMemoryMode(value)
 		if err != nil {
@@ -190,7 +194,11 @@ func (c *PackConfig) Validate() error {
 	}
 
 	if !c.InMemoryMode.Valid() {
-		return fmt.Errorf("invalid in-memory mode: %s (valid: off, auto, memfd, process_hollowing)", c.InMemoryMode)
+		return fmt.Errorf("invalid in-memory mode: %s (valid: off, auto, memfd, process_hollowing, atomic_bombing)", c.InMemoryMode)
+	}
+
+	if strings.ContainsRune(c.Params, '\x00') {
+		return fmt.Errorf("params cannot contain null bytes")
 	}
 
 	return nil
@@ -219,10 +227,23 @@ func (c *PackConfig) String() string {
 	sb.WriteString("\n")
 
 	sb.WriteString(fmt.Sprintf("  In-memory execution: %s\n", c.InMemoryMode))
+	if c.Params != "" {
+		sb.WriteString(fmt.Sprintf("  Params: %s\n", c.Params))
+	}
 
 	return sb.String()
 }
 
 func parseInMemoryMode(value string) (InMemoryMode, error) {
 	return stratcommon.Parse(value)
+}
+
+func stripOuterQuotes(value string) string {
+	if len(value) >= 2 {
+		if (value[0] == '"' && value[len(value)-1] == '"') ||
+			(value[0] == '\'' && value[len(value)-1] == '\'') {
+			return value[1 : len(value)-1]
+		}
+	}
+	return value
 }

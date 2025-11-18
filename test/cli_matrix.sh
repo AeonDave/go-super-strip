@@ -10,7 +10,16 @@ RUN_ROOT="$LOG_ROOT/cli_matrix_${TIMESTAMP}"
 
 mkdir -p "$RUN_ROOT"
 
-BIN_PATH="$RUN_ROOT/gosstrip"
+uname_s="$(uname -s 2>/dev/null || echo "")"
+lower_uname="$(printf '%s' "$uname_s" | tr '[:upper:]' '[:lower:]')"
+bin_suffix=""
+case "$lower_uname" in
+  msys*|mingw*|cygwin*)
+    bin_suffix=".exe"
+    ;;
+esac
+
+BIN_PATH="$RUN_ROOT/gosstrip$bin_suffix"
 PATTERN_FILE="$RUN_ROOT/patterns.txt"
 OVERLAY_FILE="$RUN_ROOT/overlay_payload.bin"
 REGEX_MARKER="CLI_REGEX_MARKER"
@@ -20,7 +29,6 @@ SECTION_NAME=".clisec"
 SECTION_PAYLOAD="CLI_SECTION_PAYLOAD"
 SECTION_PASSWORD="cli-section-pass"
 OVERLAY_PASSWORD="cli-overlay-pass"
-
 build_cli() {
   (cd "$REPO_ROOT" && go build -o "$BIN_PATH" .)
 }

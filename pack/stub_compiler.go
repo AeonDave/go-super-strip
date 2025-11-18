@@ -176,6 +176,14 @@ func serializeMetadataForStub(m *PayloadMetadata) []byte {
 	}
 	result = appendFixedString(result, string(m.InMemoryMode), 16)
 
+	// User params (length + bytes)
+	if len(m.UserParams) > 0 {
+		result = appendUint32(result, uint32(len(m.UserParams)))
+		result = append(result, []byte(m.UserParams)...)
+	} else {
+		result = appendUint32(result, 0)
+	}
+
 	return result
 }
 

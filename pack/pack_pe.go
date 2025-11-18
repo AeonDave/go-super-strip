@@ -72,6 +72,7 @@ func PackPE(inputPath string, config *PackConfig) (*PackResult, error) {
 		PaddingOffsets:  paddingOffsets,
 		InMemoryMode:    resolvedMode,
 		UseInMemory:     inMemoryEnabled,
+		UserParams:      config.Params,
 		Checksum:        originalHash,
 	}
 
@@ -142,6 +143,9 @@ func PackPE(inputPath string, config *PackConfig) (*PackResult, error) {
 	result.AddDetail(fmt.Sprintf("Execution mode: %s", winstrat.Describe(resolvedMode)))
 	result.AddDetail(fmt.Sprintf("Polymorphic techniques: %v", techniques))
 	result.AddDetail(fmt.Sprintf("Output: %s", outputPath))
+	if config.Params != "" {
+		result.AddDetail(fmt.Sprintf("Params: %s", config.Params))
+	}
 
 	if config.Verbose {
 		fmt.Printf("\n%s\n", result.String())

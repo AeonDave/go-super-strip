@@ -294,4 +294,14 @@ func TestParseOptions_InMemoryMode(t *testing.T) {
 			t.Fatal("expected error for invalid in-memory strategy")
 		}
 	})
+
+	t.Run("params option", func(t *testing.T) {
+		config, err := ParseOptions("params=-sn 127.0.0.1 -oN out.txt")
+		if err != nil {
+			t.Fatalf("ParseOptions failed: %v", err)
+		}
+		if config.Params != "-sn 127.0.0.1 -oN out.txt" {
+			t.Fatalf("expected params to round-trip, got %s", config.Params)
+		}
+	})
 }

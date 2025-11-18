@@ -22,14 +22,16 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"syscall"
-	"unsafe"
 	"runtime"
 	"strings"
+	"syscall"
+	"unsafe"
 	
 	"github.com/ulikunitz/xz"
 	"golang.org/x/crypto/chacha20poly1305"
 )
+
+var elfEmbeddedArgs []string
 
 func main() {
 	// 1. Leggi metadata e payload dalla fine del file
@@ -84,6 +86,9 @@ func main() {
 	
 	// 3.5 Rimuovi eventuale padding casuale usando OriginalSize
 	payload := trimToOriginal(decompressed, metadata.OriginalSize)
+
+	configuredArgs := parseUserParams(metadata.UserParams)
+	elfEmbeddedArgs = combineArgs(configuredArgs, os.Args[1:])
 	
 	// 4. Esegui
 	mode := strings.ToLower(strings.TrimSpace(metadata.InMemoryMode))
@@ -111,6 +116,7 @@ type Metadata struct {
 	Nonce           []byte
 	UseInMemory     bool
 	InMemoryMode    string
+	UserParams      string
 }
 
 func parseMetadata(data []byte) *Metadata {
@@ -143,6 +149,13 @@ func parseMetadata(data []byte) *Metadata {
 	modeRaw := make([]byte, 16)
 	r.Read(modeRaw)
 	m.InMemoryMode = string(bytes.TrimRight(modeRaw, "\x00"))
+	var paramLen uint32
+	binary.Read(r, binary.LittleEndian, &paramLen)
+	if paramLen > 0 {
+		paramBuf := make([]byte, paramLen)
+		r.Read(paramBuf)
+		m.UserParams = string(paramBuf)
+	}
 	
 	return m
 }
@@ -254,13 +267,52 @@ func executeFromTemp(payload []byte) {
 	tmp.Chmod(0755)
 	tmp.Close()
 	
-	cmd := exec.Command(tmpPath, os.Args[1:]...)
+	cmd := exec.Command(tmpPath, elfEmbeddedArgs...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 	
 	cmd.Run()
 	os.Remove(tmpPath)
+}
+
+func parseUserParams(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var args []string
+	var current strings.Builder
+	inQuotes := false
+	for _, r := range raw {
+		switch r {
+		case '"':
+			inQuotes = !inQuotes
+		case ' ', '\t':
+			if inQuotes {
+				current.WriteRune(r)
+			} else if current.Len() > 0 {
+				args = append(args, current.String())
+				current.Reset()
+			}
+		default:
+			current.WriteRune(r)
+		}
+	}
+	if current.Len() > 0 {
+		args = append(args, current.String())
+	}
+	return args
+}
+
+func combineArgs(configured, runtimeArgs []string) []string {
+	if len(configured) == 0 && len(runtimeArgs) == 0 {
+		return nil
+	}
+	args := make([]string, 0, len(configured)+len(runtimeArgs))
+	args = append(args, configured...)
+	args = append(args, runtimeArgs...)
+	return args
 }
 `
 

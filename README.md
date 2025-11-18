@@ -12,7 +12,11 @@ A cross-platform binary transformation toolkit for ELF and PE executables. It ch
 ```bash
 git clone https://github.com/AeonDave/go-super-strip
 cd go-super-strip
+# Linux
 go build -o gosstrip
+
+# Windows
+go build -o gosstrip.exe
 ```
 
 ## CLI Overview
@@ -57,7 +61,7 @@ extract overlay (-el)
 | `-l=file|data=…,password=…` | Appends an overlay payload after the executable image. | Same data/password rules as section insertion. |
 | `-ei=name=…|index=N[,password=…][,destination=PATH]` | Extracts an inserted section by name or index (0-based). | One of `name` or `index` is mandatory. Output defaults to `<input>.extracted`. |
 | `-el[=password=…][,destination=PATH]` | Extracts the overlay payload. | Output defaults to `<input>.extracted`. |
-| `-p=key=value,.` | Packs the executable with compression, encryption, polymorphism, and in-memory strategies. | See **Feature Details -> Pack** for every option (compression, encryption, padding, junk density, in-memory modes such as `memfd`, `process_hollowing`, `atomic_bombing`, cleanup, verbosity, etc.). |
+| `-p=key=value,.` | Packs the executable with compression, encryption, polymorphism, and in-memory strategies. | See **Feature Details -> Pack** for every option (compression, encryption, padding, junk density, in-memory modes such as `memfd`, `process_hollowing`, `atomic_bombing`, `params`, cleanup, verbosity, etc.). |
 
 ## Feature Details
 ### Analyze (`-a`)
@@ -120,6 +124,7 @@ The packer rewrites the binary into a self-extracting Go stub plus encrypted pay
   - `auto` selects `memfd` on Linux and `process_hollowing` on Windows.
   - `atomic_bombing` (Windows) stages encrypted chunks via `GlobalAddAtom`, reconstructs them through a hidden window, then injects using the APC flow.
   - Explicit modes allow deterministic behavior. Unsupported combinations fall back to `off`.
+- `params="ascii command"` appends a default command line when the payload is executed. These arguments run before user-supplied CLI args, so you can bake in sequences like `-sn 127.0.0.1 -oN output.txt`.
 - `cleanup=true/false` deletes temporary files when not running in-memory.
 - `verbose=true/false` prints the pack configuration before building the stub.
 - `output` still follows the CLI positional argument—`-p` mutates `input` unless an `output` path is provided.
@@ -172,6 +177,9 @@ gosstrip -s -c -o -r=pattern='UPX!' -i=name=.intel,data=SECRET \
         -p=compression=lzma,encryption=chacha20,polymorphic=true,inmemory=memfd \
         agent.bin agent.packed
 ```
+
+## Manual Pack Verification
+`test/manual_pack_flow.ps1` builds PE/ELF fixtures, runs analyze→pack→analyze for each supported in-memory mode (`process_hollowing`, `atomic_bombing`, `memfd`, etc.), executes the resulting binaries, and captures the console output. When additional fixtures or parameterized commands are needed you can point the script at them via the `GOSSTRIP_PACK_PARAMS_*` environment variables (fixture path, arguments, expected output). On Windows the harness automatically uses `gosstrip.exe`; launching the CLI without the `.exe` suffix triggers the “Choose an app” dialog, so keep the extension when running binaries directly.
 
 ## FAQ
 **Does `force=true` break binaries?**  Force modes deliberately remove safety checks (e.g., stripping relocations). Use them only when a broken output is acceptable for research.
