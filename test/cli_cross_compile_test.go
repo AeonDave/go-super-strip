@@ -37,6 +37,7 @@ const (
 	cliSectionPass    = "cli-section-pass"
 	cliOverlayPayload = "CLI_OVERLAY_PAYLOAD"
 	cliOverlayPass    = "cli-overlay-pass"
+	cliFullRegex      = "CLI_FULL_PIPELINE_PATTERN"
 )
 
 func TestCLIOptionsOnCompiledFixtures(t *testing.T) {
@@ -209,6 +210,29 @@ func TestCLIOptionsOnCompiledFixtures(t *testing.T) {
 				}
 				if !bytes.Contains(data, []byte("OVERLAY_COMBO")) {
 					t.Fatalf("expected overlay data to be present after pipeline")
+				}
+			},
+		},
+		{
+			Name: "pipeline_full",
+			ArgsBuilder: func(t *testing.T, fixture compiledFixture, binaryPath string) []string {
+				appendPatternToBinary(t, binaryPath, cliFullRegex)
+				return buildFullPipelineArgs(fixture, binaryPath)
+			},
+			Verify: func(t *testing.T, fixture compiledFixture, binaryPath string, output string) {
+				ensureBytesPresence(t, binaryPath, cliFullRegex, "pipeline regex removal", false)
+				sectionPayload := readFile(t, pipelineSectionDest(binaryPath))
+				if string(sectionPayload) != cliSectionPayload {
+					t.Fatalf("expected pipeline section payload %q, got %q", cliSectionPayload, string(sectionPayload))
+				}
+				overlayPayload := readFile(t, pipelineOverlayDest(binaryPath))
+				if string(overlayPayload) != cliOverlayPayload {
+					t.Fatalf("expected pipeline overlay payload %q, got %q", cliOverlayPayload, string(overlayPayload))
+				}
+				if fixture.IsPE {
+					assertContains(t, output, "PE pipeline summary")
+				} else {
+					assertContains(t, output, "ELF pipeline summary")
 				}
 			},
 		},
@@ -484,4 +508,28 @@ func ensureTool(t *testing.T, tool string) {
 	if _, err := exec.LookPath(tool); err != nil {
 		t.Skipf("required tool %s not available: %v", tool, err)
 	}
+}
+
+func buildFullPipelineArgs(fixture compiledFixture, binaryPath string) []string {
+	sectionDest := pipelineSectionDest(binaryPath)
+	overlayDest := pipelineOverlayDest(binaryPath)
+	sectionName := sectionNameForFixture(fixture)
+	return []string{
+		"-s=fill=random",
+		"-c",
+		"-o",
+		fmt.Sprintf("-r=pattern=%s", cliFullRegex),
+		fmt.Sprintf("-i=name=%s,data=%s,password=%s", sectionName, cliSectionPayload, cliSectionPass),
+		fmt.Sprintf("-l=data=%s,password=%s", cliOverlayPayload, cliOverlayPass),
+		fmt.Sprintf("-ei=name=%s,password=%s,destination=%s", sectionName, cliSectionPass, sectionDest),
+		fmt.Sprintf("-el=password=%s,destination=%s", cliOverlayPass, overlayDest),
+	}
+}
+
+func pipelineSectionDest(binaryPath string) string {
+	return binaryPath + ".pipeline_section"
+}
+
+func pipelineOverlayDest(binaryPath string) string {
+	return binaryPath + ".pipeline_overlay"
 }

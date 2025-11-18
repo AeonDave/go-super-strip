@@ -57,11 +57,13 @@ func (p *PEFile) StripByPattern(pattern *regexp.Regexp, fillMode FillMode) (int,
 	}
 
 	totalMatches := 0
-	data := p.RawData
-	for _, match := range pattern.FindAllIndex(data, -1) {
-		start := match[0]
-		end := match[1]
-		if start < 0 || end > len(data) || start >= end {
+	matches, err := common.FindAllRegexMatches(pattern, p.RawData)
+	if err != nil {
+		return 0, err
+	}
+	for _, match := range matches {
+		start, end := match[0], match[1]
+		if start < 0 || end > len(p.RawData) || start >= end {
 			continue
 		}
 		if err := p.fillRegion(int64(start), end-start, fillMode); err != nil {

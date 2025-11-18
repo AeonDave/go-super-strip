@@ -80,7 +80,11 @@ func (e *ELFFile) StripByteRegex(pattern *regexp.Regexp, useRandom bool, force b
 		return 0, fmt.Errorf("regex pattern cannot be nil")
 	}
 	totalMatches := 0
-	for _, match := range pattern.FindAllIndex(e.RawData, -1) {
+	matches, err := common.FindAllRegexMatches(pattern, e.RawData)
+	if err != nil {
+		return 0, err
+	}
+	for _, match := range matches {
 		start, end := match[0], match[1]
 		if start < 0 || end > len(e.RawData) || start >= end {
 			continue
