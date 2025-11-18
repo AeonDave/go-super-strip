@@ -1188,7 +1188,11 @@ func printUsage() {
 	fmt.Println("  -r=pattern=rx[,pattern=rules.txt][,fill=random] Apply regex removals")
 	fmt.Println("  -i=name=.sec,file=bin   Insert section")
 	fmt.Println("  -l=file=bin             Append overlay")
+	fmt.Println("  -ei=name=.sec[,index=0][,password=pass] Extract a section to disk")
+	fmt.Println("  -el[=password=pass]     Extract overlay payload")
 	fmt.Println("  -p=opt1=val1,...        Pack executable")
+	fmt.Println()
+	fmt.Println("Analyze (-a), extract-section (-ei), and extract-overlay (-el) can be invoked standalone just like any other stage.")
 	fmt.Println()
 	fmt.Println("Specify at least one operation (other than analyze). Use output to write results to a new file; otherwise the input is modified in place.")
 }
