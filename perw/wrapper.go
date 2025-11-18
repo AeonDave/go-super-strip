@@ -13,6 +13,7 @@ func readPe(filePath string, flags int) (*PEFile, error) {
 	return ReadPE(file)
 }
 
+// AnalyzePE loads a PE file and generates an analysis report using the provided options.
 func AnalyzePE(filePath string, opts common.AnalysisOptions) (*common.AnalysisResult, error) {
 	peFile, err := readPe(filePath, os.O_RDONLY)
 	if err != nil {
@@ -31,6 +32,7 @@ func AnalyzePE(filePath string, opts common.AnalysisOptions) (*common.AnalysisRe
 	}
 }
 
+// StripPE removes PE metadata (debug info, Rich header, etc.) according to the provided settings.
 func StripPE(filePath string, force bool, fillOverride *bool) *common.OperationResult {
 	return common.ProcessBinary(filePath, os.O_RDWR, "PE", readPe, func(peFile *PEFile) error {
 		return peFile.Save(true, int64(len(peFile.RawData)))
@@ -39,6 +41,7 @@ func StripPE(filePath string, force bool, fillOverride *bool) *common.OperationR
 	})
 }
 
+// CompactPE trims unused sections and recalculates PE headers.
 func CompactPE(filePath string, force bool, keepResources bool) *common.OperationResult {
 	return common.ProcessBinary(filePath, os.O_RDWR, "PE", readPe, func(peFile *PEFile) error {
 		return peFile.Save(true, int64(len(peFile.RawData)))
@@ -47,6 +50,7 @@ func CompactPE(filePath string, force bool, keepResources bool) *common.Operatio
 	})
 }
 
+// RegexPE applies byte-pattern removals across the PE image.
 func RegexPE(filePath string, fillOverride *bool, patterns []string) *common.OperationResult {
 	return common.ProcessBinary(filePath, os.O_RDWR, "PE", readPe, func(peFile *PEFile) error {
 		return peFile.Save(true, int64(len(peFile.RawData)))
@@ -55,6 +59,7 @@ func RegexPE(filePath string, fillOverride *bool, patterns []string) *common.Ope
 	})
 }
 
+// ObfuscatePE renames sections, mutates headers, and shuffles metadata.
 func ObfuscatePE(filePath string, force bool) *common.OperationResult {
 	return common.ProcessBinary(filePath, os.O_RDWR, "PE", readPe, func(peFile *PEFile) error {
 		return peFile.Save(true, int64(len(peFile.RawData)))
@@ -63,6 +68,7 @@ func ObfuscatePE(filePath string, force bool) *common.OperationResult {
 	})
 }
 
+// InsertPE appends a new section with the given payload (string or file), optionally encrypting it.
 func InsertPE(filePath, sectionName, dataOrFile, password string) *common.OperationResult {
 	return common.ProcessBinary(filePath, os.O_RDWR, "PE", readPe, func(peFile *PEFile) error {
 		return peFile.Save(true, int64(len(peFile.RawData)))
@@ -71,6 +77,7 @@ func InsertPE(filePath, sectionName, dataOrFile, password string) *common.Operat
 	})
 }
 
+// OverlayPE writes payload bytes beyond the structured portion of the PE file.
 func OverlayPE(filePath, dataOrFile, password string) *common.OperationResult {
 	return common.ProcessBinary(filePath, os.O_RDWR, "PE", readPe, func(peFile *PEFile) error {
 		return peFile.Save(true, int64(len(peFile.RawData)))
@@ -79,6 +86,7 @@ func OverlayPE(filePath, dataOrFile, password string) *common.OperationResult {
 	})
 }
 
+// ExtractOverlay returns the raw overlay bytes from a PE file.
 func ExtractOverlay(filePath string) ([]byte, error) {
 	peFile, err := readPe(filePath, os.O_RDONLY)
 	if err != nil {

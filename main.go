@@ -108,6 +108,7 @@ type ExtractOverlayOptions struct {
 	Destination string
 }
 
+// PackOptions stores the CLI pack string plus the parsed configuration.
 type PackOptions struct {
 	Options string
 	Config  *pack.PackConfig
@@ -941,25 +942,46 @@ func detectFileKind(path string) (bool, bool, error) {
 }
 
 func runStrip(path string, opts *StripOptions, isPE bool) (*common.OperationResult, error) {
-	if isPE {
-		return perw.StripPE(path, opts.Force, opts.FillModeOverride), nil
+	if opts == nil {
+		return common.NewSkipped("no strip options provided"), nil
 	}
-	return elfrw.StripELF(path, opts.Force, opts.FillModeOverride), nil
+	if isPE {
+		if res := perw.StripPE(path, opts.Force, opts.FillModeOverride); res != nil {
+			return res, nil
+		}
+	} else if res := elfrw.StripELF(path, opts.Force, opts.FillModeOverride); res != nil {
+		return res, nil
+	}
+	return nil, common.WrapStageError("strip", fmt.Errorf("strip operation returned no result"))
 }
 
 func runCompact(path string, opts *CompactOptions, isPE bool) (*common.OperationResult, error) {
+	if opts == nil {
+		return common.NewSkipped("no compact options provided"), nil
+	}
 	keepResources := opts.KeepResources
 	if isPE {
-		return perw.CompactPE(path, opts.Force, keepResources), nil
+		if res := perw.CompactPE(path, opts.Force, keepResources); res != nil {
+			return res, nil
+		}
+	} else if res := elfrw.CompactELF(path, opts.Force, keepResources); res != nil {
+		return res, nil
 	}
-	return elfrw.CompactELF(path, opts.Force, keepResources), nil
+	return nil, common.WrapStageError("compact", fmt.Errorf("compact operation returned no result"))
 }
 
 func runObfuscate(path string, opts *ObfuscateOptions, isPE bool) (*common.OperationResult, error) {
-	if isPE {
-		return perw.ObfuscatePE(path, opts.Force), nil
+	if opts == nil {
+		opts = &ObfuscateOptions{}
 	}
-	return elfrw.ObfuscateELF(path, opts.Force), nil
+	if isPE {
+		if res := perw.ObfuscatePE(path, opts.Force); res != nil {
+			return res, nil
+		}
+	} else if res := elfrw.ObfuscateELF(path, opts.Force); res != nil {
+		return res, nil
+	}
+	return nil, common.WrapStageError("obfuscate", fmt.Errorf("obfuscation operation returned no result"))
 }
 
 func runRegex(path string, opts *RegexOptions, isPE bool) (*common.OperationResult, error) {

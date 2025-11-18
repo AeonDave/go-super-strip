@@ -13,6 +13,7 @@ func readElf(filePath string, flags int) (*ELFFile, error) {
 	return ReadELF(file)
 }
 
+// AnalyzeELF loads an ELF binary and produces an analysis report based on the selected mode.
 func AnalyzeELF(file string, opts common.AnalysisOptions) (*common.AnalysisResult, error) {
 	elfFile, err := readElf(file, os.O_RDONLY)
 	if err != nil {
@@ -32,6 +33,7 @@ func AnalyzeELF(file string, opts common.AnalysisOptions) (*common.AnalysisResul
 	}
 }
 
+// StripELF removes note/symbol metadata and other targeted sections.
 func StripELF(filePath string, force bool, fillOverride *bool) *common.OperationResult {
 	return common.ProcessBinary(filePath, os.O_RDWR, "ELF", readElf, func(elfFile *ELFFile) error {
 		return elfFile.Save(true, int64(len(elfFile.RawData)))
@@ -40,6 +42,7 @@ func StripELF(filePath string, force bool, fillOverride *bool) *common.Operation
 	})
 }
 
+// CompactELF trims unused regions and rebuilds the section header table when needed.
 func CompactELF(filePath string, force bool, _ bool) *common.OperationResult {
 	return common.ProcessBinary(filePath, os.O_RDWR, "ELF", readElf, func(elfFile *ELFFile) error {
 		return elfFile.Save(true, int64(len(elfFile.RawData)))
@@ -48,6 +51,7 @@ func CompactELF(filePath string, force bool, _ bool) *common.OperationResult {
 	})
 }
 
+// RegexELF applies regex removals across ELF sections and segments.
 func RegexELF(filePath string, fillOverride *bool, patterns []string) *common.OperationResult {
 	return common.ProcessBinary(filePath, os.O_RDWR, "ELF", readElf, func(elfFile *ELFFile) error {
 		return elfFile.Save(true, int64(len(elfFile.RawData)))
@@ -56,6 +60,7 @@ func RegexELF(filePath string, fillOverride *bool, patterns []string) *common.Op
 	})
 }
 
+// ObfuscateELF renames sections/symbols and randomizes metadata to hinder static analysis.
 func ObfuscateELF(filePath string, force bool) *common.OperationResult {
 	return common.ProcessBinary(filePath, os.O_RDWR, "ELF", readElf, func(elfFile *ELFFile) error {
 		return elfFile.Save(true, int64(len(elfFile.RawData)))
@@ -64,6 +69,7 @@ func ObfuscateELF(filePath string, force bool) *common.OperationResult {
 	})
 }
 
+// InsertELF appends a new ELF section containing either inline data or file contents.
 func InsertELF(filePath, sectionName, dataOrFile, password string) *common.OperationResult {
 	return common.ProcessBinary(filePath, os.O_RDWR, "ELF", readElf, func(elfFile *ELFFile) error {
 		return elfFile.Save(true, int64(len(elfFile.RawData)))
@@ -72,6 +78,7 @@ func InsertELF(filePath, sectionName, dataOrFile, password string) *common.Opera
 	})
 }
 
+// OverlayELF writes payload bytes after the structured ELF image, optionally encrypting them.
 func OverlayELF(filePath, dataOrFile, password string) *common.OperationResult {
 	return common.ProcessBinary(filePath, os.O_RDWR, "ELF", readElf, func(elfFile *ELFFile) error {
 		return elfFile.Save(true, int64(len(elfFile.RawData)))
@@ -80,6 +87,7 @@ func OverlayELF(filePath, dataOrFile, password string) *common.OperationResult {
 	})
 }
 
+// ExtractOverlay returns the trailing overlay data from an ELF binary.
 func ExtractOverlay(filePath string) ([]byte, error) {
 	elfFile, err := readElf(filePath, os.O_RDONLY)
 	if err != nil {

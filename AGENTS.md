@@ -48,6 +48,10 @@ All code is Go, so plan to run `gofmt` on edited files.
   ELF flows. When editing, ensure windows/linux code paths keep producing runnable binaries.
 - **Sensitive operations**: The tool modifies binary files in-place. When adding new logic,
   verify offsets/lengths carefully and add protective checks (e.g., clamp writes to file size).
+- **Helper philosophy**: keep utilities unexported unless they are a stable part of the library API.
+  Wrapper logic shared between PE/ELF should flow through `common.ProcessBinary` so open/run/save
+  behavior remains consistent, and new error plumbing should prefer `common.StageError` so failures
+  include the CLI stage name in both logs and tests.
 - **Manual regression logs**:
   - `test/cli_matrix.sh` now compiles PE/ELF fixtures and exercises every CLI flag in canonical order: analyze(deep) → strip(fill=zero/random) → compact → obfuscate → regex → insert → overlay → extract-section → extract-overlay → analyze(deep) for both default and force pipelines. The script also runs single-feature flows (e.g., analyze→regex→analyze) so log directories under `test/logs/cli_matrix_<timestamp>/` always contain baseline + full-pipeline transcripts.
   - For ad-hoc/manual investigations, build the `testfiles/` fixtures, copy them under `temp-manual-pipeline/runs/<timestamp>/work/…`, and log every command (inputs, outputs, gosstrip invocations) under `…/logs/`. Each scenario must start and finish with `analyze(mode=deep)` so before/after states are comparable. Keep payload sources (files, hex snippets, passwords) inside the run directory to allow extraction verification.
