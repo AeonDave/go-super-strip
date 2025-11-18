@@ -110,6 +110,7 @@ type ExtractOverlayOptions struct {
 
 type PackOptions struct {
 	Options string
+	Config  *pack.PackConfig
 }
 
 func main() {
@@ -666,7 +667,14 @@ func parsePack(opt string) (*PackOptions, error) {
 	if optionString == "" {
 		optionString = defaultPackOptions
 	}
-	return &PackOptions{Options: optionString}, nil
+	cfg, err := pack.ParseOptions(optionString)
+	if err != nil {
+		return nil, err
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	return &PackOptions{Options: optionString, Config: cfg}, nil
 }
 
 type optionMap map[string][]string
@@ -1003,7 +1011,7 @@ func runExtractSection(path, inputPath string, opts *ExtractSectionOptions, isPE
 	dir := filepath.Dir(destination)
 	if dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return nil, fmt.Errorf("failed to prepare destination directory: %w", err)
+			return nil, common.WrapStageError("extract-section", fmt.Errorf("failed to prepare destination directory: %w", err))
 		}
 	}
 	var (
@@ -1020,7 +1028,7 @@ func runExtractSection(path, inputPath string, opts *ExtractSectionOptions, isPE
 		return common.NewSkipped(fmt.Sprintf("failed to extract section: %v", err)), nil
 	}
 	if err := os.WriteFile(destination, data, 0o600); err != nil {
-		return nil, fmt.Errorf("failed to write extracted data: %w", err)
+		return nil, common.WrapStageError("extract-section", fmt.Errorf("failed to write extracted data: %w", err))
 	}
 	result := common.NewApplied(fmt.Sprintf("extracted section '%s' to %s", sectionName, destination), len(data))
 	result.SetCategory("EXTRACT")
@@ -1038,7 +1046,7 @@ func runExtractOverlay(path, inputPath string, opts *ExtractOverlayOptions, isPE
 	dir := filepath.Dir(destination)
 	if dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return nil, fmt.Errorf("failed to prepare destination directory: %w", err)
+			return nil, common.WrapStageError("extract-overlay", fmt.Errorf("failed to prepare destination directory: %w", err))
 		}
 	}
 	var (
@@ -1055,10 +1063,10 @@ func runExtractOverlay(path, inputPath string, opts *ExtractOverlayOptions, isPE
 	}
 	decoded, err := common.ProcessExtractedData(data, opts.Password)
 	if err != nil {
-		return nil, err
+		return nil, common.WrapStageError("extract-overlay", err)
 	}
 	if err := os.WriteFile(destination, decoded, 0o600); err != nil {
-		return nil, fmt.Errorf("failed to write extracted overlay: %w", err)
+		return nil, common.WrapStageError("extract-overlay", fmt.Errorf("failed to write extracted overlay: %w", err))
 	}
 	result := common.NewApplied(fmt.Sprintf("extracted overlay to %s", destination), len(decoded))
 	result.SetCategory("OVERLAY_EXTRACT")
@@ -1066,8 +1074,12 @@ func runExtractOverlay(path, inputPath string, opts *ExtractOverlayOptions, isPE
 }
 
 func runPack(path string, opts *PackOptions) (*common.OperationResult, error) {
-	if err := pack.Pack(path, opts.Options, path); err != nil {
-		return nil, fmt.Errorf("pack operation failed: %w", err)
+	if opts == nil || opts.Config == nil {
+		return nil, fmt.Errorf("pack options not provided")
+	}
+	cfgCopy := *opts.Config
+	if err := pack.PackWithConfig(path, &cfgCopy, path); err != nil {
+		return nil, common.WrapStageError("pack", err)
 	}
 	result := common.NewApplied("pack completed", 1)
 	if opts.Options != "" {
