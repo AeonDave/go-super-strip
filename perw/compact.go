@@ -1,6 +1,7 @@
 package perw
 
 import (
+	"debug/pe"
 	"encoding/binary"
 	"fmt"
 	"gosstrip/common"
@@ -311,6 +312,10 @@ func (p *PEFile) sectionRemoval(force bool, keepResources bool) (*common.Operati
 	if err := p.clearDataDirectoriesForRemovedRVAs(removedRanges); err != nil {
 		return nil, fmt.Errorf("failed to clear data directories: %w", err)
 	}
+	metadataDetails, err := p.updateRelocationMetadata(removedNames)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update relocation metadata: %w", err)
+	}
 	p.Sections = newSections
 	// Recalculate PE header sizes and optionally trim overlay before reporting final size
 	// 1) Recalculate SizeOfImage and SizeOfHeaders
@@ -462,6 +467,9 @@ func (p *PEFile) sectionRemoval(force bool, keepResources bool) (*common.Operati
 	for _, warn := range p.validatePostCompact(removedNames) {
 		result.AddDetail(warn, 0, true)
 	}
+	for _, detail := range metadataDetails {
+		result.AddDetail(detail, 1, false)
+	}
 	return result, nil
 }
 
@@ -612,6 +620,87 @@ func rvaFallsInRemovedRange(rva uint32, ranges []virtualRange) bool {
 		}
 	}
 	return false
+}
+
+func (p *PEFile) updateRelocationMetadata(removedSections []string) ([]string, error) {
+	hasReloc := false
+	for _, name := range removedSections {
+		trimmed := strings.ToLower(strings.TrimSpace(strings.Trim(name, "\x00")))
+		if strings.HasPrefix(trimmed, ".reloc") {
+			hasReloc = true
+			break
+		}
+	}
+	if !hasReloc {
+		return nil, nil
+	}
+
+	offsets, err := p.calculateOffsets()
+	if err != nil {
+		return nil, fmt.Errorf("calculate offsets: %w", err)
+	}
+
+	var details []string
+	if changed, err := p.setFileHeaderCharacteristic(offsets, pe.IMAGE_FILE_RELOCS_STRIPPED, true); err != nil {
+		return nil, fmt.Errorf("set IMAGE_FILE_RELOCS_STRIPPED: %w", err)
+	} else if changed {
+		details = append(details, "set IMAGE_FILE_RELOCS_STRIPPED flag")
+	}
+	if changed, err := p.setDLLCharacteristic(offsets, IMAGE_DLL_CHARACTERISTICS_DYNAMIC_BASE, false); err != nil {
+		return nil, fmt.Errorf("clear DYNAMIC_BASE flag: %w", err)
+	} else if changed {
+		details = append(details, "cleared DYNAMIC_BASE flag (ASLR disabled)")
+	}
+	return details, nil
+}
+
+func (p *PEFile) setFileHeaderCharacteristic(offsets *PEOffsets, mask uint16, enable bool) (bool, error) {
+	if offsets == nil {
+		return false, fmt.Errorf("file offsets not initialized")
+	}
+	charOffset := offsets.ELfanew + PE_SIGNATURE_SIZE + PE_CHARACTERISTICS_OFFSET
+	if err := p.validateOffset(charOffset, 2); err != nil {
+		return false, err
+	}
+	current := binary.LittleEndian.Uint16(p.RawData[charOffset : charOffset+2])
+	updated := current
+	if enable {
+		updated |= mask
+	} else {
+		updated &^= mask
+	}
+	if updated == current {
+		return false, nil
+	}
+	binary.LittleEndian.PutUint16(p.RawData[charOffset:], updated)
+	return true, nil
+}
+
+func (p *PEFile) setDLLCharacteristic(offsets *PEOffsets, mask uint16, enable bool) (bool, error) {
+	if offsets == nil {
+		return false, fmt.Errorf("file offsets not initialized")
+	}
+	var dllOffset int64
+	if p.Is64Bit {
+		dllOffset = offsets.OptionalHeader + PE64_DLL_CHARACTERISTICS
+	} else {
+		dllOffset = offsets.OptionalHeader + PE32_DLL_CHARACTERISTICS
+	}
+	if err := p.validateOffset(dllOffset, 2); err != nil {
+		return false, err
+	}
+	current := binary.LittleEndian.Uint16(p.RawData[dllOffset : dllOffset+2])
+	updated := current
+	if enable {
+		updated |= mask
+	} else {
+		updated &^= mask
+	}
+	if updated == current {
+		return false, nil
+	}
+	binary.LittleEndian.PutUint16(p.RawData[dllOffset:], updated)
+	return true, nil
 }
 
 func (p *PEFile) readTimeDateStamp() (uint32, int64) {

@@ -2,6 +2,7 @@ package test
 
 import (
 	"bytes"
+	"debug/pe"
 	"encoding/binary"
 	"encoding/hex"
 	"os"
@@ -74,6 +75,55 @@ func readPETimestamp(t *testing.T, path string) uint32 {
 		t.Fatalf("timestamp offset out of range for %s", path)
 	}
 	return binary.LittleEndian.Uint32(data[offset : offset+4])
+}
+
+func readPECharacteristics(t *testing.T, path string) uint16 {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read %s: %v", path, err)
+	}
+	if len(data) < 0x40 {
+		t.Fatalf("file too small: %s", path)
+	}
+	elfanew := binary.LittleEndian.Uint32(data[0x3C:0x40])
+	coffOffset := int(elfanew) + perw.PE_SIGNATURE_SIZE
+	charOffset := coffOffset + perw.PE_CHARACTERISTICS_OFFSET
+	if charOffset+2 > len(data) {
+		t.Fatalf("characteristics offset out of range for %s", path)
+	}
+	return binary.LittleEndian.Uint16(data[charOffset : charOffset+2])
+}
+
+func readPEDLLCharacteristics(t *testing.T, path string) uint16 {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read %s: %v", path, err)
+	}
+	if len(data) < 0x40 {
+		t.Fatalf("file too small: %s", path)
+	}
+	elfanew := binary.LittleEndian.Uint32(data[0x3C:0x40])
+	coffOffset := int(elfanew) + perw.PE_SIGNATURE_SIZE
+	optionalOffset := coffOffset + perw.PE_FILE_HEADER_SIZE
+	if optionalOffset+2 > len(data) {
+		t.Fatalf("optional header offset out of range for %s", path)
+	}
+	magic := binary.LittleEndian.Uint16(data[optionalOffset : optionalOffset+2])
+	var dllOffset int
+	switch magic {
+	case perw.PE32_MAGIC:
+		dllOffset = optionalOffset + perw.PE32_DLL_CHARACTERISTICS
+	case perw.PE64_MAGIC:
+		dllOffset = optionalOffset + perw.PE64_DLL_CHARACTERISTICS
+	default:
+		t.Fatalf("unknown PE magic 0x%X in %s", magic, path)
+	}
+	if dllOffset+2 > len(data) {
+		t.Fatalf("DLL characteristics offset out of range for %s", path)
+	}
+	return binary.LittleEndian.Uint16(data[dllOffset : dllOffset+2])
 }
 
 func TestAnalyzePE_Succeeds(t *testing.T) {
@@ -196,6 +246,25 @@ func TestCompactPE_ForceRemovesImports(t *testing.T) {
 	}
 	if hasPESection(t, pePath, ".idata") {
 		t.Fatalf(".idata should be removable when force=true")
+	}
+}
+
+func TestCompactPE_ForceRelocDisablesASLR(t *testing.T) {
+	pePath := copyPEFixture(t, "simple.exe")
+	if !hasPESection(t, pePath, ".reloc") {
+		t.Skip("fixture missing .reloc section")
+	}
+	result := perw.CompactPE(pePath, true, false)
+	if result == nil || !result.Applied {
+		t.Fatalf("expected compaction to apply, got %#v", result)
+	}
+	flags := readPECharacteristics(t, pePath)
+	if flags&pe.IMAGE_FILE_RELOCS_STRIPPED == 0 {
+		t.Fatalf("expected IMAGE_FILE_RELOCS_STRIPPED after removing .reloc, flags=0x%X", flags)
+	}
+	dllChars := readPEDLLCharacteristics(t, pePath)
+	if dllChars&perw.IMAGE_DLL_CHARACTERISTICS_DYNAMIC_BASE != 0 {
+		t.Fatalf("expected DYNAMIC_BASE flag to be cleared, DLL characteristics=0x%X", dllChars)
 	}
 }
 
