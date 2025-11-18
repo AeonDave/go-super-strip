@@ -25,10 +25,10 @@ func TestPEPipelineOperations(t *testing.T) {
 
 	assertAnalysisLooksComprehensive(t, analyze(), "initial analyze")
 
-	requireApplied(t, "strip", perw.StripPE(pePath, false))
+	requireApplied(t, "strip", perw.StripPE(pePath, false, nil))
 	assertAnalysisLooksComprehensive(t, analyze(), "post-strip analyze")
 
-	requireApplied(t, "compact", perw.CompactPE(pePath, false, false, true))
+	requireApplied(t, "compact", perw.CompactPE(pePath, false, true))
 	assertAnalysisLooksComprehensive(t, analyze(), "post-compact analyze")
 
 	requireApplied(t, "obfuscate", perw.ObfuscatePE(pePath, true))
@@ -36,7 +36,7 @@ func TestPEPipelineOperations(t *testing.T) {
 
 	const regexTarget = "PEPipelineRegexTarget"
 	appendPatternToBinary(t, pePath, regexTarget)
-	regexResult := perw.RegexPE(pePath, regexTarget)
+	regexResult := perw.RegexPE(pePath, nil, []string{regexTarget})
 	if regexResult == nil || !regexResult.Applied || regexResult.Count == 0 {
 		t.Fatalf("expected regex to remove %q, got %#v", regexTarget, regexResult)
 	}

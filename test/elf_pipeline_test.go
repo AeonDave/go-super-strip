@@ -25,10 +25,10 @@ func TestELFPipelineOperations(t *testing.T) {
 
 	assertAnalysisLooksComprehensive(t, analyze(), "initial analyze")
 
-	requireApplied(t, "strip", elfrw.StripELF(elfPath, false))
+	requireApplied(t, "strip", elfrw.StripELF(elfPath, false, nil))
 	assertAnalysisLooksComprehensive(t, analyze(), "post-strip analyze")
 
-	requireApplied(t, "compact", elfrw.CompactELF(elfPath, false, false, true))
+	requireApplied(t, "compact", elfrw.CompactELF(elfPath, false, true))
 	assertAnalysisLooksComprehensive(t, analyze(), "post-compact analyze")
 
 	requireApplied(t, "obfuscate", elfrw.ObfuscateELF(elfPath, true))
@@ -36,7 +36,7 @@ func TestELFPipelineOperations(t *testing.T) {
 
 	const regexTarget = "ELFPipelineRegexTarget"
 	appendPatternToBinary(t, elfPath, regexTarget)
-	regexResult := elfrw.RegexELF(elfPath, regexTarget)
+	regexResult := elfrw.RegexELF(elfPath, nil, []string{regexTarget})
 	if regexResult == nil || !regexResult.Applied || regexResult.Count == 0 {
 		t.Fatalf("expected regex to remove %q, got %#v", regexTarget, regexResult)
 	}

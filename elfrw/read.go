@@ -241,7 +241,7 @@ func (e *ELFFile) checkForOverlay() {
 		}
 	}
 	for _, segment := range e.Segments {
-		if segment.FileSize == 0 {
+		if segment.FileSize == 0 || !segment.Loadable {
 			continue
 		}
 		end := int64(segment.Offset + segment.FileSize)

@@ -19,7 +19,7 @@ type elfCompactContext struct {
 	warnings     []string
 }
 
-func (e *ELFFile) Compact(force bool, fillRandom bool) *common.OperationResult {
+func (e *ELFFile) Compact(force bool) *common.OperationResult {
 	if len(e.Sections) == 0 {
 		return common.NewSkipped("no sections to process")
 	}
@@ -34,7 +34,7 @@ func (e *ELFFile) Compact(force bool, fillRandom bool) *common.OperationResult {
 	}
 
 	pipeline.AddStep("remove sections", func() (*common.OperationResult, error) {
-		return e.compactRemovalPhase(ctx, force, fillRandom)
+		return e.compactRemovalPhase(ctx, force)
 	})
 	pipeline.AddStep("rebuild headers", func() (*common.OperationResult, error) {
 		return e.compactRebuildPhase()
@@ -178,7 +178,7 @@ func (e *ELFFile) matchesZeroFilledStripRule(section Section, rules map[SectionT
 	return false
 }
 
-func (e *ELFFile) removeCompactSection(sectionIdx int, totalRemovedSize *int64, fillRandom bool) error {
+func (e *ELFFile) removeCompactSection(sectionIdx int, totalRemovedSize *int64) error {
 	if sectionIdx < 0 || sectionIdx >= len(e.Sections) {
 		return fmt.Errorf("invalid section index: %d", sectionIdx)
 	}
@@ -196,7 +196,7 @@ func (e *ELFFile) removeCompactSection(sectionIdx int, totalRemovedSize *int64, 
 			fillSize = 0
 		}
 	}
-	if err := e.fillRegion(uint64(section.Offset), int(fillSize), fillRandom); err != nil {
+	if err := e.fillRegion(uint64(section.Offset), int(fillSize), false); err != nil {
 		return fmt.Errorf("failed to fill section %s: %w", section.Name, err)
 	}
 	canChop := int64(section.Offset) >= e.maxLoadSegmentEnd()
@@ -362,7 +362,7 @@ func (e *ELFFile) identifyCriticalSections(force bool) map[int]struct{} {
 	return critical
 }
 
-func (e *ELFFile) compactRemovalPhase(ctx *elfCompactContext, force bool, fillRandom bool) (*common.OperationResult, error) {
+func (e *ELFFile) compactRemovalPhase(ctx *elfCompactContext, force bool) (*common.OperationResult, error) {
 	removable := e.identifyCompactableSections(force)
 	if len(removable) == 0 {
 		return common.NewSkipped("no compactable sections found"), nil
@@ -372,7 +372,7 @@ func (e *ELFFile) compactRemovalPhase(ctx *elfCompactContext, force bool, fillRa
 	totalRemoved := int64(0)
 	var warnings []string
 	for _, idx := range removable {
-		if err := e.removeCompactSection(idx, &totalRemoved, fillRandom); err != nil {
+		if err := e.removeCompactSection(idx, &totalRemoved); err != nil {
 			warning := fmt.Sprintf("Failed to remove section %d (%s): %v", idx, e.Sections[idx].Name, err)
 			warnings = append(warnings, warning)
 		}

@@ -50,21 +50,21 @@ func AnalyzeELF(file string, opts common.AnalysisOptions) (*common.AnalysisResul
 	}
 }
 
-func StripELF(filePath string, force bool) *common.OperationResult {
+func StripELF(filePath string, force bool, fillOverride *bool) *common.OperationResult {
 	return processELF(filePath, os.O_RDWR, func(elfFile *ELFFile) *common.OperationResult {
-		return elfFile.StripAll(force)
+		return elfFile.StripAll(force, fillOverride)
 	})
 }
 
-func CompactELF(filePath string, force bool, fillRandom bool, _ bool) *common.OperationResult {
+func CompactELF(filePath string, force bool, _ bool) *common.OperationResult {
 	return processELF(filePath, os.O_RDWR, func(elfFile *ELFFile) *common.OperationResult {
-		return elfFile.Compact(force, fillRandom)
+		return elfFile.Compact(force)
 	})
 }
 
-func RegexELF(filePath string, regex string) *common.OperationResult {
+func RegexELF(filePath string, fillOverride *bool, patterns []string) *common.OperationResult {
 	return processELF(filePath, os.O_RDWR, func(elfFile *ELFFile) *common.OperationResult {
-		return elfFile.StripSingleRegexRule(regex)
+		return elfFile.ApplyRegexPatterns(patterns, fillOverride)
 	})
 }
 
@@ -84,4 +84,13 @@ func OverlayELF(filePath, dataOrFile, password string) *common.OperationResult {
 	return processELF(filePath, os.O_RDWR, func(elfFile *ELFFile) *common.OperationResult {
 		return elfFile.AddOverlay(dataOrFile, password)
 	})
+}
+
+func ExtractOverlay(filePath string) ([]byte, error) {
+	elfFile, err := readElf(filePath, os.O_RDONLY)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = elfFile.Close() }()
+	return elfFile.ExtractOverlay()
 }

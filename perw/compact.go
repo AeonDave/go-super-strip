@@ -4,11 +4,17 @@ import (
 	"encoding/binary"
 	"fmt"
 	"gosstrip/common"
+	"math"
 	"sort"
 	"strings"
 )
 
-func (p *PEFile) Compact(force bool, fillRandom bool, keepResources bool) *common.OperationResult {
+type virtualRange struct {
+	start uint32
+	end   uint32
+}
+
+func (p *PEFile) Compact(force bool, keepResources bool) *common.OperationResult {
 	origTimestamp, tsOffset := p.readTimeDateStamp()
 
 	pipeline := common.NewPipeline()
@@ -18,7 +24,7 @@ func (p *PEFile) Compact(force bool, fillRandom bool, keepResources bool) *commo
 	}
 
 	pipeline.AddStep("section removal", func() (*common.OperationResult, error) {
-		return p.sectionRemoval(force, fillRandom, keepResources)
+		return p.sectionRemoval(force, keepResources)
 	})
 	pipeline.AddStep("restore timestamp", func() (*common.OperationResult, error) {
 		p.restoreTimeDateStamp(origTimestamp, tsOffset)
@@ -249,7 +255,7 @@ func (p *PEFile) sectionsReferencedByDataDirectories() map[int]struct{} {
 	return protected
 }
 
-func (p *PEFile) sectionRemoval(force bool, fillRandom bool, keepResources bool) (*common.OperationResult, error) {
+func (p *PEFile) sectionRemoval(force bool, keepResources bool) (*common.OperationResult, error) {
 	if len(p.Sections) == 0 {
 		return common.NewSkipped("no sections to process"), nil
 	}
@@ -261,12 +267,27 @@ func (p *PEFile) sectionRemoval(force bool, fillRandom bool, keepResources bool)
 		return common.NewSkipped("no removable sections found"), nil
 	}
 
-	removedRVAs := make(map[uint32]bool)
+	removedRanges := make([]virtualRange, 0, len(removableSectionIndices))
 	removedNames := make([]string, 0, len(removableSectionIndices))
 	for _, idx := range removableSectionIndices {
 		if idx >= 0 && idx < len(p.Sections) {
-			removedRVAs[p.Sections[idx].VirtualAddress] = true
-			removedNames = append(removedNames, p.Sections[idx].Name)
+			section := p.Sections[idx]
+			size := section.VirtualSize
+			if raw := uint32(section.Size); raw > size {
+				size = raw
+			}
+			if size == 0 {
+				size = 1
+			}
+			end := section.VirtualAddress + size
+			if end < section.VirtualAddress {
+				end = math.MaxUint32
+			}
+			removedRanges = append(removedRanges, virtualRange{
+				start: section.VirtualAddress,
+				end:   end,
+			})
+			removedNames = append(removedNames, section.Name)
 		}
 	}
 	fileAlignment, err := p.extractFileAlignment()
@@ -276,18 +297,18 @@ func (p *PEFile) sectionRemoval(force bool, fillRandom bool, keepResources bool)
 	sort.Sort(sort.Reverse(sort.IntSlice(removableSectionIndices)))
 	totalRemovedSize := int64(0)
 	for _, sectionIdx := range removableSectionIndices {
-		if err := p.removeSingleSection(sectionIdx, &totalRemovedSize, fileAlignment, fillRandom); err != nil {
+		if err := p.removeSingleSection(sectionIdx, &totalRemovedSize, fileAlignment); err != nil {
 			return nil, fmt.Errorf("failed to remove section %d: %w", sectionIdx, err)
 		}
 	}
 	if err := p.updateNumberOfSections(len(p.Sections) - len(removableSectionIndices)); err != nil {
 		return nil, fmt.Errorf("failed to update NumberOfSections: %w", err)
 	}
-	newSections := p.buildNewSectionsWithCorrectVirtualSize(removableSectionIndices, removedRVAs)
+	newSections := p.buildNewSectionsWithCorrectVirtualSize(removableSectionIndices, removedRanges)
 	if err := p.updateSectionTableWithNewSections(newSections); err != nil {
 		return nil, fmt.Errorf("failed to update section table: %w", err)
 	}
-	if err := p.clearDataDirectoriesForRemovedRVAs(removedRVAs); err != nil {
+	if err := p.clearDataDirectoriesForRemovedRVAs(removedRanges); err != nil {
 		return nil, fmt.Errorf("failed to clear data directories: %w", err)
 	}
 	p.Sections = newSections
@@ -462,18 +483,14 @@ func (p *PEFile) extractFileAlignment() (uint32, error) {
 	return fileAlignment, nil
 }
 
-func (p *PEFile) removeSingleSection(sectionIdx int, totalRemovedSize *int64, fileAlignment uint32, fillRandom bool) error {
+func (p *PEFile) removeSingleSection(sectionIdx int, totalRemovedSize *int64, fileAlignment uint32) error {
 	if sectionIdx < 0 || sectionIdx >= len(p.Sections) {
 		return fmt.Errorf("invalid section index: %d", sectionIdx)
 	}
 
 	sectionToRemove := p.Sections[sectionIdx]
 	if sectionToRemove.Offset > 0 && sectionToRemove.Size > 0 {
-		fillMode := ZeroFill
-		if fillRandom {
-			fillMode = RandomFill
-		}
-		if err := p.wipeSectionData(&sectionToRemove, fillMode); err != nil {
+		if err := p.wipeSectionData(&sectionToRemove, ZeroFill); err != nil {
 			return fmt.Errorf("failed to fill section %s: %w", sectionToRemove.Name, err)
 		}
 		p.Sections[sectionIdx].Stripped = true
@@ -501,7 +518,7 @@ func (p *PEFile) removeSingleSection(sectionIdx int, totalRemovedSize *int64, fi
 	return nil
 }
 
-func (p *PEFile) buildNewSectionsWithCorrectVirtualSize(removedIndices []int, removedRVAs map[uint32]bool) []Section {
+func (p *PEFile) buildNewSectionsWithCorrectVirtualSize(removedIndices []int, removedRanges []virtualRange) []Section {
 	removedMap := make(map[int]bool)
 	for _, idx := range removedIndices {
 		removedMap[idx] = true
@@ -516,8 +533,8 @@ func (p *PEFile) buildNewSectionsWithCorrectVirtualSize(removedIndices []int, re
 		currentSection := &newSections[i]
 		nextSection := &newSections[i+1]
 		hasRemovedSectionBetween := false
-		for rva := range removedRVAs {
-			if rva > currentSection.VirtualAddress && rva < nextSection.VirtualAddress {
+		for _, rng := range removedRanges {
+			if rng.start > currentSection.VirtualAddress && rng.start < nextSection.VirtualAddress {
 				hasRemovedSectionBetween = true
 				break
 			}
@@ -560,7 +577,7 @@ func (p *PEFile) updateSectionTableWithNewSections(newSections []Section) error 
 	return nil
 }
 
-func (p *PEFile) clearDataDirectoriesForRemovedRVAs(removedRVAs map[uint32]bool) error {
+func (p *PEFile) clearDataDirectoriesForRemovedRVAs(removedRanges []virtualRange) error {
 	peHeaderOffset := int64(binary.LittleEndian.Uint32(p.RawData[PE_ELFANEW_OFFSET : PE_ELFANEW_OFFSET+4]))
 	coffHeaderOffset := peHeaderOffset + PE_SIGNATURE_SIZE
 	optionalHeaderOffset := coffHeaderOffset + PE_FILE_HEADER_SIZE
@@ -580,12 +597,21 @@ func (p *PEFile) clearDataDirectoriesForRemovedRVAs(removedRVAs map[uint32]bool)
 		if rva == 0 {
 			continue
 		}
-		if removedRVAs[rva] {
+		if rvaFallsInRemovedRange(rva, removedRanges) {
 			binary.LittleEndian.PutUint32(p.RawData[entryOffset:], 0)
 			binary.LittleEndian.PutUint32(p.RawData[entryOffset+4:], 0)
 		}
 	}
 	return nil
+}
+
+func rvaFallsInRemovedRange(rva uint32, ranges []virtualRange) bool {
+	for _, rng := range ranges {
+		if rva >= rng.start && rva < rng.end {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *PEFile) readTimeDateStamp() (uint32, int64) {

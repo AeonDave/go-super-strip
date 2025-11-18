@@ -77,3 +77,34 @@ func TestProcessStringForInsertionWithAsciiPassword(t *testing.T) {
 		t.Fatalf("expected decrypted payload to match original, got %q", decrypted)
 	}
 }
+
+func TestProcessStringForInsertionHexLiteral(t *testing.T) {
+	payload := "0xDEADBEEF"
+	data, err := common.ProcessStringForInsertion(payload, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected, err := hex.DecodeString(payload[2:])
+	if err != nil {
+		t.Fatalf("failed to decode expected hex: %v", err)
+	}
+	if string(data) != string(expected) {
+		t.Fatalf("expected hex payload to be decoded, got %x", data)
+	}
+}
+
+func TestProcessExtractedDataHandlesHexCiphertext(t *testing.T) {
+	payload := []byte("super-secret-data")
+	password := "hexpass"
+	encrypted, err := common.ProcessStringForInsertion(string(payload), password)
+	if err != nil {
+		t.Fatalf("failed to encrypt payload: %v", err)
+	}
+	recovered, err := common.ProcessExtractedData(encrypted, password)
+	if err != nil {
+		t.Fatalf("failed to process extracted data: %v", err)
+	}
+	if string(recovered) != string(payload) {
+		t.Fatalf("expected recovered payload %q, got %q", payload, recovered)
+	}
+}

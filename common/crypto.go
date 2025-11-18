@@ -1,6 +1,7 @@
 package common
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -8,6 +9,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"strings"
 )
 
 func parsePassword(password string) []byte {
@@ -74,7 +76,10 @@ func fileToByte(filePath string) ([]byte, error) {
 }
 
 func ProcessStringForInsertion(data, password string) ([]byte, error) {
-	byteData := []byte(data)
+	byteData, err := decodeInlineData(data)
+	if err != nil {
+		return nil, err
+	}
 	if password == "" {
 		return byteData, nil
 	}
@@ -108,4 +113,46 @@ func DecryptAES256GCM(data, password []byte) ([]byte, error) {
 		return nil, fmt.Errorf("decryption failed: %w", err)
 	}
 	return pt, nil
+}
+
+func ProcessExtractedData(data []byte, password string) ([]byte, error) {
+	result := make([]byte, len(data))
+	copy(result, data)
+	if password == "" {
+		return result, nil
+	}
+	key := parsePassword(password)
+	if plaintext, err := DecryptAES256GCM(result, key); err == nil {
+		return plaintext, nil
+	}
+	trimmed := bytes.TrimRight(result, "\x00")
+	hexCandidate := strings.TrimSpace(string(trimmed))
+	if hexCandidate != "" && len(hexCandidate)%2 == 0 && isHexString(hexCandidate) {
+		if decoded, err := hex.DecodeString(hexCandidate); err == nil {
+			if plaintext, err := DecryptAES256GCM(decoded, key); err == nil {
+				return plaintext, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("failed to decrypt payload: ensure the password matches and the section was encrypted")
+}
+
+func decodeInlineData(data string) ([]byte, error) {
+	trimmed := strings.TrimSpace(data)
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix(lower, "0x") {
+		hexPart := trimmed[2:]
+		if len(hexPart)%2 != 0 {
+			return nil, fmt.Errorf("hex payload must contain an even number of characters")
+		}
+		if !isHexString(hexPart) {
+			return nil, fmt.Errorf("invalid hex payload")
+		}
+		decoded, err := hex.DecodeString(hexPart)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode hex payload: %w", err)
+		}
+		return decoded, nil
+	}
+	return []byte(data), nil
 }

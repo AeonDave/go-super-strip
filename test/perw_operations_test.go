@@ -3,7 +3,9 @@ package test
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -31,6 +33,29 @@ func hasPESection(t *testing.T, path, name string) bool {
 		}
 	}
 	return false
+}
+
+func readPESectionData(t *testing.T, path, name string) []byte {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("failed to reopen PE: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+	peFile, err := perw.ReadPE(f)
+	if err != nil {
+		t.Fatalf("failed to parse PE: %v", err)
+	}
+	defer func() { _ = peFile.Close() }()
+	sec, err := peFile.GetSectionByName(name)
+	if err != nil {
+		t.Fatalf("section %s not found: %v", name, err)
+	}
+	data, err := peFile.ReadBytes(sec.Offset, int(sec.VirtualSize))
+	if err != nil {
+		t.Fatalf("failed reading section bytes: %v", err)
+	}
+	return append([]byte(nil), data...)
 }
 
 func readPETimestamp(t *testing.T, path string) uint32 {
@@ -65,7 +90,7 @@ func TestStripPE_PreservesPEValidity(t *testing.T) {
 		t.Fatalf("stat failed: %v", err)
 	}
 
-	result := perw.StripPE(pePath, false)
+	result := perw.StripPE(pePath, false, nil)
 	if result == nil {
 		t.Fatal("expected result from StripPE, got nil")
 	}
@@ -134,7 +159,7 @@ func TestObfuscatePE_PreservesImports(t *testing.T) {
 
 func TestCompactPE_SafeOperation(t *testing.T) {
 	pePath := copyPEFixture(t, "simple.exe")
-	result := perw.CompactPE(pePath, false, false, true)
+	result := perw.CompactPE(pePath, false, true)
 	if result == nil {
 		t.Fatal("expected result from CompactPE, got nil")
 	}
@@ -152,7 +177,7 @@ func TestCompactPE_PreservesTimestamp(t *testing.T) {
 	pePath := copyPEFixture(t, "simple.exe")
 	before := readPETimestamp(t, pePath)
 
-	result := perw.CompactPE(pePath, false, false, true)
+	result := perw.CompactPE(pePath, false, true)
 	if result == nil || !result.Applied {
 		t.Fatalf("expected compaction to apply, got %#v", result)
 	}
@@ -165,7 +190,7 @@ func TestCompactPE_PreservesTimestamp(t *testing.T) {
 
 func TestCompactPE_ForceRemovesImports(t *testing.T) {
 	pePath := copyPEFixture(t, "simple.exe")
-	result := perw.CompactPE(pePath, true, false, false)
+	result := perw.CompactPE(pePath, true, false)
 	if result == nil || !result.Applied {
 		t.Fatalf("expected compaction to apply, got %#v", result)
 	}
@@ -212,7 +237,7 @@ func TestInsertPE_AddsSection(t *testing.T) {
 func TestRegexPE_InvalidPattern(t *testing.T) {
 	pePath := copyPEFixture(t, "simple.exe")
 
-	result := perw.RegexPE(pePath, "[")
+	result := perw.RegexPE(pePath, nil, []string{"["})
 	if result == nil {
 		t.Fatal("expected result from RegexPE, got nil")
 	}
@@ -242,7 +267,7 @@ func TestRegexPE_RemovesMatches(t *testing.T) {
 		t.Fatalf("expected inserted marker %q to be present", marker)
 	}
 
-	regexResult := perw.RegexPE(pePath, marker)
+	regexResult := perw.RegexPE(pePath, nil, []string{marker})
 	if regexResult == nil {
 		t.Fatal("expected result from RegexPE, got nil")
 	}
@@ -256,6 +281,44 @@ func TestRegexPE_RemovesMatches(t *testing.T) {
 	}
 	if bytes.Contains(updated, []byte(marker)) {
 		t.Fatalf("expected marker %q to be removed after regex", marker)
+	}
+}
+
+func TestRegexPE_FillZeroOverride(t *testing.T) {
+	pePath := copyPEFixture(t, "regex_fill_zero.exe")
+	sectionName := common.SanitizeSectionName(".regexfill0")
+	payload := "FillZeroMarker"
+
+	requireApplied(t, "insert", perw.InsertPE(pePath, sectionName, payload, ""))
+	res := perw.RegexPE(pePath, boolPointer(false), []string{payload})
+	if res == nil || !res.Applied {
+		t.Fatalf("expected regex operation to apply: %#v", res)
+	}
+	data := readPESectionData(t, pePath, sectionName)
+	if bytes.Contains(data, []byte(payload)) {
+		t.Fatalf("expected payload removed from section")
+	}
+	if !isAllZero(data) {
+		t.Fatalf("expected section to be zero filled, got %x", data[:min(len(data), 8)])
+	}
+}
+
+func TestRegexPE_FillRandomOverride(t *testing.T) {
+	pePath := copyPEFixture(t, "regex_fill_rand.exe")
+	sectionName := common.SanitizeSectionName(".regexfill1")
+	payload := "FillRandomMarker"
+
+	requireApplied(t, "insert", perw.InsertPE(pePath, sectionName, payload, ""))
+	res := perw.RegexPE(pePath, boolPointer(true), []string{payload})
+	if res == nil || !res.Applied {
+		t.Fatalf("expected regex operation to apply: %#v", res)
+	}
+	data := readPESectionData(t, pePath, sectionName)
+	if bytes.Contains(data, []byte(payload)) {
+		t.Fatalf("expected payload removed from section")
+	}
+	if isAllZero(data) {
+		t.Fatalf("expected random fill, got all zeros")
 	}
 }
 
@@ -280,7 +343,7 @@ func TestStripPE_RemovesUPXMarkers(t *testing.T) {
 		t.Fatalf("expected UPX banner to be present before stripping")
 	}
 
-	stripResult := perw.StripPE(pePath, false)
+	stripResult := perw.StripPE(pePath, false, nil)
 	if stripResult == nil {
 		t.Fatal("expected result from StripPE, got nil")
 	}
@@ -297,5 +360,91 @@ func TestStripPE_RemovesUPXMarkers(t *testing.T) {
 	}
 	if bytes.Contains(dataAfter, []byte("Info: This file is packed")) {
 		t.Fatalf("expected UPX banner to be removed after stripping")
+	}
+}
+
+func TestStripPE_FillOverrideZero(t *testing.T) {
+	pePath := copyPEFixture(t, "fill_zero.exe")
+	sectionName := common.SanitizeSectionName(".debugfill")
+	payload := bytes.Repeat([]byte{0xAB}, 128)
+	if res := perw.InsertPE(pePath, sectionName, string(payload), ""); res == nil || !res.Applied {
+		t.Fatalf("failed to insert test section: %#v", res)
+	}
+
+	if res := perw.StripPE(pePath, false, boolPointer(false)); res == nil || !res.Applied {
+		t.Fatalf("expected strip to apply: %#v", res)
+	}
+	data := readPESectionData(t, pePath, sectionName)
+	if !isAllZero(data) {
+		t.Fatalf("expected section %s to be zero-filled, got %x", sectionName, data[:min(len(data), 8)])
+	}
+}
+
+func TestStripPE_FillOverrideRandom(t *testing.T) {
+	pePath := copyPEFixture(t, "fill_random.exe")
+	sectionName := common.SanitizeSectionName(".debugrand")
+	payload := bytes.Repeat([]byte{0xCD}, 128)
+	if res := perw.InsertPE(pePath, sectionName, string(payload), ""); res == nil || !res.Applied {
+		t.Fatalf("failed to insert test section: %#v", res)
+	}
+
+	if res := perw.StripPE(pePath, false, boolPointer(true)); res == nil || !res.Applied {
+		t.Fatalf("expected strip to apply: %#v", res)
+	}
+	data := readPESectionData(t, pePath, sectionName)
+	if isAllZero(data) {
+		t.Fatalf("expected section %s to be randomized, all bytes were zero", sectionName)
+	}
+}
+
+func TestPEExtractSectionByNameAndIndex(t *testing.T) {
+	pePath := copyPEFixture(t, "simple.exe")
+	hexSection := common.SanitizeSectionName(".hexsec")
+	fileSection := common.SanitizeSectionName(".filesec")
+
+	hexPayload := "0xDEADBEEFCAFE"
+	requireApplied(t, "insert", perw.InsertPE(pePath, hexSection, hexPayload, "hexpass"))
+
+	filePayload := []byte{0x10, 0x20, 0x30, 0x40, 0x50}
+	filePath := filepath.Join(t.TempDir(), "payload.bin")
+	if err := os.WriteFile(filePath, filePayload, 0o600); err != nil {
+		t.Fatalf("failed to write payload file: %v", err)
+	}
+	requireApplied(t, "insert", perw.InsertPE(pePath, fileSection, filePath, "filepass"))
+
+	extractedHex, sectionName, err := perw.ExtractSection(pePath, hexSection, nil, "hexpass")
+	if err != nil {
+		t.Fatalf("failed to extract section by name: %v", err)
+	}
+	wantHex, err := hex.DecodeString(hexPayload[2:])
+	if err != nil {
+		t.Fatalf("failed to decode expected hex payload: %v", err)
+	}
+	if !bytes.Equal(extractedHex, wantHex) {
+		t.Fatalf("expected extracted data %x, got %x", wantHex, extractedHex)
+	}
+	if sectionName != hexSection {
+		t.Fatalf("expected section name %q, got %q", hexSection, sectionName)
+	}
+
+	f, err := os.Open(pePath)
+	if err != nil {
+		t.Fatalf("failed to reopen PE: %v", err)
+	}
+	peFile, err := perw.ReadPE(f)
+	if err != nil {
+		t.Fatalf("failed to parse PE: %v", err)
+	}
+	lastIndex := len(peFile.Sections) - 1
+	_ = f.Close()
+	extractedFile, extractedName, err := perw.ExtractSection(pePath, "", &lastIndex, "filepass")
+	if err != nil {
+		t.Fatalf("failed to extract section by index: %v", err)
+	}
+	if extractedName != fileSection {
+		t.Fatalf("expected extracted section name %q, got %q", fileSection, extractedName)
+	}
+	if !bytes.Equal(extractedFile, filePayload) {
+		t.Fatalf("expected extracted file payload %x, got %x", filePayload, extractedFile)
 	}
 }

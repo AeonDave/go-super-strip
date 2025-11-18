@@ -23,6 +23,10 @@ During strip we **zero or random-fill** sensitive metadata in place, but we do n
 
 Every action records a `StripAction` result so later stages (compact, analysis) can reason about what changed.
 
+### Fill overrides
+
+The CLI now accepts `-s=fill=auto|zero|random`. In `auto` (default) we use the rule-defined fill mode from `strip_types.go`. Setting `zero` forces deterministic zero filling for every section/pattern, while `random` forces pseudorandom data (useful when zero blocks are too obvious). The override hits both section wipes and the built-in regex scrubbers that run as part of strip; standalone regex runs use the dedicated `-r=fill=…` knob.
+
 ## 3. PE Techniques
 
 All code lives under `perw/`:

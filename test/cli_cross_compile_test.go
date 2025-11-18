@@ -10,6 +10,10 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"gosstrip/common"
+	"gosstrip/elfrw"
+	"gosstrip/perw"
 )
 
 type compiledFixture struct {
@@ -19,13 +23,21 @@ type compiledFixture struct {
 }
 
 type cliScenario struct {
-	Name    string
-	Args    []string
-	Prepare func(t *testing.T, fixture compiledFixture, binaryPath string)
-	Verify  func(t *testing.T, fixture compiledFixture, binaryPath, output string)
+	Name        string
+	Args        []string
+	ArgsBuilder func(t *testing.T, fixture compiledFixture, binaryPath string) []string
+	Prepare     func(t *testing.T, fixture compiledFixture, binaryPath string)
+	Verify      func(t *testing.T, fixture compiledFixture, binaryPath, output string)
 }
 
 const testStubPrefix = "gosstrip-test-stub"
+const (
+	cliSectionName    = ".clisec"
+	cliSectionPayload = "CLI_SECTION_PAYLOAD"
+	cliSectionPass    = "cli-section-pass"
+	cliOverlayPayload = "CLI_OVERLAY_PAYLOAD"
+	cliOverlayPass    = "cli-overlay-pass"
+)
 
 func TestCLIOptionsOnCompiledFixtures(t *testing.T) {
 	cliBinary := buildCLIBinary(t)
@@ -50,15 +62,15 @@ func TestCLIOptionsOnCompiledFixtures(t *testing.T) {
 			},
 		},
 		{
-			Name: "compact_fill_random",
-			Args: []string{"-c=fill=random"},
+			Name: "strip",
+			Args: []string{"-s"},
 			Verify: func(t *testing.T, _ compiledFixture, _ string, output string) {
-				assertContains(t, output, "• compact:")
+				assertContains(t, output, "• strip:")
 			},
 		},
 		{
-			Name: "strip",
-			Args: []string{"-s"},
+			Name: "strip_fill_random",
+			Args: []string{"-s=fill=random"},
 			Verify: func(t *testing.T, _ compiledFixture, _ string, output string) {
 				assertContains(t, output, "• strip:")
 			},
@@ -100,8 +112,46 @@ func TestCLIOptionsOnCompiledFixtures(t *testing.T) {
 			},
 		},
 		{
+			Name: "extract_section",
+			ArgsBuilder: func(t *testing.T, fixture compiledFixture, _ string) []string {
+				return []string{fmt.Sprintf("-ei=name=%s,password=%s", sectionNameForFixture(fixture), cliSectionPass)}
+			},
+			Prepare: func(t *testing.T, fixture compiledFixture, binaryPath string) {
+				insertCLITestSection(t, fixture, binaryPath)
+			},
+			Verify: func(t *testing.T, _ compiledFixture, binaryPath string, output string) {
+				assertContains(t, output, "• extract-section:")
+				extracted := readFile(t, binaryPath+".extracted")
+				if string(extracted) != cliSectionPayload {
+					t.Fatalf("expected extracted section payload %q, got %q", cliSectionPayload, string(extracted))
+				}
+			},
+		},
+		{
+			Name: "extract_overlay",
+			Args: []string{fmt.Sprintf("-el=password=%s", cliOverlayPass)},
+			Prepare: func(t *testing.T, fixture compiledFixture, binaryPath string) {
+				addCLITestOverlay(t, fixture, binaryPath)
+			},
+			Verify: func(t *testing.T, _ compiledFixture, binaryPath string, output string) {
+				assertContains(t, output, "• extract-overlay:")
+				extracted := readFile(t, binaryPath+".extracted")
+				if string(extracted) != cliOverlayPayload {
+					t.Fatalf("expected extracted overlay payload %q, got %q", cliOverlayPayload, string(extracted))
+				}
+			},
+		},
+		{
 			Name: "regex",
-			Args: []string{"-r=APPENDED_PATTERN"},
+			ArgsBuilder: func(t *testing.T, _ compiledFixture, _ string) []string {
+				patternDir := t.TempDir()
+				patternFile := filepath.Join(patternDir, "patterns.txt")
+				content := "# comment line should be ignored\n\nAPPENDED_PATTERN\n"
+				if err := os.WriteFile(patternFile, []byte(content), 0o600); err != nil {
+					t.Fatalf("failed to write pattern file: %v", err)
+				}
+				return []string{fmt.Sprintf("-r=fill=random,pattern=%s", patternFile)}
+			},
 			Prepare: func(t *testing.T, _ compiledFixture, binaryPath string) {
 				updated := append(readFile(t, binaryPath), []byte("APPENDED_PATTERN")...)
 				if err := os.WriteFile(binaryPath, updated, 0o600); err != nil {
@@ -133,7 +183,7 @@ func TestCLIOptionsOnCompiledFixtures(t *testing.T) {
 				"-s",
 				"-c",
 				"-o",
-				"-r=PIPELINE_REGEX_TARGET",
+				"-r=pattern=PIPELINE_REGEX_TARGET",
 				"-i=name=.combo,data=SECTION_COMBO",
 				"-l=data=OVERLAY_COMBO",
 			},
@@ -175,13 +225,64 @@ func TestCLIOptionsOnCompiledFixtures(t *testing.T) {
 	}
 }
 
+func sectionNameForFixture(fixture compiledFixture) string {
+	if fixture.IsPE {
+		return common.SanitizeSectionName(cliSectionName)
+	}
+	return cliSectionName
+}
+
+func insertCLITestSection(t *testing.T, fixture compiledFixture, binaryPath string) {
+	t.Helper()
+	name := sectionNameForFixture(fixture)
+	var result *common.OperationResult
+	if fixture.IsPE {
+		result = perw.InsertPE(binaryPath, name, cliSectionPayload, cliSectionPass)
+	} else {
+		result = elfrw.InsertELF(binaryPath, name, cliSectionPayload, cliSectionPass)
+	}
+	requireCLIResult(t, "insert", result)
+}
+
+func addCLITestOverlay(t *testing.T, fixture compiledFixture, binaryPath string) {
+	t.Helper()
+	if fixture.IsPE {
+		requireCLIResult(t, "compact", perw.CompactPE(binaryPath, true, true))
+	} else {
+		requireCLIResult(t, "compact", elfrw.CompactELF(binaryPath, true, true))
+	}
+	tmp := filepath.Join(t.TempDir(), "overlay.bin")
+	if err := os.WriteFile(tmp, []byte(cliOverlayPayload), 0o600); err != nil {
+		t.Fatalf("failed to write overlay payload: %v", err)
+	}
+	var result *common.OperationResult
+	if fixture.IsPE {
+		result = perw.OverlayPE(binaryPath, tmp, cliOverlayPass)
+	} else {
+		result = elfrw.OverlayELF(binaryPath, tmp, cliOverlayPass)
+	}
+	requireCLIResult(t, "overlay", result)
+}
+
+func requireCLIResult(t *testing.T, name string, result *common.OperationResult) {
+	t.Helper()
+	if result == nil || !result.Applied {
+		t.Fatalf("expected %s operation to apply: %#v", name, result)
+	}
+}
+
 func runScenario(t *testing.T, cliBinary string, fixture compiledFixture, scenario cliScenario) {
 	t.Helper()
 	binaryPath := copyBinary(t, fixture.Path)
 	if scenario.Prepare != nil {
 		scenario.Prepare(t, fixture, binaryPath)
 	}
-	args := append([]string{}, scenario.Args...)
+	var args []string
+	if scenario.ArgsBuilder != nil {
+		args = scenario.ArgsBuilder(t, fixture, binaryPath)
+	} else {
+		args = append([]string{}, scenario.Args...)
+	}
 	args = append(args, binaryPath)
 	cmd := exec.Command(cliBinary, args...)
 	cmd.Env = append(os.Environ(), "GOSSTRIP_TEST_STUB="+testStubPrefix)

@@ -73,3 +73,101 @@ func TestOverlayELF_AppendsFileContents(t *testing.T) {
 		t.Fatalf("expected file to end with overlay payload %x", payload)
 	}
 }
+
+func TestOverlayELF_HexLiteral(t *testing.T) {
+	elfPath := copyELFFixture(t, "simple_c")
+	payload := "0xA1B2C3D4"
+	expected, err := hex.DecodeString(payload[2:])
+	if err != nil {
+		t.Fatalf("failed to decode payload: %v", err)
+	}
+
+	before := fileSizeELF(t, elfPath)
+	result := elfrw.OverlayELF(elfPath, payload, "")
+	if result == nil || !result.Applied {
+		t.Fatalf("expected overlay operation to apply, got: %#v", result)
+	}
+	data, err := os.ReadFile(elfPath)
+	if err != nil {
+		t.Fatalf("failed to read modified ELF: %v", err)
+	}
+	suffix := data[before:]
+	if !bytes.Equal(suffix, expected) {
+		t.Fatalf("expected file to end with %x", expected)
+	}
+}
+
+func TestOverlayELF_EncryptedString(t *testing.T) {
+	elfPath := copyELFFixture(t, "simple_c")
+	payload := "elf-overlay"
+	password := "password123"
+
+	before := fileSizeELF(t, elfPath)
+	result := elfrw.OverlayELF(elfPath, payload, password)
+	if result == nil || !result.Applied {
+		t.Fatalf("expected overlay operation to apply, got: %#v", result)
+	}
+
+	data, err := os.ReadFile(elfPath)
+	if err != nil {
+		t.Fatalf("failed to read modified ELF: %v", err)
+	}
+	suffix := data[before:]
+	recovered, err := common.ProcessExtractedData(suffix, password)
+	if err != nil {
+		t.Fatalf("failed to decrypt overlay: %v", err)
+	}
+	if !bytes.Equal(recovered, []byte(payload)) {
+		t.Fatalf("expected recovered payload %q, got %q", payload, recovered)
+	}
+}
+
+func TestOverlayELF_ExtractHexPayload(t *testing.T) {
+	elfPath := copyELFFixture(t, "simple_c")
+	payload := "0x1234ABCD"
+	expected, err := hex.DecodeString(payload[2:])
+	if err != nil {
+		t.Fatalf("failed to decode payload: %v", err)
+	}
+	requireApplied(t, "overlay", elfrw.OverlayELF(elfPath, payload, ""))
+
+	raw, err := elfrw.ExtractOverlay(elfPath)
+	if err != nil {
+		t.Fatalf("failed to extract overlay: %v", err)
+	}
+	if !bytes.Equal(raw, expected) {
+		t.Fatalf("expected overlay %x, got %x", expected, raw)
+	}
+}
+
+func TestOverlayELF_ExtractEncryptedFilePayload(t *testing.T) {
+	elfPath := copyELFFixture(t, "simple_c")
+	payload := []byte{0x99, 0x88, 0x77, 0x66}
+	filePath := filepath.Join(t.TempDir(), "overlay.bin")
+	if err := os.WriteFile(filePath, payload, 0o600); err != nil {
+		t.Fatalf("failed to write overlay file: %v", err)
+	}
+	password := "encpass"
+	requireApplied(t, "overlay", elfrw.OverlayELF(elfPath, filePath, password))
+
+	raw, err := elfrw.ExtractOverlay(elfPath)
+	if err != nil {
+		t.Fatalf("failed to extract overlay: %v", err)
+	}
+	recovered, err := common.ProcessExtractedData(raw, password)
+	if err != nil {
+		t.Fatalf("failed to decrypt overlay: %v", err)
+	}
+	if !bytes.Equal(recovered, payload) {
+		t.Fatalf("expected payload %x, got %x", payload, recovered)
+	}
+}
+
+func fileSizeELF(t *testing.T, path string) int {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("failed to stat %s: %v", path, err)
+	}
+	return int(info.Size())
+}

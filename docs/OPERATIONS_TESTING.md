@@ -19,17 +19,19 @@ Always run `go test ./...` before opening a PR. Use the scripts when you need to
 - `-a`: analyzer simple mode (ensures PE/ELF detection and table output are stable).
 - `-s`, `-c`, `-o`: individual operation coverage, verifying “Completed operations: …” appears and no corruption occurs.
 - `-i`, `-l`: sector insertion & overlay payload tests ensure data appears on disk.
-- `-r`: regex stage removes injected markers.
+- `-r`: regex stage removes injected markers via both inline lists (`pattern=PIPELINE_REGEX_TARGET`) and file-based pattern sets (`pattern=/tmp/patterns.txt`), with `fill=random` exercising the override parsing.
+- `-ei`: sector extraction validates that data inserted during the test run can be recovered by name and index (with and without passwords).
+- `-el`: overlay extraction confirms ASCII/hex/file overlays (including encrypted payloads) round-trip correctly.
 - `-p`: packer pipeline builds a stub and checks for the expected prefix.
 
 Fixtures compile on the fly. The ELF path uses WSL’s `gcc` when running on Windows; tests skip automatically if cross-compilers are missing.
 
 ## 3. CLI Matrix Script
 
-`test/cli_matrix.sh` is a helper that builds `gosstrip`, compiles fresh PE/ELF fixtures, and runs two canonical flows in default and force mode:
+`test/cli_matrix.sh` is a helper that builds `gosstrip`, compiles fresh PE/ELF fixtures, and runs two canonical flow families in default and force mode:
 
 1. `analyze → obfuscate → analyze`
-2. `analyze → strip → compact → obfuscate → analyze`
+2. `analyze → strip(fill=zero|random) → compact → obfuscate → regex(pattern=file) → analyze`
 
 All command transcripts (stdout/stderr plus timestamps) land in `tests/logs/cli_matrix_<timestamp>/`. Use these logs to diff analyzer output or to archive regression evidence (e.g., unexpected warnings after changing compact).
 
@@ -58,16 +60,24 @@ Run it when touching `pack/` or `testfiles/simple_c`. Quick mode (10 builds) is 
 
 ## 5. Manual Fixture Validation
 
-When investigating analyzer/strip/compact regressions, use the CLI matrix logs plus handcrafted experiments:
+When investigating analyzer/strip/compact regressions, supplement the CLI matrix logs with the manual flows the CLI exposes. For each PE/ELF testfile copy (default + force mode):
 
-```bash
-go build -o gosstrip .
-./gosstrip -a testfiles/simple_go.exe > logs/pe_simple.txt
-./gosstrip -s=force=true -c=fill=random testfiles/simple_go.exe
-./gosstrip -a testfiles/simple_go.exe >> logs/pe_simple.txt
-```
+1. Append a one-off marker (`ANALYZE_REGEX_MARKER`) and run `-a=mode=deep → -r=pattern=MARKER → -a=mode=deep`.
+2. Prepare a newline-delimited pattern file (blank lines/`#` ignored) and run:
 
-On Linux/WSL, repeat with `testfiles/simple.c` compiled for ELF. Compare analyzer snapshots to validate timestamp preservation, Go metadata removal, etc.
+   ```
+   gosstrip -a=mode=deep <fixture>
+   gosstrip -s[=force=true,]fill=zero <fixture>
+   gosstrip -c[=force=true] <fixture>
+   gosstrip -o[=force=true] <fixture>
+   gosstrip -r=pattern=/path/to/patterns.txt <fixture>
+   gosstrip -a=mode=deep <fixture>
+   ```
+
+3. Repeat step 2 with `fill=random`.
+4. When debugging insertion/extraction flows, follow up with `-ei=name=...` or `-ei=index=...` to ensure encrypted payloads can be recovered to disk (specify `destination=` or let it default to `<input>.extracted`). Use `-el=password=...` to pull overlays back out after insertion or pipeline runs.
+
+Store the transcripts under `temp-manual-pipeline/runs/<timestamp>/logs_py/` (or similar) to keep evidence of each run. Comparing the deep analyzer snapshots before/after each stage makes it easier to spot regressions such as missing string wipes or incorrect header rewrites.
 
 ## 6. Adding New Coverage
 

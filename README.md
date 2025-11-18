@@ -40,7 +40,7 @@ go build -o gosstrip
 ```
 gosstrip -a[=format=json,mode=deep] <input> [output]
 
-gosstrip [ -s[=key=value,...] -c[=key=value,...] -o[=key=value,...] -r=pattern1[,patternN] -i=... -l=... -p=key=value,... ] <input> [output]
+gosstrip [ -s[=key=value,...] -c[=key=value,...] -o[=key=value,...] -r=pattern=rx[,pattern=rules.txt][,fill=random] -i=... -l=... -p=key=value,... ] <input> [output]
 ```
 
 - `-a` (analyze) runs alone and supports optional output redirection.
@@ -52,12 +52,14 @@ gosstrip [ -s[=key=value,...] -c[=key=value,...] -o[=key=value,...] -r=pattern1[
 | Flag / Feature             | Purpose                                                                                                      | Accepted options / notes                                                                                                                                         |
 |----------------------------|--------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `-a[=format=json,mode=deep]` | Analyze PE/ELF structures and emit either text (default) or JSON. With `<output>` the report is written to disk. | `format` = `text` or `json`. `mode` = `simple` (concise summaries) or `deep` (legacy verbose analyzer). Analysis cannot be combined with other features.        |
-| `-s[=force=true]`          | Strip debug symbols, Rich headers, DWARF data, etc.                                                          | `force` (bool, default `false`) permits aggressive removals.                                                                                                     |
-| `-c[=force=true,fill=random,keep_resources=true]` | Compact binaries by trimming unused regions and recalculating headers.                                       | `force` (bool) allows destructive trim such as removing ELF section tables. `fill` = `zero` (default) or `random` controls how removed regions are overwritten before truncation. `keep_resources` preserves `.rsrc` sections unless explicitly disabled. |
+| `-s[=force=true,fill=auto]`          | Strip debug symbols, Rich headers, DWARF data, etc.                                                          | `force` (bool, default `false`) permits aggressive removals. `fill` overrides how stripped regions are wiped: `auto` (respect rule), `zero`, or `random`.                                                                                                   |
+| `-c[=force=true,keep_resources=true]` | Compact binaries by trimming unused regions and recalculating headers.                                       | `force` (bool) allows destructive trim such as removing ELF section tables. `keep_resources` preserves `.rsrc` sections unless explicitly disabled (PE only). |
 | `-o[=force=true]`          | Rename sections/symbols and randomize metadata.                                                              | `force` (bool) currently behaves like a safety toggle for future advanced modes.                                                                                 |
-| `-r=pattern1[,patternN]`   | Remove bytes that match one or more regex patterns.                                                          | Comma-separated list; the flag may be repeated to append additional patterns.                                                                                    |
-| `-i=name=...,file|data=...`| Insert a new (optionally encrypted) section.                                                                 | `name` (required, ≤8 chars in PE). Supply exactly one of `file` or `data`, plus optional `password` (ASCII or hex).                                              |
-| `-l=file|data=...`         | Append payload data as an overlay past the end of the file.                                                  | Provide `file` or `data`, not both. Optional `password` encrypts the overlay.                                                                                    |
+| `-r=pattern=rx[,pattern=rules.txt][,fill=random]`   | Remove bytes that match one or more regex patterns.                                                          | Provide at least one `pattern` segment per `-r` flag. Set `pattern=/path/to/rules.txt` to load newline-separated patterns from disk (blank lines and `#` comments ignored). Optional `fill=random` switches from the default zero-fill overwrite.                                                                                    |
+| `-i=name=...,file|data=...`| Insert a new (optionally encrypted) section.                                                                 | `name` optional (PE names are sanitized and truncated to 8 chars when provided). Supply exactly one of `file` or `data` (ASCII or `0x` hex) plus optional `password` (ASCII or hex).                                              |
+| `-l=file|data=...`         | Append payload data as an overlay past the end of the file.                                                  | Provide `file` or `data` (ASCII or `0x` hex), not both. Optional `password` (ASCII or hex) encrypts the overlay before writing.                                   |
+| `-ei=name=...|index=...`   | Extract a previously inserted section to disk.                                                               | Provide `name` or `index` (0-based). Optional `password` decrypts encrypted payloads. `destination=path` overrides the default `<input>.extracted`.                                                   |
+| `-el=password=...,destination=...` | Extracts the trailing overlay into a standalone file.                                                      | `password` optional (ASCII or hex). `destination=path` overrides the default `<input>.extracted`.                                                                |
 | `-p=key=value,...`         | Run the polymorphic packer over the working file.                                                            | Options share the grammar in the table below. When omitted, defaults to `compression=lzma,level=9,encryption=chacha20`.                                          |
 | `-h`, `--help`, `help`     | Show CLI usage.                                                                                              | Works anywhere in the command line.                                                                                                                              |
 
@@ -74,6 +76,36 @@ gosstrip [ -s[=key=value,...] -c[=key=value,...] -o[=key=value,...] -r=pattern1[
 ### Obfuscation
 - **Default** – renames sections, randomizes header metadata, shuffles strings/import descriptors, fills executable padding runs with randomized NOP sequences, and now (ELF) misdirects PT_NOTE/PT_LOAD tables plus reorders `.dynsym` entries while keeping relocations in sync.
 - **Force** – enables extra techniques (forged subsystem/DLL flags, fake CodeView RSDS entries, forceful import/IAT shuffling, JMP-based junk padding) and, for ELF, encrypts non-essential `.dynstr` names, clones metadata segments, and wipes `.shstrtab` before saving. Force mode still targets runnable binaries, but extremely sensitive loaders might react differently.
+### Regex
+- Operates on raw bytes anywhere in the binary. Inline `pattern=` values are Go regexes; pointing `pattern=` at a file loads each non-empty, non-comment line.
+- Default fill uses zeroes; pass `fill=random` to scramble matches. When chained after strip/compact/obfuscate, the regex stage still honours the chosen fill mode.
+- Force mode relaxes guardrails (e.g., protected ELF string tables) so risky patterns can be wiped intentionally.
+
+### Section Insertion
+- `-i` can run alone or after upstream stages (strip → compact → obfuscate → regex). Every invocation appends a new section using the format’s alignment rules so loaders keep working.
+- Provide exactly one payload source: `file=path` embeds bytes from disk; `data=...` accepts ASCII or `0x`-prefixed hex. Supplying `password=` encrypts the payload before writing and marks the summary with “(encrypted)”.
+- Names are optional. When provided they are sanitized automatically (PE names are truncated to 8 chars, ELF names are written into `.shstrtab`). Duplicate names are rejected so it is always clear which section was inserted.
+
+### Overlay
+- `-l` appends payload bytes after the structured binary. Like section insertion, the payload may come from `file=` or `data=` and can be encrypted with `password=`.
+- Overlays are ideal for staging large configs/scripts without touching the section table. Combine with regex before/after insertion if you need to wipe staging markers.
+- `-el` reads the trailing overlay and writes it to disk. When the overlay was encrypted, specify the same `password=` to decrypt it. By default the payload is saved as `<input>.extracted`, but you can provide `destination=out.bin` (or a positional output file when `-el` is the only flag).
+
+### Section Extraction
+- `-ei` works alone or after other pipeline stages, extracting a single section to disk without mutating the input binary.
+- Provide either `name` (sanitized automatically; PE names are truncated to 8 chars) or `index` (0-based). When the section was inserted with `password=`, pass the same password to decrypt the payload.
+- `destination=path` overrides the default `<input>.extracted`. When `destination` is omitted and `-ei` is the only operation, a positional output argument also acts as the destination to mirror the legacy grammar.
+
+Example:
+
+```bash
+# Extract section by name
+gosstrip -ei=name=.payload,password=secret sample.exe extracted.bin
+
+# Extract the Nth section (0-based) into the default sample.exe.extracted
+gosstrip -s -c -o -r=pattern=MARKER -ei=index=17,password=secret sample.exe
+```
+
 ### Pack Options
 
 When using `-p`, specify options in `key=value` format separated by commas. Quote the value on PowerShell/CMD to avoid comma parsing issues. If `-p` is provided without options, defaults are applied automatically.
@@ -120,8 +152,11 @@ gosstrip -s binary
 # Run strip + compact + obfuscation and write to a copy
 gosstrip -s=force=true -c -o binary binary.hardened
 
-# Compact aggressively with random filler
-gosstrip -c=force=true,fill=random binary
+# Compact aggressively
+gosstrip -c=force=true binary
+
+# Override strip fill mode to random bytes
+gosstrip -s=fill=random binary
 
 # Also drop embedded resources (icons/manifests)
 gosstrip -c=force=true,keep_resources=false binary
@@ -135,10 +170,13 @@ Notes:
 
 ```bash
 # Remove multiple markers in one pass
-gosstrip -r=UPX!,UPY?,v2_signature binary
+gosstrip -r=pattern=UPX!,pattern=UPY?,pattern=v2_signature binary
+
+# Load patterns from a file (one regex per line; blank lines / '#' comments ignored)
+gosstrip -r=pattern=forensics_markers.txt binary
 
 # Combine strip with regex (executed automatically before later operations)
-gosstrip -s -r='secret_pattern' binary
+gosstrip -s -r=pattern='secret_pattern' binary
 ```
 
 ### Section Insertion
@@ -198,7 +236,7 @@ done
 
 ```bash
 # Full pipeline with custom regex, section insert, overlay, and packing
-gosstrip -s -c -o -r='UPX!','\\.rsrc' -i=name=.intel,file=payload.bin -l=file=overlay.bin -p=compression=lzma,inmemory=true input.exe output.exe
+gosstrip -s -c -o -r=pattern='UPX!',pattern='\\.rsrc' -i=name=.intel,file=payload.bin -l=file=overlay.bin -p=compression=lzma,inmemory=true input.exe output.exe
 ```
 
 ## Polymorphic Techniques
@@ -687,6 +725,53 @@ bash test/cli_matrix.sh
 ```
 
 Inspect the resulting logs to compare analyzer output before/after each stage or to archive regression evidence for future troubleshooting.
+
+### Manual Regression Flows
+
+When validating changes outside of the automated suites, build `gosstrip`, compile the fixtures under `testfiles/`, and copy the binaries to a scratch area (e.g., `temp-manual-pipeline/runs/$ts/work/…`). Every manual run MUST:
+
+- execute `analyze(mode=deep)` before and after the operations being tested, and
+- store each command transcript (stdout + stderr) so the resulting logs can be inspected. Keep them under `temp-manual-pipeline/runs/<timestamp>/logs_py/` (or similar) alongside the fixtures you used, and review the analyzer summaries afterward to ensure no new warnings slipped in.
+
+Run the sequences below for both PE and ELF targets in default **and** force mode, substituting the appropriate CLI options:
+
+1. **Single-feature validation**
+   ```
+   analyze(mode=deep) → <feature flag + all relevant options> → analyze(mode=deep)
+   ```
+   (Example: `-r=pattern=ANALYZE_REGEX_MARKER`, `-i=name=.x,data=PAYLOAD`, etc.)
+
+2. **Pipeline – short version**
+   ```
+   analyze(mode=deep)
+   → strip(fill=zero/random, force=false/true)
+   → compact(force=false/true)
+   → obfuscate(force=false/true)
+   → analyze(mode=deep)
+   ```
+
+3. **Pipeline – full version**
+   ```
+   analyze(mode=deep)
+   → strip(fill=zero/random, force=false/true)
+   → compact(force=false/true)
+   → obfuscate(force=false/true)
+   → regex(pattern=<file or inline pattern list>)
+   → insertion(all options)
+   → overlay(all options)
+   → analyze(mode=deep)
+   ```
+
+4. **Pack-only regression**
+   ```
+   analyze(mode=deep) → pack(all options) → analyze(mode=deep)
+   ```
+
+Tips:
+
+- Use inline markers (e.g., append `ANALYZE_REGEX_MARKER` to the test binary) when validating regex-only flows.
+- Pattern files accept one regex per line; blank lines and `# comments` are ignored.
+- When running force-mode pipelines, set `force=true` on strip/compact/obfuscate exactly as the user workflows do, then compare the final deep analyzer output with previous runs to ensure new warnings/errors are understood.
 
 ## Architecture
 

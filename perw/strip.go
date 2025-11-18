@@ -77,7 +77,7 @@ func (p *PEFile) StripByPattern(pattern *regexp.Regexp, fillMode FillMode) (int,
 	return totalMatches, nil
 }
 
-func (p *PEFile) StripAll(force bool) *common.OperationResult {
+func (p *PEFile) StripAll(force bool, fillOverride *bool) *common.OperationResult {
 	originalSize := uint64(len(p.RawData))
 	pipeline := common.NewPipeline()
 	aggregate := &common.OperationResult{
@@ -86,7 +86,7 @@ func (p *PEFile) StripAll(force bool) *common.OperationResult {
 	}
 
 	pipeline.AddStep("sections", func() (*common.OperationResult, error) {
-		return p.runStripSectionPhase(force), nil
+		return p.runStripSectionPhase(force, fillOverride), nil
 	})
 	pipeline.AddStep("headers", func() (*common.OperationResult, error) {
 		return p.StripAllHeaders(), nil
@@ -95,7 +95,7 @@ func (p *PEFile) StripAll(force bool) *common.OperationResult {
 		return p.StripAllDirs(), nil
 	})
 	pipeline.AddStep("regex", func() (*common.OperationResult, error) {
-		return p.StripAllRegexRules(force), nil
+		return p.StripAllRegexRules(force, fillOverride), nil
 	})
 
 	if err := pipeline.Execute(aggregate); err != nil {
@@ -109,7 +109,7 @@ func (p *PEFile) StripAll(force bool) *common.OperationResult {
 	return aggregate
 }
 
-func (p *PEFile) runStripSectionPhase(force bool) *common.OperationResult {
+func (p *PEFile) runStripSectionPhase(force bool, fillOverride *bool) *common.OperationResult {
 	sectionRules := GetSectionStripRule()
 	result := common.NewApplied("section stripping", 0)
 	for sectionType, rule := range sectionRules {
@@ -119,7 +119,15 @@ func (p *PEFile) runStripSectionPhase(force bool) *common.OperationResult {
 		if !p.shouldStripForFileType(sectionType) {
 			continue
 		}
-		res := p.StripSectionsByType(sectionType, rule.Fill, force)
+		fill := rule.Fill
+		if fillOverride != nil {
+			if *fillOverride {
+				fill = RandomFill
+			} else {
+				fill = ZeroFill
+			}
+		}
+		res := p.StripSectionsByType(sectionType, fill, force)
 		if res == nil {
 			continue
 		}
@@ -140,7 +148,7 @@ func (p *PEFile) runStripSectionPhase(force bool) *common.OperationResult {
 	return result
 }
 
-func (p *PEFile) StripAllRegexRules(force bool) *common.OperationResult {
+func (p *PEFile) StripAllRegexRules(force bool, fillOverride *bool) *common.OperationResult {
 	rules := GetRegexStripRules()
 	totalModifications := 0
 	var messages []string
@@ -157,7 +165,15 @@ func (p *PEFile) StripAllRegexRules(force bool) *common.OperationResult {
 				continue
 			}
 
-			modifications, err := p.StripByPattern(pattern, rule.Fill)
+			fill := rule.Fill
+			if fillOverride != nil {
+				if *fillOverride {
+					fill = RandomFill
+				} else {
+					fill = ZeroFill
+				}
+			}
+			modifications, err := p.StripByPattern(pattern, fill)
 			if err != nil {
 				messages = append(messages, fmt.Sprintf("error processing '%s': %v", patternStr, err))
 				continue
@@ -175,6 +191,48 @@ func (p *PEFile) StripAllRegexRules(force bool) *common.OperationResult {
 		return common.NewApplied(strings.Join(messages, "; "), totalModifications)
 	}
 	return common.NewSkipped("no regex-based metadata found")
+}
+
+func (p *PEFile) ApplyRegexPatterns(patterns []string, fillOverride *bool) *common.OperationResult {
+	if len(patterns) == 0 {
+		return common.NewSkipped("no regex patterns provided")
+	}
+	fill := ZeroFill
+	if fillOverride != nil && *fillOverride {
+		fill = RandomFill
+	}
+	total := 0
+	var warnings []string
+	result := common.NewApplied("regex patterns applied", 0)
+	result.SetCategory("PATTERNS")
+	for _, patternStr := range patterns {
+		pattern, err := regexp.Compile(patternStr)
+		if err != nil {
+			msg := fmt.Sprintf("invalid regex '%s': %v", patternStr, err)
+			result.AddDetail(msg, 0, false)
+			warnings = append(warnings, msg)
+			continue
+		}
+		modifications, err := p.StripByPattern(pattern, fill)
+		if err != nil {
+			msg := fmt.Sprintf("error processing '%s': %v", patternStr, err)
+			result.AddDetail(msg, 0, false)
+			warnings = append(warnings, msg)
+			continue
+		}
+		if modifications > 0 {
+			result.AddDetail(fmt.Sprintf("stripped %d matches for '%s'", modifications, patternStr), modifications, false)
+			total += modifications
+		}
+	}
+	if total == 0 {
+		if len(warnings) > 0 {
+			return common.NewSkipped(strings.Join(warnings, "; "))
+		}
+		return common.NewSkipped("no regex matches found")
+	}
+	result.Count = total
+	return result
 }
 
 func (p *PEFile) StripAllHeaders() *common.OperationResult {

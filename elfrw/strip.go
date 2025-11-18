@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-func (e *ELFFile) StripAll(force bool) *common.OperationResult {
+func (e *ELFFile) StripAll(force bool, fillOverride *bool) *common.OperationResult {
 	protectedTables := e.snapshotProtectedStringTables()
 	defer e.restoreProtectedStringTables(protectedTables)
 
@@ -19,13 +19,13 @@ func (e *ELFFile) StripAll(force bool) *common.OperationResult {
 	}
 
 	pipeline.AddStep("sections", func() (*common.OperationResult, error) {
-		return e.runStripSectionPhase(force), nil
+		return e.runStripSectionPhase(force, fillOverride), nil
 	})
 	pipeline.AddStep("headers", func() (*common.OperationResult, error) {
 		return e.stripAllHeaders(), nil
 	})
 	pipeline.AddStep("regex", func() (*common.OperationResult, error) {
-		return e.stripAllRegexRules(force), nil
+		return e.stripAllRegexRules(force, fillOverride), nil
 	})
 
 	if err := pipeline.Execute(aggregate); err != nil {
@@ -39,7 +39,7 @@ func (e *ELFFile) StripAll(force bool) *common.OperationResult {
 	return aggregate
 }
 
-func (e *ELFFile) runStripSectionPhase(force bool) *common.OperationResult {
+func (e *ELFFile) runStripSectionPhase(force bool, fillOverride *bool) *common.OperationResult {
 	sectionRules := getSectionStripRule()
 	result := common.NewApplied("section stripping", 0)
 	isSharedObject := e.IsSharedObject()
@@ -50,7 +50,11 @@ func (e *ELFFile) runStripSectionPhase(force bool) *common.OperationResult {
 		if (isSharedObject && !rule.StripForSO) || (!isSharedObject && !rule.StripForBIN) {
 			continue
 		}
-		sectionResult := e.stripSectionsByType(sectionType, rule.Fill == RandomFill)
+		useRandom := rule.Fill == RandomFill
+		if fillOverride != nil {
+			useRandom = *fillOverride
+		}
+		sectionResult := e.stripSectionsByType(sectionType, useRandom)
 		if sectionResult == nil {
 			continue
 		}
@@ -323,7 +327,7 @@ func (e *ELFFile) StripSingleRegexRule(regex string) *common.OperationResult {
 	return result
 }
 
-func (e *ELFFile) stripAllRegexRules(force bool) *common.OperationResult {
+func (e *ELFFile) stripAllRegexRules(force bool, fillOverride *bool) *common.OperationResult {
 	rules := GetRegexStripRules()
 	totalModifications := 0
 	result := common.NewApplied("Regex pattern stripping", 0)
@@ -344,7 +348,11 @@ func (e *ELFFile) stripAllRegexRules(force bool) *common.OperationResult {
 				continue
 			}
 
-			modifications, err := e.StripByteRegex(pattern, rule.Fill == RandomFill, force)
+			useRandom := rule.Fill == RandomFill
+			if fillOverride != nil {
+				useRandom = *fillOverride
+			}
+			modifications, err := e.StripByteRegex(pattern, useRandom, force)
 			if err != nil {
 				// Just log the error and continue
 				continue
@@ -364,6 +372,49 @@ func (e *ELFFile) stripAllRegexRules(force bool) *common.OperationResult {
 		return result
 	}
 	return common.NewSkipped("no regex-based metadata found")
+}
+
+func (e *ELFFile) ApplyRegexPatterns(patterns []string, fillOverride *bool) *common.OperationResult {
+	if len(patterns) == 0 {
+		return common.NewSkipped("no regex patterns provided")
+	}
+	useRandom := false
+	if fillOverride != nil {
+		useRandom = *fillOverride
+	}
+	total := 0
+	var warnings []string
+	result := common.NewApplied("regex patterns applied", 0)
+	result.SetCategory("PATTERNS")
+
+	for _, patternStr := range patterns {
+		pattern, err := regexp.Compile(patternStr)
+		if err != nil {
+			msg := fmt.Sprintf("invalid regex '%s': %v", patternStr, err)
+			result.AddDetail(msg, 0, false)
+			warnings = append(warnings, msg)
+			continue
+		}
+		modifications, err := e.StripByteRegex(pattern, useRandom, false)
+		if err != nil {
+			msg := fmt.Sprintf("error processing '%s': %v", patternStr, err)
+			result.AddDetail(msg, 0, false)
+			warnings = append(warnings, msg)
+			continue
+		}
+		if modifications > 0 {
+			result.AddDetail(fmt.Sprintf("stripped %d matches for '%s'", modifications, patternStr), modifications, false)
+			total += modifications
+		}
+	}
+	if total == 0 {
+		if len(warnings) > 0 {
+			return common.NewSkipped(strings.Join(warnings, "; "))
+		}
+		return common.NewSkipped("no regex matches found")
+	}
+	result.Count = total
+	return result
 }
 
 type protectedSectionSnapshot struct {

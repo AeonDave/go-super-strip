@@ -49,21 +49,21 @@ func AnalyzePE(filePath string, opts common.AnalysisOptions) (*common.AnalysisRe
 	}
 }
 
-func StripPE(filePath string, force bool) *common.OperationResult {
+func StripPE(filePath string, force bool, fillOverride *bool) *common.OperationResult {
 	return processPE(filePath, os.O_RDWR, func(peFile *PEFile) *common.OperationResult {
-		return peFile.StripAll(force)
+		return peFile.StripAll(force, fillOverride)
 	})
 }
 
-func CompactPE(filePath string, force bool, fillRandom bool, keepResources bool) *common.OperationResult {
+func CompactPE(filePath string, force bool, keepResources bool) *common.OperationResult {
 	return processPE(filePath, os.O_RDWR, func(peFile *PEFile) *common.OperationResult {
-		return peFile.Compact(force, fillRandom, keepResources)
+		return peFile.Compact(force, keepResources)
 	})
 }
 
-func RegexPE(filePath string, regex string) *common.OperationResult {
+func RegexPE(filePath string, fillOverride *bool, patterns []string) *common.OperationResult {
 	return processPE(filePath, os.O_RDWR, func(peFile *PEFile) *common.OperationResult {
-		return peFile.StripSingleRegexRule(regex)
+		return peFile.ApplyRegexPatterns(patterns, fillOverride)
 	})
 }
 
@@ -83,4 +83,13 @@ func OverlayPE(filePath, dataOrFile, password string) *common.OperationResult {
 	return processPE(filePath, os.O_RDWR, func(peFile *PEFile) *common.OperationResult {
 		return peFile.AddOverlay(dataOrFile, password)
 	})
+}
+
+func ExtractOverlay(filePath string) ([]byte, error) {
+	peFile, err := readPe(filePath, os.O_RDONLY)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = peFile.Close() }()
+	return peFile.ExtractOverlay()
 }

@@ -9,11 +9,14 @@ import (
 	"encoding/binary"
 	"fmt"
 	"gosstrip/common"
+	"math"
 	"os"
 	"sort"
 	"strings"
 	"time"
 )
+
+const importDirectoryIndex = 1
 
 func ReadPE(file *os.File) (*PEFile, error) {
 	pf, err := newPEFileFromDisk(file)
@@ -339,9 +342,12 @@ func (p *PEFile) parseImports() error {
 	if p.PE == nil {
 		return fmt.Errorf("PE not initialized")
 	}
+	if !p.hasUsableImportDirectory() {
+		p.Imports = nil
+		return nil
+	}
 	defer func() {
 		if r := recover(); r != nil {
-			fmt.Printf("⚠️  Import error: %v\n", r)
 			p.Imports = nil
 		}
 	}()
@@ -398,6 +404,63 @@ func (p *PEFile) parseImports() error {
 		}
 	}
 	return nil
+}
+
+func (p *PEFile) hasUsableImportDirectory() bool {
+	rva, size, ok := p.readDataDirectoryEntry(importDirectoryIndex)
+	if !ok || rva == 0 || size == 0 {
+		return false
+	}
+	startPhys, err := p.rvaToPhysical(uint64(rva))
+	if err != nil {
+		return false
+	}
+	end := rva
+	if size > 0 {
+		if size-1 > math.MaxUint32-rva {
+			end = math.MaxUint32
+		} else {
+			end = rva + size - 1
+		}
+		if _, err := p.rvaToPhysical(uint64(end)); err != nil {
+			return false
+		}
+	}
+	descriptorSize := uint64(20)
+	if uint64(len(p.RawData)) < startPhys+descriptorSize {
+		return false
+	}
+	allZero := true
+	for _, b := range p.RawData[startPhys : startPhys+descriptorSize] {
+		if b != 0 {
+			allZero = false
+			break
+		}
+	}
+	if allZero {
+		return false
+	}
+	return true
+}
+
+func (p *PEFile) readDataDirectoryEntry(index int) (uint32, uint32, bool) {
+	offsets, err := p.calculateOffsets()
+	if err != nil {
+		return 0, 0, false
+	}
+	var base int64
+	if p.Is64Bit {
+		base = offsets.OptionalHeader + PE64_DATA_DIRECTORIES
+	} else {
+		base = offsets.OptionalHeader + PE32_DATA_DIRECTORIES
+	}
+	entryOffset := base + int64(index*IMAGE_SIZEOF_DATA_DIRECTORY)
+	if entryOffset < 0 || entryOffset+IMAGE_SIZEOF_DATA_DIRECTORY > int64(len(p.RawData)) {
+		return 0, 0, false
+	}
+	rva := binary.LittleEndian.Uint32(p.RawData[entryOffset:])
+	size := binary.LittleEndian.Uint32(p.RawData[entryOffset+4:])
+	return rva, size, true
 }
 
 func (p *PEFile) parseHeaders() error {

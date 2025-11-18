@@ -13,9 +13,10 @@ Compaction runs immediately after stripping in the canonical pipeline.
 
 ## 2. Options
 
-- `fill=zero` (default) or `fill=random`: determines how data is overwritten before it is truncated. This keeps forensic tooling from recovering previous bytes.
 - `keep_resources=true`: ensures Windows resources survive unless explicitly disabled.
 - `force=true`: enables aggressive trimming (e.g., relocations, loader notes, TLS tables, Section Header Table removal on ELF).
+
+All compaction passes zero out the targeted data before truncating it, so we no longer expose a user-facing `fill` toggle.
 
 ## 3. PE Compaction
 

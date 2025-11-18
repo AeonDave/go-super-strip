@@ -1,7 +1,10 @@
 package test
 
 import (
+	"bytes"
+	"encoding/hex"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -30,6 +33,34 @@ func elfHasSection(t *testing.T, path, name string) bool {
 	return false
 }
 
+func readELFSectionData(t *testing.T, path, name string) []byte {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("failed to reopen ELF: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+	elfFile, err := elfrw.ReadELF(f)
+	if err != nil {
+		t.Fatalf("failed to parse ELF: %v", err)
+	}
+	defer func() { _ = elfFile.Close() }()
+	for _, sec := range elfFile.Sections {
+		if sec.Name == name {
+			start := int(sec.Offset)
+			end := start + int(sec.Size)
+			if end > len(elfFile.RawData) {
+				end = len(elfFile.RawData)
+			}
+			data := make([]byte, end-start)
+			copy(data, elfFile.RawData[start:end])
+			return data
+		}
+	}
+	t.Fatalf("section %s not found", name)
+	return nil
+}
+
 func TestAnalyzeELF_Succeeds(t *testing.T) {
 	elfPath := copyELFFixture(t, "simple_c")
 	if _, err := elfrw.AnalyzeELF(elfPath, common.DefaultAnalysisOptions()); err != nil {
@@ -45,7 +76,7 @@ func TestStripELF_PreservesELFValidity(t *testing.T) {
 		t.Fatalf("stat failed: %v", err)
 	}
 
-	result := elfrw.StripELF(elfPath, false)
+	result := elfrw.StripELF(elfPath, false, nil)
 	if result == nil {
 		t.Fatal("expected result from StripELF, got nil")
 	}
@@ -73,7 +104,7 @@ func TestStripELF_PreservesELFValidity(t *testing.T) {
 func TestCompactELF_SafeOperation(t *testing.T) {
 	elfPath := copyELFFixture(t, "simple_c")
 
-	result := elfrw.CompactELF(elfPath, false, false, true)
+	result := elfrw.CompactELF(elfPath, false, true)
 	if result == nil {
 		t.Fatal("expected result from CompactELF, got nil")
 	}
@@ -90,7 +121,7 @@ func TestCompactELF_SafeOperation(t *testing.T) {
 func TestCompactELF_ForceRemovesLoaderSections(t *testing.T) {
 	elfPath := copyELFFixture(t, "simple_c")
 
-	result := elfrw.CompactELF(elfPath, true, false, true)
+	result := elfrw.CompactELF(elfPath, true, true)
 	if result == nil || !result.Applied {
 		t.Fatalf("expected force compact to apply: %#v", result)
 	}
@@ -129,5 +160,91 @@ func TestInsertELF_AddsSection(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected to find inserted section .custom")
+	}
+}
+
+func TestStripELF_FillOverrideZero(t *testing.T) {
+	elfPath := copyELFFixture(t, "fill_zero")
+	sectionName := ".note.zero"
+	payload := strings.Repeat("Z", 64)
+	if res := elfrw.InsertELF(elfPath, sectionName, payload, ""); res == nil || !res.Applied {
+		t.Fatalf("failed to insert note section: %#v", res)
+	}
+
+	if res := elfrw.StripELF(elfPath, false, boolPointer(false)); res == nil || !res.Applied {
+		t.Fatalf("expected strip to apply: %#v", res)
+	}
+	data := readELFSectionData(t, elfPath, sectionName)
+	if !isAllZero(data) {
+		t.Fatalf("expected section %s to be zero-filled", sectionName)
+	}
+}
+
+func TestStripELF_FillOverrideRandom(t *testing.T) {
+	elfPath := copyELFFixture(t, "fill_random")
+	sectionName := ".note.rand"
+	payload := strings.Repeat("R", 64)
+	if res := elfrw.InsertELF(elfPath, sectionName, payload, ""); res == nil || !res.Applied {
+		t.Fatalf("failed to insert note section: %#v", res)
+	}
+
+	if res := elfrw.StripELF(elfPath, false, boolPointer(true)); res == nil || !res.Applied {
+		t.Fatalf("expected strip to apply: %#v", res)
+	}
+	data := readELFSectionData(t, elfPath, sectionName)
+	if isAllZero(data) {
+		t.Fatalf("expected section %s to be randomized", sectionName)
+	}
+}
+
+func TestELFExtractSectionByNameAndIndex(t *testing.T) {
+	elfPath := copyELFFixture(t, "simple")
+	hexSection := common.SanitizeSectionName(".hexsec")
+	fileSection := common.SanitizeSectionName(".filesec")
+
+	hexPayload := "0xA1B2C3D4"
+	requireApplied(t, "insert", elfrw.InsertELF(elfPath, hexSection, hexPayload, "hexpass"))
+
+	filePayload := []byte{0x01, 0x02, 0x03, 0x04}
+	filePath := filepath.Join(t.TempDir(), "payload.bin")
+	if err := os.WriteFile(filePath, filePayload, 0o600); err != nil {
+		t.Fatalf("failed to write payload file: %v", err)
+	}
+	requireApplied(t, "insert", elfrw.InsertELF(elfPath, fileSection, filePath, "filepass"))
+
+	extractedHex, sectionName, err := elfrw.ExtractSection(elfPath, hexSection, nil, "hexpass")
+	if err != nil {
+		t.Fatalf("failed to extract ELF section by name: %v", err)
+	}
+	wantHex, err := hex.DecodeString(hexPayload[2:])
+	if err != nil {
+		t.Fatalf("failed to decode expected hex payload: %v", err)
+	}
+	if !bytes.Equal(extractedHex, wantHex) {
+		t.Fatalf("expected extracted data %x, got %x", wantHex, extractedHex)
+	}
+	if sectionName != hexSection {
+		t.Fatalf("expected section name %q, got %q", hexSection, sectionName)
+	}
+
+	f, err := os.Open(elfPath)
+	if err != nil {
+		t.Fatalf("failed to reopen ELF: %v", err)
+	}
+	elfFile, err := elfrw.ReadELF(f)
+	if err != nil {
+		t.Fatalf("failed to parse ELF: %v", err)
+	}
+	lastIndex := len(elfFile.Sections) - 1
+	_ = f.Close()
+	extractedFile, extractedName, err := elfrw.ExtractSection(elfPath, "", &lastIndex, "filepass")
+	if err != nil {
+		t.Fatalf("failed to extract ELF section by index: %v", err)
+	}
+	if extractedName != fileSection {
+		t.Fatalf("expected extracted section name %q, got %q", fileSection, extractedName)
+	}
+	if !bytes.Equal(extractedFile, filePayload) {
+		t.Fatalf("expected extracted file payload %x, got %x", filePayload, extractedFile)
 	}
 }

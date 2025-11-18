@@ -116,6 +116,19 @@ func buildGoPEBinary(t *testing.T, outName string) string {
 	return output
 }
 
+func boolPointer(v bool) *bool {
+	return &v
+}
+
+func isAllZero(b []byte) bool {
+	for _, v := range b {
+		if v != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 func hasWSL() bool {
 	_, err := exec.LookPath("wsl.exe")
 	return err == nil

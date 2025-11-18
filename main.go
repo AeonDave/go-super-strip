@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"gosstrip/common"
@@ -10,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -18,13 +20,15 @@ const defaultPackOptions = "compression=lzma,level=9,encryption=chacha20"
 type feature string
 
 const (
-	featureStrip     feature = "strip"
-	featureCompact   feature = "compact"
-	featureObfuscate feature = "obfuscate"
-	featureRegex     feature = "regex"
-	featureInsert    feature = "insert"
-	featureOverlay   feature = "overlay"
-	featurePack      feature = "pack"
+	featureStrip          feature = "strip"
+	featureCompact        feature = "compact"
+	featureObfuscate      feature = "obfuscate"
+	featureRegex          feature = "regex"
+	featureInsert         feature = "insert"
+	featureOverlay        feature = "overlay"
+	featureExtract        feature = "extract"
+	featureOverlayExtract feature = "extractoverlay"
+	featurePack           feature = "pack"
 )
 
 var canonicalOrder = []feature{
@@ -34,6 +38,8 @@ var canonicalOrder = []feature{
 	featureRegex,
 	featureInsert,
 	featureOverlay,
+	featureExtract,
+	featureOverlayExtract,
 	featurePack,
 }
 
@@ -45,24 +51,26 @@ type analyzeCommand struct {
 }
 
 type pipelineCommand struct {
-	InputPath  string
-	OutputPath string
-	Strip      *StripOptions
-	Compact    *CompactOptions
-	Obfuscate  *ObfuscateOptions
-	Regex      *RegexOptions
-	Insert     *InsertOptions
-	Overlay    *OverlayOptions
-	Pack       *PackOptions
+	InputPath      string
+	OutputPath     string
+	Strip          *StripOptions
+	Compact        *CompactOptions
+	Obfuscate      *ObfuscateOptions
+	Regex          *RegexOptions
+	Insert         *InsertOptions
+	Overlay        *OverlayOptions
+	Extract        *ExtractSectionOptions
+	ExtractOverlay *ExtractOverlayOptions
+	Pack           *PackOptions
 }
 
 type StripOptions struct {
-	Force bool
+	Force            bool
+	FillModeOverride *bool
 }
 
 type CompactOptions struct {
 	Force         bool
-	Fill          string
 	KeepResources bool
 }
 
@@ -71,7 +79,8 @@ type ObfuscateOptions struct {
 }
 
 type RegexOptions struct {
-	Patterns []string
+	Patterns         []string
+	FillModeOverride *bool
 }
 
 type InsertOptions struct {
@@ -87,19 +96,20 @@ type OverlayOptions struct {
 	Password string
 }
 
+type ExtractSectionOptions struct {
+	Name        string
+	Index       *int
+	Password    string
+	Destination string
+}
+
+type ExtractOverlayOptions struct {
+	Password    string
+	Destination string
+}
+
 type PackOptions struct {
 	Options string
-}
-
-type stringList []string
-
-func (s *stringList) String() string {
-	return strings.Join(*s, ",")
-}
-
-func (s *stringList) Set(value string) error {
-	*s = append(*s, value)
-	return nil
 }
 
 func main() {
@@ -192,6 +202,10 @@ func featureByName(name string) (feature, bool) {
 		return featureInsert, true
 	case "l", "overlay":
 		return featureOverlay, true
+	case "ei", "extract", "extractinsert":
+		return featureExtract, true
+	case "el", "extractoverlay":
+		return featureOverlayExtract, true
 	case "p", "pack":
 		return featurePack, true
 	default:
@@ -226,7 +240,8 @@ func parseAnalyze(args []string) (*analyzeCommand, error) {
 		if err != nil {
 			return nil, err
 		}
-		for key, value := range kv {
+		for key, values := range kv {
+			value := values[len(values)-1]
 			switch key {
 			case "format":
 				switch strings.ToLower(value) {
@@ -326,6 +341,18 @@ func parsePipeline(args []string) (*pipelineCommand, error) {
 				return nil, err
 			}
 			cmd.Overlay = opts
+		case featureOverlayExtract:
+			opts, err := parseExtractOverlay(opt)
+			if err != nil {
+				return nil, err
+			}
+			cmd.ExtractOverlay = opts
+		case featureExtract:
+			opts, err := parseExtractSection(opt)
+			if err != nil {
+				return nil, err
+			}
+			cmd.Extract = opts
 		case featurePack:
 			opts, err := parsePack(opt)
 			if err != nil {
@@ -368,7 +395,8 @@ func parseStrip(opt string) (*StripOptions, error) {
 	if err != nil {
 		return nil, err
 	}
-	for key, value := range kv {
+	for key, values := range kv {
+		value := values[len(values)-1]
 		switch key {
 		case "force", "f":
 			v, err := parseBool(value)
@@ -376,6 +404,18 @@ func parseStrip(opt string) (*StripOptions, error) {
 				return nil, fmt.Errorf("strip force: %w", err)
 			}
 			cfg.Force = v
+		case "fill":
+			v := strings.ToLower(value)
+			switch v {
+			case "", "auto":
+				cfg.FillModeOverride = nil
+			case "zero":
+				cfg.FillModeOverride = boolPtr(false)
+			case "random":
+				cfg.FillModeOverride = boolPtr(true)
+			default:
+				return nil, fmt.Errorf("strip fill: expected auto, zero, or random, got %q", value)
+			}
 		default:
 			return nil, fmt.Errorf("unknown strip option %q", key)
 		}
@@ -384,7 +424,7 @@ func parseStrip(opt string) (*StripOptions, error) {
 }
 
 func parseCompact(opt string) (*CompactOptions, error) {
-	cfg := &CompactOptions{Fill: "zero", KeepResources: true}
+	cfg := &CompactOptions{KeepResources: true}
 	if opt == "" {
 		return cfg, nil
 	}
@@ -392,7 +432,8 @@ func parseCompact(opt string) (*CompactOptions, error) {
 	if err != nil {
 		return nil, err
 	}
-	for key, value := range kv {
+	for key, values := range kv {
+		value := values[len(values)-1]
 		switch key {
 		case "force", "f":
 			v, err := parseBool(value)
@@ -400,15 +441,6 @@ func parseCompact(opt string) (*CompactOptions, error) {
 				return nil, fmt.Errorf("compact force: %w", err)
 			}
 			cfg.Force = v
-		case "fill":
-			switch strings.ToLower(value) {
-			case "zero", "":
-				cfg.Fill = "zero"
-			case "random":
-				cfg.Fill = "random"
-			default:
-				return nil, fmt.Errorf("unknown compact fill %q (expected zero or random)", value)
-			}
 		case "keep_resources", "keep-resources", "keepresources":
 			v, err := parseBool(value)
 			if err != nil {
@@ -431,7 +463,8 @@ func parseObfuscate(opt string) (*ObfuscateOptions, error) {
 	if err != nil {
 		return nil, err
 	}
-	for key, value := range kv {
+	for key, values := range kv {
+		value := values[len(values)-1]
 		switch key {
 		case "force", "f":
 			v, err := parseBool(value)
@@ -447,18 +480,101 @@ func parseObfuscate(opt string) (*ObfuscateOptions, error) {
 }
 
 func parseRegex(existing *RegexOptions, opt string) (*RegexOptions, error) {
-	if opt == "" {
-		return nil, fmt.Errorf("regex requires at least one pattern")
+	if strings.TrimSpace(opt) == "" {
+		return nil, fmt.Errorf("regex requires options")
 	}
-	patterns := splitList(opt)
-	if len(patterns) == 0 {
-		return nil, fmt.Errorf("regex requires at least one pattern")
+	kv, err := parseKeyValueOptions(opt)
+	if err != nil {
+		return nil, fmt.Errorf("regex options: %w", err)
+	}
+	if len(kv) == 0 {
+		return nil, fmt.Errorf("regex requires at least one option")
 	}
 	if existing == nil {
 		existing = &RegexOptions{}
 	}
-	existing.Patterns = append(existing.Patterns, patterns...)
+	for key, values := range kv {
+		switch key {
+		case "fill":
+			value := values[len(values)-1]
+			switch strings.ToLower(value) {
+			case "", "zero":
+				v := false
+				existing.FillModeOverride = &v
+			case "random":
+				v := true
+				existing.FillModeOverride = &v
+			default:
+				return nil, fmt.Errorf("regex fill: expected zero or random, got %q", value)
+			}
+		case "pattern", "patterns":
+			for _, value := range values {
+				patterns, err := loadPatternOptions(value)
+				if err != nil {
+					return nil, err
+				}
+				existing.Patterns = append(existing.Patterns, patterns...)
+			}
+		default:
+			return nil, fmt.Errorf("unknown regex option %q", key)
+		}
+	}
+	if len(existing.Patterns) == 0 {
+		return nil, fmt.Errorf("regex requires at least one pattern")
+	}
 	return existing, nil
+}
+
+func loadPatternOptions(value string) ([]string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil, fmt.Errorf("regex pattern list cannot be empty")
+	}
+	if patterns, ok, err := readPatternFile(trimmed); err != nil {
+		return nil, err
+	} else if ok {
+		return patterns, nil
+	}
+	patterns := splitList(value)
+	if len(patterns) == 0 {
+		return nil, fmt.Errorf("regex pattern list cannot be empty")
+	}
+	return patterns, nil
+}
+
+func readPatternFile(path string) ([]string, bool, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("regex pattern file %q: %w", path, err)
+	}
+	if info.IsDir() {
+		return nil, false, fmt.Errorf("regex pattern file %q: expected file, found directory", path)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, false, fmt.Errorf("regex pattern file %q: %w", path, err)
+	}
+	defer func() { _ = file.Close() }()
+
+	scanner := bufio.NewScanner(file)
+	var patterns []string
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		patterns = append(patterns, line)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, false, fmt.Errorf("regex pattern file %q: %w", path, err)
+	}
+	if len(patterns) == 0 {
+		return nil, false, fmt.Errorf("regex pattern file %q contains no usable patterns", path)
+	}
+	return patterns, true, nil
 }
 
 func parseInsert(opt string) (*InsertOptions, error) {
@@ -469,20 +585,16 @@ func parseInsert(opt string) (*InsertOptions, error) {
 	if err != nil {
 		return nil, err
 	}
-	name := kv["name"]
-	if strings.TrimSpace(name) == "" {
-		return nil, fmt.Errorf("insert requires name option")
-	}
-	file := kv["file"]
-	data := kv["data"]
+	file := kv.last("file")
+	data := kv.last("data")
 	if (file == "" && data == "") || (file != "" && data != "") {
 		return nil, fmt.Errorf("insert requires exactly one of file or data")
 	}
 	return &InsertOptions{
-		Name:     name,
+		Name:     kv.last("name"),
 		File:     file,
 		Data:     data,
-		Password: kv["password"],
+		Password: kv.last("password"),
 	}, nil
 }
 
@@ -494,15 +606,58 @@ func parseOverlay(opt string) (*OverlayOptions, error) {
 	if err != nil {
 		return nil, err
 	}
-	file := kv["file"]
-	data := kv["data"]
+	file := kv.last("file")
+	data := kv.last("data")
 	if (file == "" && data == "") || (file != "" && data != "") {
 		return nil, fmt.Errorf("overlay requires exactly one of file or data")
 	}
 	return &OverlayOptions{
 		File:     file,
 		Data:     data,
-		Password: kv["password"],
+		Password: kv.last("password"),
+	}, nil
+}
+
+func parseExtractOverlay(opt string) (*ExtractOverlayOptions, error) {
+	kv, err := parseKeyValueOptions(opt)
+	if err != nil {
+		return nil, err
+	}
+	return &ExtractOverlayOptions{
+		Password:    kv.last("password"),
+		Destination: kv.last("destination"),
+	}, nil
+}
+
+func parseExtractSection(opt string) (*ExtractSectionOptions, error) {
+	if strings.TrimSpace(opt) == "" {
+		return nil, fmt.Errorf("extract requires options")
+	}
+	kv, err := parseKeyValueOptions(opt)
+	if err != nil {
+		return nil, err
+	}
+	name := kv.last("name")
+	indexStr := kv.last("index")
+	if strings.TrimSpace(name) == "" && strings.TrimSpace(indexStr) == "" {
+		return nil, fmt.Errorf("extract requires name or index")
+	}
+	if strings.TrimSpace(name) != "" && strings.TrimSpace(indexStr) != "" {
+		return nil, fmt.Errorf("extract accepts either name or index, not both")
+	}
+	var idx *int
+	if strings.TrimSpace(indexStr) != "" {
+		value, err := strconv.Atoi(indexStr)
+		if err != nil || value < 0 {
+			return nil, fmt.Errorf("extract index must be a non-negative integer")
+		}
+		idx = &value
+	}
+	return &ExtractSectionOptions{
+		Name:        name,
+		Index:       idx,
+		Password:    kv.last("password"),
+		Destination: kv.last("destination"),
 	}, nil
 }
 
@@ -514,8 +669,10 @@ func parsePack(opt string) (*PackOptions, error) {
 	return &PackOptions{Options: optionString}, nil
 }
 
-func parseKeyValueOptions(spec string) (map[string]string, error) {
-	result := make(map[string]string)
+type optionMap map[string][]string
+
+func parseKeyValueOptions(spec string) (optionMap, error) {
+	result := make(optionMap)
 	if strings.TrimSpace(spec) == "" {
 		return result, nil
 	}
@@ -533,9 +690,20 @@ func parseKeyValueOptions(spec string) (map[string]string, error) {
 		if key == "" {
 			return nil, fmt.Errorf("invalid option segment %q", part)
 		}
-		result[key] = trimQuotes(value)
+		result[key] = append(result[key], trimQuotes(value))
 	}
 	return result, nil
+}
+
+func (m optionMap) last(key string) string {
+	if len(m) == 0 {
+		return ""
+	}
+	values := m[key]
+	if len(values) == 0 {
+		return ""
+	}
+	return values[len(values)-1]
 }
 
 func splitList(spec string) []string {
@@ -590,10 +758,23 @@ func (cmd *pipelineCommand) operationsCount() int {
 	if cmd.Overlay != nil {
 		count++
 	}
+	if cmd.Extract != nil {
+		count++
+	}
+	if cmd.ExtractOverlay != nil {
+		count++
+	}
 	if cmd.Pack != nil {
 		count++
 	}
 	return count
+}
+
+func (cmd *pipelineCommand) extractOnly() bool {
+	if cmd.operationsCount() != 1 {
+		return false
+	}
+	return cmd.Extract != nil || cmd.ExtractOverlay != nil
 }
 
 func runAnalyze(cmd *analyzeCommand) error {
@@ -654,11 +835,22 @@ func runPipeline(cmd *pipelineCommand) error {
 		return err
 	}
 	workingPath := cmd.InputPath
-	if cmd.OutputPath != "" && cmd.OutputPath != cmd.InputPath {
+	extractDestOverride := ""
+	if cmd.extractOnly() {
+		if cmd.OutputPath != "" && cmd.OutputPath != cmd.InputPath {
+			extractDestOverride = cmd.OutputPath
+		}
+	} else if cmd.OutputPath != "" && cmd.OutputPath != cmd.InputPath {
 		if err := copyFile(cmd.InputPath, cmd.OutputPath); err != nil {
 			return fmt.Errorf("failed to prepare output: %w", err)
 		}
 		workingPath = cmd.OutputPath
+	}
+	if cmd.Extract != nil && cmd.Extract.Destination == "" && extractDestOverride != "" {
+		cmd.Extract.Destination = extractDestOverride
+	}
+	if cmd.ExtractOverlay != nil && cmd.ExtractOverlay.Destination == "" && extractDestOverride != "" {
+		cmd.ExtractOverlay.Destination = extractDestOverride
 	}
 
 	isPE, isELF, err := detectFileKind(workingPath)
@@ -687,7 +879,7 @@ func runPipeline(cmd *pipelineCommand) error {
 	}
 	if cmd.Regex != nil && len(cmd.Regex.Patterns) > 0 {
 		session.addStep("regex", func() (*common.OperationResult, error) {
-			return runRegex(workingPath, cmd.Regex.Patterns, isPE)
+			return runRegex(workingPath, cmd.Regex, isPE)
 		})
 	}
 	if cmd.Insert != nil {
@@ -698,6 +890,16 @@ func runPipeline(cmd *pipelineCommand) error {
 	if cmd.Overlay != nil {
 		session.addStep("overlay", func() (*common.OperationResult, error) {
 			return runOverlay(workingPath, cmd.Overlay, isPE)
+		})
+	}
+	if cmd.Extract != nil {
+		session.addStep("extract-section", func() (*common.OperationResult, error) {
+			return runExtractSection(workingPath, cmd.InputPath, cmd.Extract, isPE)
+		})
+	}
+	if cmd.ExtractOverlay != nil {
+		session.addStep("extract-overlay", func() (*common.OperationResult, error) {
+			return runExtractOverlay(workingPath, cmd.InputPath, cmd.ExtractOverlay, isPE)
 		})
 	}
 	if cmd.Pack != nil {
@@ -732,18 +934,17 @@ func detectFileKind(path string) (bool, bool, error) {
 
 func runStrip(path string, opts *StripOptions, isPE bool) (*common.OperationResult, error) {
 	if isPE {
-		return perw.StripPE(path, opts.Force), nil
+		return perw.StripPE(path, opts.Force, opts.FillModeOverride), nil
 	}
-	return elfrw.StripELF(path, opts.Force), nil
+	return elfrw.StripELF(path, opts.Force, opts.FillModeOverride), nil
 }
 
 func runCompact(path string, opts *CompactOptions, isPE bool) (*common.OperationResult, error) {
-	fillRandom := strings.EqualFold(opts.Fill, "random")
 	keepResources := opts.KeepResources
 	if isPE {
-		return perw.CompactPE(path, opts.Force, fillRandom, keepResources), nil
+		return perw.CompactPE(path, opts.Force, keepResources), nil
 	}
-	return elfrw.CompactELF(path, opts.Force, fillRandom, keepResources), nil
+	return elfrw.CompactELF(path, opts.Force, keepResources), nil
 }
 
 func runObfuscate(path string, opts *ObfuscateOptions, isPE bool) (*common.OperationResult, error) {
@@ -753,38 +954,20 @@ func runObfuscate(path string, opts *ObfuscateOptions, isPE bool) (*common.Opera
 	return elfrw.ObfuscateELF(path, opts.Force), nil
 }
 
-func runRegex(path string, patterns []string, isPE bool) (*common.OperationResult, error) {
-	if len(patterns) == 0 {
+func runRegex(path string, opts *RegexOptions, isPE bool) (*common.OperationResult, error) {
+	if opts == nil || len(opts.Patterns) == 0 {
 		return common.NewSkipped("no regex patterns provided"), nil
 	}
-	aggregate := common.NewApplied("regex operations", 0)
-	for _, pattern := range patterns {
-		var result *common.OperationResult
-		if isPE {
-			result = perw.RegexPE(path, pattern)
-		} else {
-			result = elfrw.RegexELF(path, pattern)
-		}
-		if result == nil {
-			continue
-		}
-		if result.Applied {
-			aggregate.Applied = true
-			aggregate.Count += result.Count
-			label := fmt.Sprintf("pattern %s: %s", pattern, result.Message)
-			aggregate.AddDetail(label, result.Count, false)
-			for _, detail := range result.Details {
-				aggregate.AddDetail(detail.Message, detail.Count, detail.IsRisky)
-			}
-		} else if result.Message != "" {
-			aggregate.AddDetail(fmt.Sprintf("pattern %s skipped: %s", pattern, result.Message), 0, false)
-		}
+	var result *common.OperationResult
+	if isPE {
+		result = perw.RegexPE(path, opts.FillModeOverride, opts.Patterns)
+	} else {
+		result = elfrw.RegexELF(path, opts.FillModeOverride, opts.Patterns)
 	}
-	if !aggregate.Applied {
-		return common.NewSkipped("no regex operations applied"), nil
+	if result == nil {
+		return common.NewSkipped("regex operation returned no result"), nil
 	}
-	aggregate.Message = fmt.Sprintf("applied %d regex patterns", len(patterns))
-	return aggregate, nil
+	return result, nil
 }
 
 func runInsert(path string, opts *InsertOptions, isPE bool) (*common.OperationResult, error) {
@@ -809,6 +992,79 @@ func runOverlay(path string, opts *OverlayOptions, isPE bool) (*common.Operation
 	return elfrw.OverlayELF(path, payload, opts.Password), nil
 }
 
+func runExtractSection(path, inputPath string, opts *ExtractSectionOptions, isPE bool) (*common.OperationResult, error) {
+	if opts == nil {
+		return common.NewSkipped("no extract options provided"), nil
+	}
+	destination := opts.Destination
+	if destination == "" {
+		destination = inputPath + ".extracted"
+	}
+	dir := filepath.Dir(destination)
+	if dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("failed to prepare destination directory: %w", err)
+		}
+	}
+	var (
+		data        []byte
+		sectionName string
+		err         error
+	)
+	if isPE {
+		data, sectionName, err = perw.ExtractSection(path, opts.Name, opts.Index, opts.Password)
+	} else {
+		data, sectionName, err = elfrw.ExtractSection(path, opts.Name, opts.Index, opts.Password)
+	}
+	if err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to extract section: %v", err)), nil
+	}
+	if err := os.WriteFile(destination, data, 0o600); err != nil {
+		return nil, fmt.Errorf("failed to write extracted data: %w", err)
+	}
+	result := common.NewApplied(fmt.Sprintf("extracted section '%s' to %s", sectionName, destination), len(data))
+	result.SetCategory("EXTRACT")
+	return result, nil
+}
+
+func runExtractOverlay(path, inputPath string, opts *ExtractOverlayOptions, isPE bool) (*common.OperationResult, error) {
+	if opts == nil {
+		return common.NewSkipped("no overlay extract options provided"), nil
+	}
+	destination := opts.Destination
+	if destination == "" {
+		destination = inputPath + ".extracted"
+	}
+	dir := filepath.Dir(destination)
+	if dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("failed to prepare destination directory: %w", err)
+		}
+	}
+	var (
+		data []byte
+		err  error
+	)
+	if isPE {
+		data, err = perw.ExtractOverlay(path)
+	} else {
+		data, err = elfrw.ExtractOverlay(path)
+	}
+	if err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to extract overlay: %v", err)), nil
+	}
+	decoded, err := common.ProcessExtractedData(data, opts.Password)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(destination, decoded, 0o600); err != nil {
+		return nil, fmt.Errorf("failed to write extracted overlay: %w", err)
+	}
+	result := common.NewApplied(fmt.Sprintf("extracted overlay to %s", destination), len(decoded))
+	result.SetCategory("OVERLAY_EXTRACT")
+	return result, nil
+}
+
 func runPack(path string, opts *PackOptions) (*common.OperationResult, error) {
 	if err := pack.Pack(path, opts.Options, path); err != nil {
 		return nil, fmt.Errorf("pack operation failed: %w", err)
@@ -818,6 +1074,10 @@ func runPack(path string, opts *PackOptions) (*common.OperationResult, error) {
 		result.AddDetail(fmt.Sprintf("options: %s", opts.Options), 0, false)
 	}
 	return result, nil
+}
+
+func boolPtr(v bool) *bool {
+	return &v
 }
 
 func printOperationResult(fileType, name string, result *common.OperationResult) {
@@ -889,9 +1149,9 @@ func printUsage() {
 	fmt.Println()
 	fmt.Println("Operations (executed in order):")
 	fmt.Println("  -s=force=true           Strip sections")
-	fmt.Println("  -c=force=true,fill=random,keep_resources=false Compact file")
+	fmt.Println("  -c=force=true,keep_resources=false Compact file")
 	fmt.Println("  -o=force=true           Obfuscate")
-	fmt.Println("  -r=rx1,rx2              Apply regex removals")
+	fmt.Println("  -r=pattern=rx[,pattern=rules.txt][,fill=random] Apply regex removals")
 	fmt.Println("  -i=name=.sec,file=bin   Insert section")
 	fmt.Println("  -l=file=bin             Append overlay")
 	fmt.Println("  -p=opt1=val1,...        Pack executable")

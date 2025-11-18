@@ -1273,19 +1273,20 @@ func (e *ELFFile) printExportsAnalysis() {
 func (e *ELFFile) parseDynamicLibraries() []string {
 	var libraries []string
 
-	if _, found := e.locateSection(".dynamic", SHT_DYNAMIC); !found {
-		return libraries
-	}
-
-	strIndex, found := e.dynamicStringTableIndex()
-	if !found {
+	baseOffset, size, ok := e.dynamicStringTableBounds()
+	if !ok {
 		return libraries
 	}
 
 	for _, entry := range e.DynamicEntries {
 		if entry.Tag == DT_NEEDED {
-			if libName := e.readStringFromSection(strIndex, int(entry.Value)); libName != "" {
-				libraries = append(libraries, libName)
+			if entry.Value >= size {
+				continue
+			}
+			start := baseOffset + int64(entry.Value)
+			name := e.readCStringAt(start, size-entry.Value)
+			if name != "" {
+				libraries = append(libraries, name)
 			}
 		}
 	}
@@ -1680,6 +1681,77 @@ func (e *ELFFile) locateSection(name string, sectionType uint32) (uint16, bool) 
 		return e.findSectionByType(sectionType)
 	}
 	return 0, false
+}
+
+func (e *ELFFile) virtualAddressToOffset(addr uint64) (int64, bool) {
+	for _, seg := range e.Segments {
+		if seg.FileSize == 0 {
+			continue
+		}
+		start := seg.VirtualAddr
+		end := start + seg.FileSize
+		if addr >= start && addr < end {
+			delta := addr - start
+			return int64(seg.Offset + delta), true
+		}
+	}
+	for _, sec := range e.Sections {
+		if sec.Size <= 0 {
+			continue
+		}
+		start := sec.Address
+		end := start + uint64(sec.Size)
+		if addr >= start && addr < end {
+			delta := addr - start
+			return sec.Offset + int64(delta), true
+		}
+	}
+	return 0, false
+}
+
+func (e *ELFFile) dynamicStringTableBounds() (int64, uint64, bool) {
+	var strAddr, strSize uint64
+	for _, entry := range e.DynamicEntries {
+		switch entry.Tag {
+		case DT_STRTAB:
+			strAddr = entry.Value
+		case DT_STRSZ:
+			strSize = entry.Value
+		}
+	}
+	if strAddr == 0 {
+		return 0, 0, false
+	}
+	offset, ok := e.virtualAddressToOffset(strAddr)
+	if !ok {
+		return 0, 0, false
+	}
+	if strSize == 0 {
+		if offset >= int64(len(e.RawData)) {
+			return 0, 0, false
+		}
+		strSize = uint64(len(e.RawData)) - uint64(offset)
+	} else if uint64(offset)+strSize > uint64(len(e.RawData)) {
+		strSize = uint64(len(e.RawData)) - uint64(offset)
+	}
+	return offset, strSize, true
+}
+
+func (e *ELFFile) readCStringAt(offset int64, remaining uint64) string {
+	if offset < 0 || offset >= int64(len(e.RawData)) {
+		return ""
+	}
+	limit := int64(len(e.RawData))
+	if remaining > 0 {
+		if off := offset + int64(remaining); off < limit {
+			limit = off
+		}
+	}
+	end := offset
+	for end < limit && e.RawData[end] != 0 {
+		end++
+	}
+	return string(e.RawData[offset:end])
 }
 
 func (e *ELFFile) getSectionByIndex(idx uint16) *Section {

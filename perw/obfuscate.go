@@ -435,15 +435,16 @@ func (p *PEFile) InjectDebugDirectoryNoise() *common.OperationResult {
 	dirRVA := binary.LittleEndian.Uint32(p.RawData[debugDirOffset:])
 	dirSize := binary.LittleEndian.Uint32(p.RawData[debugDirOffset+4:])
 	const entrySize = 28
+	if dirRVA == 0 || dirSize < entrySize {
+		return common.NewSkipped("debug directory absent")
+	}
 	var existing [][]byte
-	if dirRVA != 0 && dirSize >= entrySize {
-		if phys, err := p.rvaToPhysical(uint64(dirRVA)); err == nil {
-			maxBytes := int(dirSize / entrySize * entrySize)
-			if int(phys)+maxBytes <= len(p.RawData) {
-				for i := 0; i < maxBytes; i += entrySize {
-					entry := append([]byte(nil), p.RawData[int(phys)+i:int(phys)+i+entrySize]...)
-					existing = append(existing, entry)
-				}
+	if phys, err := p.rvaToPhysical(uint64(dirRVA)); err == nil {
+		maxBytes := int(dirSize / entrySize * entrySize)
+		if int(phys)+maxBytes <= len(p.RawData) {
+			for i := 0; i < maxBytes; i += entrySize {
+				entry := append([]byte(nil), p.RawData[int(phys)+i:int(phys)+i+entrySize]...)
+				existing = append(existing, entry)
 			}
 		}
 	}
@@ -457,7 +458,7 @@ func (p *PEFile) InjectDebugDirectoryNoise() *common.OperationResult {
 
 	recordRVA, err := p.physicalToRVA(recordOffset)
 	if err != nil {
-		return common.NewSkipped("failed to translate CodeView record RVA")
+		return common.NewSkipped("debug directory unavailable (cannot map CodeView RVA)")
 	}
 
 	desc := make([]byte, entrySize)
@@ -480,7 +481,7 @@ func (p *PEFile) InjectDebugDirectoryNoise() *common.OperationResult {
 
 	dirRVA, err = p.physicalToRVA(dirOffset)
 	if err != nil {
-		return common.NewSkipped("failed to translate debug directory RVA")
+		return common.NewSkipped("debug directory unavailable (cannot map RVA)")
 	}
 	binary.LittleEndian.PutUint32(p.RawData[debugDirOffset:], dirRVA)
 	binary.LittleEndian.PutUint32(p.RawData[debugDirOffset+4:], uint32(len(dirBlock)))
@@ -505,10 +506,10 @@ func (p *PEFile) buildCodeViewRecord() []byte {
 
 func randomAscii(n int) string {
 	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
-	bytes, _ := common.GenerateRandomBytes(n)
+	randomBytes, _ := common.GenerateRandomBytes(n)
 	out := make([]byte, n)
 	for i := 0; i < n; i++ {
-		out[i] = alphabet[int(bytes[i])%len(alphabet)]
+		out[i] = alphabet[int(randomBytes[i])%len(alphabet)]
 	}
 	return string(out)
 }

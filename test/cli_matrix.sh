@@ -11,6 +11,15 @@ RUN_ROOT="$LOG_ROOT/cli_matrix_${TIMESTAMP}"
 mkdir -p "$RUN_ROOT"
 
 BIN_PATH="$RUN_ROOT/gosstrip"
+PATTERN_FILE="$RUN_ROOT/patterns.txt"
+OVERLAY_FILE="$RUN_ROOT/overlay_payload.bin"
+REGEX_MARKER="CLI_REGEX_MARKER"
+REGEX_INLINE_PRIMARY="CLI_REGEX_INLINE"
+REGEX_INLINE_SECONDARY="CLI_REGEX_EXTRA"
+SECTION_NAME=".clisec"
+SECTION_PAYLOAD="CLI_SECTION_PAYLOAD"
+SECTION_PASSWORD="cli-section-pass"
+OVERLAY_PASSWORD="cli-overlay-pass"
 
 build_cli() {
   (cd "$REPO_ROOT" && go build -o "$BIN_PATH" .)
@@ -54,6 +63,14 @@ build_elf_fixture() {
   printf '%s\n' "$output"
 }
 
+prepare_assets() {
+  cat <<'EOF' >"$PATTERN_FILE"
+# CLI matrix regex patterns
+CLI_REGEX_MARKER
+EOF
+  printf 'CLI_OVERLAY_PAYLOAD' >"$OVERLAY_FILE"
+}
+
 log_cmd() {
   local log_file=$1
   shift
@@ -85,38 +102,73 @@ run_simple_flow() {
   if [[ "$mode" == "force" ]]; then
     obf_flag="-o=force=true"
   fi
-  log_cmd "$log_file" "$BIN_PATH" "-a" "$work_bin"
+  log_cmd "$log_file" "$BIN_PATH" "-a=mode=deep" "$work_bin"
   log_cmd "$log_file" "$BIN_PATH" "$obf_flag" "$work_bin"
-  log_cmd "$log_file" "$BIN_PATH" "-a" "$work_bin"
+  log_cmd "$log_file" "$BIN_PATH" "-a=mode=deep" "$work_bin"
+}
+
+run_regex_flow() {
+  local target=$1
+  local mode=$2
+  local fill=$3
+  local fixture=$4
+  local pattern_file=$5
+  local work_dir="$RUN_ROOT/${target}_${mode}_regex_fill-${fill}"
+  mkdir -p "$work_dir"
+  local work_bin="$work_dir/$(basename "$fixture")"
+  cp "$fixture" "$work_bin"
+  local log_file="$work_dir/analyze_regex.log"
+  printf '%s%s%s' "$REGEX_MARKER" "$REGEX_INLINE_PRIMARY" "$REGEX_INLINE_SECONDARY" >>"$work_bin"
+  local file_regex="-r=fill=${fill},pattern=${pattern_file}"
+  local inline_regex_primary="-r=fill=${fill},pattern=${REGEX_INLINE_PRIMARY}"
+  local inline_regex_secondary="-r=fill=${fill},pattern=${REGEX_INLINE_SECONDARY}"
+  log_cmd "$log_file" "$BIN_PATH" "-a=mode=deep" "$work_bin"
+  log_cmd "$log_file" "$BIN_PATH" "$file_regex" "$work_bin"
+  log_cmd "$log_file" "$BIN_PATH" "$inline_regex_primary" "$work_bin"
+  log_cmd "$log_file" "$BIN_PATH" "$inline_regex_secondary" "$work_bin"
+  log_cmd "$log_file" "$BIN_PATH" "-a=mode=deep" "$work_bin"
 }
 
 run_pipeline_flow() {
   local target=$1
   local mode=$2
-  local fixture=$3
-  local work_dir="$RUN_ROOT/${target}_${mode}_pipeline"
+  local fill=$3
+  local fixture=$4
+  local pattern_file=$5
+  local overlay_payload=$6
+  local work_dir="$RUN_ROOT/${target}_${mode}_pipeline_fill-${fill}"
   mkdir -p "$work_dir"
   local work_bin="$work_dir/$(basename "$fixture")"
   cp "$fixture" "$work_bin"
   local log_file="$work_dir/analyze_strip_compact_obfuscate.log"
-  local strip_flag="-s"
+  local strip_flag="-s=fill=${fill}"
   local compact_flag="-c"
   local obf_flag="-o"
+  local section_name="$SECTION_NAME"
   if [[ "$mode" == "force" ]]; then
-    strip_flag="-s=force=true"
+    strip_flag="-s=force=true,fill=${fill}"
     compact_flag="-c=force=true"
     obf_flag="-o=force=true"
   fi
-  log_cmd "$log_file" "$BIN_PATH" "-a" "$work_bin"
+  local section_dest="$work_dir/extracted_section.bin"
+  local overlay_dest="$work_dir/extracted_overlay.bin"
+  log_cmd "$log_file" "$BIN_PATH" "-a=mode=deep" "$work_bin"
   log_cmd "$log_file" "$BIN_PATH" "$strip_flag" "$work_bin"
   log_cmd "$log_file" "$BIN_PATH" "$compact_flag" "$work_bin"
   log_cmd "$log_file" "$BIN_PATH" "$obf_flag" "$work_bin"
-  log_cmd "$log_file" "$BIN_PATH" "-a" "$work_bin"
+  printf '%s' "$REGEX_MARKER" >>"$work_bin"
+  log_cmd "$log_file" "$BIN_PATH" "-r=pattern=${pattern_file}" "$work_bin"
+  log_cmd "$log_file" "$BIN_PATH" "-i=name=${section_name},data=${SECTION_PAYLOAD},password=${SECTION_PASSWORD}" "$work_bin"
+  log_cmd "$log_file" "$BIN_PATH" "-l=file=${overlay_payload},password=${OVERLAY_PASSWORD}" "$work_bin"
+  log_cmd "$log_file" "$BIN_PATH" "-ei=name=${section_name},password=${SECTION_PASSWORD},destination=${section_dest}" "$work_bin"
+  log_cmd "$log_file" "$BIN_PATH" "-el=password=${OVERLAY_PASSWORD},destination=${overlay_dest}" "$work_bin"
+  log_cmd "$log_file" "$BIN_PATH" "-a=mode=deep" "$work_bin"
 }
 
 main() {
   mkdir -p "$LOG_ROOT"
   build_cli
+  prepare_assets
 
   local pe_fixture elf_fixture
   pe_fixture=$(build_pe_fixture)
@@ -125,8 +177,14 @@ main() {
   for mode in default force; do
     run_simple_flow pe "$mode" "$pe_fixture"
     run_simple_flow elf "$mode" "$elf_fixture"
-    run_pipeline_flow pe "$mode" "$pe_fixture"
-    run_pipeline_flow elf "$mode" "$elf_fixture"
+    for fill in zero random; do
+      run_regex_flow pe "$mode" "$fill" "$pe_fixture" "$PATTERN_FILE"
+      run_regex_flow elf "$mode" "$fill" "$elf_fixture" "$PATTERN_FILE"
+    done
+    for fill in zero random; do
+      run_pipeline_flow pe "$mode" "$fill" "$pe_fixture" "$PATTERN_FILE" "$OVERLAY_FILE"
+      run_pipeline_flow elf "$mode" "$fill" "$elf_fixture" "$PATTERN_FILE" "$OVERLAY_FILE"
+    done
   done
 
   echo "Logs written to: $RUN_ROOT"
