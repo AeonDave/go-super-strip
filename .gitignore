@@ -11,3 +11,4 @@ go.work.sum
 .idea/
 .venv/
 /test/logs/
+/code-examples/

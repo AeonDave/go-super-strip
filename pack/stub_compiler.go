@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -13,12 +14,19 @@ import (
 func CompileStub(config *PackConfig, metadata *PayloadMetadata, payload []byte) ([]byte, error) {
 	// Determina OS/Arch target
 	targetOS := "linux"
-	targetArch := "amd64"
+	targetArch := runtime.GOARCH
 	stubSource := GetELFStubSource()
 
 	if strings.Contains(config.OutputPath, ".exe") || strings.Contains(config.OutputPath, "windows") {
 		targetOS = "windows"
-		stubSource = GetPEStubSource()
+		arch := metadata.StubArch
+		if arch == "" {
+			arch = "amd64"
+		}
+		targetArch = arch
+		stubSource = GetPEStubSource(arch)
+	} else {
+		targetArch = runtime.GOARCH
 	}
 
 	// Crea directory temporanea per build

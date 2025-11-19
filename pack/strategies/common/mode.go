@@ -15,6 +15,7 @@ const (
 	ModeProcessHollowing Mode = "process_hollowing"
 	ModeAtomicBombing    Mode = "atomic_bombing"
 	ModeSelfInjection    Mode = "self_injection"
+	ModeStealthLoader    Mode = "stealth_loader"
 )
 
 // Parse normalizes textual modes coming from CLI flags.
@@ -36,8 +37,10 @@ func Parse(value string) (Mode, error) {
 		return ModeAtomicBombing, nil
 	case string(ModeSelfInjection):
 		return ModeSelfInjection, nil
+	case string(ModeStealthLoader):
+		return ModeStealthLoader, nil
 	default:
-		return "", fmt.Errorf("invalid in-memory mode %q (expected off, auto, memfd, process_hollowing, atomic_bombing, or self_injection)", value)
+		return "", fmt.Errorf("invalid in-memory mode %q (expected off, auto, memfd, process_hollowing, atomic_bombing, self_injection, or stealth_loader)", value)
 	}
 }
 
@@ -49,7 +52,7 @@ func (m Mode) Enabled() bool {
 // Valid reports whether the mode string is recognized.
 func (m Mode) Valid() bool {
 	switch strings.ToLower(string(m)) {
-	case string(ModeOff), string(ModeAuto), string(ModeMemfd), string(ModeProcessHollowing), string(ModeAtomicBombing), string(ModeSelfInjection):
+	case string(ModeOff), string(ModeAuto), string(ModeMemfd), string(ModeProcessHollowing), string(ModeAtomicBombing), string(ModeSelfInjection), string(ModeStealthLoader):
 		return true
 	default:
 		return false

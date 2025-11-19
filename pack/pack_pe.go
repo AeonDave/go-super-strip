@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	common "gosstrip/pack/strategies/common"
 	winstrat "gosstrip/pack/strategies/windows"
 )
 
@@ -54,9 +55,19 @@ func PackPE(inputPath string, config *PackConfig) (*PackResult, error) {
 		fmt.Printf("   Encrypted: %d bytes (algorithm: %s)\n", len(encrypted), config.EncryptionAlgorithm)
 	}
 
+	stubArch, err := detectPEArchitecture(originalData)
+	if err != nil {
+		return nil, err
+	}
 	resolvedMode, err := winstrat.Resolve(config.InMemoryMode)
 	if err != nil {
 		return nil, err
+	}
+	forcedSelfInjection := false
+	if stubArch == "386" && resolvedMode.Enabled() && resolvedMode != common.ModeSelfInjection && resolvedMode != common.ModeStealthLoader {
+		// Force a loader that keeps execution in memory without requiring 64-bit-only techniques.
+		resolvedMode = common.ModeSelfInjection
+		forcedSelfInjection = true
 	}
 	inMemoryEnabled := resolvedMode.Enabled()
 
@@ -74,6 +85,7 @@ func PackPE(inputPath string, config *PackConfig) (*PackResult, error) {
 		UseInMemory:     inMemoryEnabled,
 		UserParams:      config.Params,
 		Checksum:        originalHash,
+		StubArch:        stubArch,
 	}
 
 	// 6. Compila stub con metadata embedded
@@ -145,6 +157,9 @@ func PackPE(inputPath string, config *PackConfig) (*PackResult, error) {
 	result.AddDetail(fmt.Sprintf("Output: %s", outputPath))
 	if config.Params != "" {
 		result.AddDetail(fmt.Sprintf("Params: %s", config.Params))
+	}
+	if forcedSelfInjection {
+		result.AddDetail("In-memory mode forced to self_injection for 32-bit payloads")
 	}
 
 	if config.Verbose {

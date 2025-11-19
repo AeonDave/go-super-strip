@@ -74,6 +74,7 @@ func PackELF(inputPath string, config *PackConfig) (*PackResult, error) {
 		UseInMemory:     inMemoryEnabled,
 		UserParams:      config.Params,
 		Checksum:        originalHash,
+		StubArch:        "amd64",
 	}
 
 	// 6. Compila stub con metadata embedded

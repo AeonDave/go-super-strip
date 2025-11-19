@@ -120,10 +120,15 @@ The packer rewrites the binary into a self-extracting Go stub plus encrypted pay
 - `padding=true/false` toggles random padding; padding sizes follow the defaults (512–4096 bytes) to avoid exposing custom fingerprints.
 
 **Execution & Telemetry**
-- `inmemory=off|auto|memfd|process_hollowing|atomic_bombing`
-  - `auto` selects `memfd` on Linux and `process_hollowing` on Windows.
-  - `atomic_bombing` (Windows) stages encrypted chunks via `GlobalAddAtom`, reconstructs them through a hidden window, then injects using the APC flow.
-  - Explicit modes allow deterministic behavior. Unsupported combinations fall back to `off`.
+- `inmemory=off|auto|memfd|process_hollowing|atomic_bombing|self_injection|stealth_loader`
+  - `auto` picks `memfd` on Linux and the safest Windows strategy (32-bit payloads automatically fall back to `self_injection`).
+  - `process_hollowing` creates a suspended process, unmaps it, and copies the payload in.
+  - `atomic_bombing` chunks the payload into atoms, rebuilds it through a hidden window, and invokes the APC-based loader.
+  - `self_injection` maps the payload inside the current process (both PE32 and PE32+).
+  - `stealth_loader` disables ETW/AMSI, pins the payload buffer, allocates/shellcodes via raw NT syscalls, and launches threads with `NtCreateThreadEx`.
+- `params="ascii command"` appends a default command line when the payload is executed. These arguments run before user-supplied CLI args, so you can bake in sequences like `-sn 127.0.0.1 -oN output.txt`.
+- `cleanup=true/false` deletes temporary files when not running in-memory.
+- `verbose=true/false` prints the pack configuration before building the stub.
 - `params="ascii command"` appends a default command line when the payload is executed. These arguments run before user-supplied CLI args, so you can bake in sequences like `-sn 127.0.0.1 -oN output.txt`.
 - `cleanup=true/false` deletes temporary files when not running in-memory.
 - `verbose=true/false` prints the pack configuration before building the stub.
@@ -140,6 +145,8 @@ During packing, technique tags are emitted in the CLI result (e.g., `stub_varian
 | Windows | `off` | Writes to `%TEMP%`, runs via normal process creation, then cleans up when `cleanup=true`. |
 | Windows | `auto` / `process_hollowing` | Spawns a sacrificial process, unmaps it, and injects the payload before resuming the thread. |
 | Windows | `atomic_bombing` | Splits the payload into atom-encoded chunks, rebuilds it via a hidden window, and delivers the bytes through the APC-based injector. |
+| Windows | `self_injection` | Reflectively maps the payload inside the current process (available for both PE32 and PE32+). |
+| Windows | `stealth_loader` | Disables ETW/AMSI, pins the payload buffer, allocates executable memory via `NtAllocateVirtualMemory`, and spawns with `NtCreateThreadEx` (no child processes). |
 
 ## Examples
 ### Analyze

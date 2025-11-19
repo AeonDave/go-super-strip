@@ -94,6 +94,7 @@ type PayloadMetadata struct {
 	InMemoryMode    InMemoryMode
 	UserParams      string
 	Checksum        [32]byte
+	StubArch        string // "amd64" or "386" for PE stubs
 }
 
 // PolymorphicStub rappresenta uno stub polimorfico generato

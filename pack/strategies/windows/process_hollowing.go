@@ -17,6 +17,8 @@ func Resolve(mode common.Mode) (common.Mode, error) {
 		return common.ModeAtomicBombing, nil
 	case common.ModeSelfInjection:
 		return common.ModeSelfInjection, nil
+	case common.ModeStealthLoader:
+		return common.ModeStealthLoader, nil
 	case common.ModeMemfd:
 		return common.ModeOff, fmt.Errorf("in-memory mode %q is only available for ELF targets", mode)
 	default:
@@ -35,6 +37,8 @@ func Describe(mode common.Mode) string {
 		return "in-memory (atomic bombing)"
 	case common.ModeSelfInjection:
 		return "in-memory (self injection)"
+	case common.ModeStealthLoader:
+		return "in-memory (stealth loader)"
 	default:
 		return fmt.Sprintf("in-memory (%s)", mode)
 	}
