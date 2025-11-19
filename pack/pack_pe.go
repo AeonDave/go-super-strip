@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 
-	common "gosstrip/pack/strategies/common"
 	winstrat "gosstrip/pack/strategies/windows"
 )
 
@@ -59,17 +58,21 @@ func PackPE(inputPath string, config *PackConfig) (*PackResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	resolvedMode, err := winstrat.Resolve(config.InMemoryMode)
+	subsystem, err := detectPESubsystem(originalData)
 	if err != nil {
 		return nil, err
 	}
-	forcedSelfInjection := false
-	if stubArch == "386" && resolvedMode.Enabled() && resolvedMode != common.ModeSelfInjection && resolvedMode != common.ModeStealthLoader {
-		// Force a loader that keeps execution in memory without requiring 64-bit-only techniques.
-		resolvedMode = common.ModeSelfInjection
-		forcedSelfInjection = true
+	useGuiStub := subsystem == imageSubsystemWindowsGUI || subsystem == imageSubsystemWindowsCeGUI
+	requestedMode := config.InMemoryMode
+	resolvedMode, err := winstrat.Resolve(requestedMode)
+	if err != nil {
+		return nil, err
 	}
 	inMemoryEnabled := resolvedMode.Enabled()
+	fallbackNote := formatInMemoryFallback(requestedMode, resolvedMode)
+	if fallbackNote != "" {
+		fmt.Println(fallbackNote)
+	}
 
 	// 5. Crea metadata
 	metadata := &PayloadMetadata{
@@ -86,6 +89,7 @@ func PackPE(inputPath string, config *PackConfig) (*PackResult, error) {
 		UserParams:      config.Params,
 		Checksum:        originalHash,
 		StubArch:        stubArch,
+		StubWindowsGUI:  useGuiStub,
 	}
 
 	// 6. Compila stub con metadata embedded
@@ -155,13 +159,12 @@ func PackPE(inputPath string, config *PackConfig) (*PackResult, error) {
 	result.AddDetail(fmt.Sprintf("Execution mode: %s", winstrat.Describe(resolvedMode)))
 	result.AddDetail(fmt.Sprintf("Polymorphic techniques: %v", techniques))
 	result.AddDetail(fmt.Sprintf("Output: %s", outputPath))
+	if fallbackNote != "" {
+		result.AddDetail(fallbackNote)
+	}
 	if config.Params != "" {
 		result.AddDetail(fmt.Sprintf("Params: %s", config.Params))
 	}
-	if forcedSelfInjection {
-		result.AddDetail("In-memory mode forced to self_injection for 32-bit payloads")
-	}
-
 	if config.Verbose {
 		fmt.Printf("\n%s\n", result.String())
 	}

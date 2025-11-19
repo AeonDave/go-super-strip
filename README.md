@@ -118,14 +118,17 @@ The packer rewrites the binary into a self-extracting Go stub plus encrypted pay
   - `junkdensity=0.0-1.0`
   - `regperm=true/false`, `cfmutation=true/false`, `instrsubst=true/false`
 - `padding=true/false` toggles random padding; padding sizes follow the defaults (512–4096 bytes) to avoid exposing custom fingerprints.
+- Enabling polymorphism increases the stub size roughly in proportion to the density/mutation flags above; leave it disabled (or set low density) when you need the smallest stub.
 
 **Execution & Telemetry**
-- `inmemory=off|auto|memfd|process_hollowing|atomic_bombing|self_injection|stealth_loader`
-  - `auto` picks `memfd` on Linux and the safest Windows strategy (32-bit payloads automatically fall back to `self_injection`).
-  - `process_hollowing` creates a suspended process, unmaps it, and copies the payload in.
-  - `atomic_bombing` chunks the payload into atoms, rebuilds it through a hidden window, and invokes the APC-based loader.
-  - `self_injection` maps the payload inside the current process (both PE32 and PE32+).
-  - `stealth_loader` disables ETW/AMSI, pins the payload buffer, allocates/shellcodes via raw NT syscalls, and launches threads with `NtCreateThreadEx`.
+- `inmemory=off|auto|memfd|process_hollowing|atomic_bombing|self_injection|stealth_loader|reflective_loader`
+  - `auto` selects `memfd` on Linux and the safest architecture-aware Windows strategy (PE32/PE32+ binaries keep their native loaders).
+  - `memfd` (`auto` on Linux) uses `memfd_create` + `fexecve` to run without touching disk; it falls back to temp files if the syscall is unavailable.
+  - `process_hollowing` (Windows) spawns a suspended process, calls `NtUnmapViewOfSection`, writes the payload with `WriteProcessMemory`, fixes the context, and resumes the thread.
+  - `atomic_bombing` splits the payload into atoms, reconstructs it via a hidden window callback, then injects it with the APC-based reflective loader.
+  - `self_injection` reflectively maps the payload inside the current process (supports both PE32 and PE32+), fixes relocations/imports, and calls the entry point directly.
+  - `stealth_loader` disables ETW/AMSI, locks the OS thread, disables GC, pins the payload buffer, allocates executable memory with `NtAllocateVirtualMemory`, and launches it with `NtCreateThreadEx` (no sacrificial process).
+  - `reflective_loader` is an extremely small loader (inspired by go-loader/Doge-MemX) that pins/reflects the payload inside the current process and launches it via `NtCreateThreadEx` after disabling GC/OS thread migration.
 - `params="ascii command"` appends a default command line when the payload is executed. These arguments run before user-supplied CLI args, so you can bake in sequences like `-sn 127.0.0.1 -oN output.txt`.
 - `cleanup=true/false` deletes temporary files when not running in-memory.
 - `verbose=true/false` prints the pack configuration before building the stub.
@@ -138,6 +141,7 @@ The packer rewrites the binary into a self-extracting Go stub plus encrypted pay
 During packing, technique tags are emitted in the CLI result (e.g., `stub_variant_multi_pass`, `forward_iteration`, `padding_entropy`, `elf_pad_randomization`). Use them to confirm coverage across builds.
 
 **In-Memory Strategies**
+
 | OS | Mode | Behavior |
 |----|------|----------|
 | Linux | `off` | Writes decrypted payload to a temp file and executes it. |
@@ -147,6 +151,18 @@ During packing, technique tags are emitted in the CLI result (e.g., `stub_varian
 | Windows | `atomic_bombing` | Splits the payload into atom-encoded chunks, rebuilds it via a hidden window, and delivers the bytes through the APC-based injector. |
 | Windows | `self_injection` | Reflectively maps the payload inside the current process (available for both PE32 and PE32+). |
 | Windows | `stealth_loader` | Disables ETW/AMSI, pins the payload buffer, allocates executable memory via `NtAllocateVirtualMemory`, and spawns with `NtCreateThreadEx` (no child processes). |
+| Windows | `reflective_loader` | Minimal reflective loader (no sacrificial process). Disables GC, pins the payload buffer, and launches it inside the current process via `NtCreateThreadEx`. |
+
+Regardless of mode, the stub compiler includes only the routines required for the resolved architecture/strategy, so unused loaders never ship in the final binary. Compression/encryption/padding operate solely on the payload blob; polymorphism is the only option that physically enlarges the stub itself.
+
+### Automatic UAC Bypass
+Every Windows stub attempts the well-known *fodhelper* elevation sequence before unpacking:
+1. Query the current user with `NetUserGetInfo` to ensure the account has local-admin privileges (no always-on UAC prompts).
+2. Create `HKCU\Software\Classes\ms-settings\shell\open\command`, set the default value to the packed stub path, and add an empty `DelegateExecute`.
+3. Launch `fodhelper.exe` hidden via `cmd.exe /C fodhelper`. Because `fodhelper` auto-runs the registered handler with high integrity, the stub is relaunched elevated.
+4. Clean up the registry keys and exit the original process.
+
+If elevation fails (non-admin user, UAC constraints, etc.) the stub simply continues in the current integrity level. All in-memory strategies benefit from elevation when available (memory allocation APIs succeed more often and suspended-process creation avoids access-denied errors).
 
 ## Examples
 ### Analyze

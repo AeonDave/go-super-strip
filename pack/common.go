@@ -95,6 +95,7 @@ type PayloadMetadata struct {
 	UserParams      string
 	Checksum        [32]byte
 	StubArch        string // "amd64" or "386" for PE stubs
+	StubWindowsGUI  bool   // true when the original payload targets the Windows GUI subsystem
 }
 
 // PolymorphicStub rappresenta uno stub polimorfico generato

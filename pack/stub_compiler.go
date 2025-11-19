@@ -24,7 +24,7 @@ func CompileStub(config *PackConfig, metadata *PayloadMetadata, payload []byte) 
 			arch = "amd64"
 		}
 		targetArch = arch
-		stubSource = GetPEStubSource(arch)
+		stubSource = GetPEStubSource(arch, metadata.InMemoryMode)
 	} else {
 		targetArch = runtime.GOARCH
 	}
@@ -97,8 +97,8 @@ require (
 	}
 
 	ldflags := "-s -w"
-	if targetOS == "windows" {
-		// Build as GUI subsystem to avoid opening a console window for GUI apps
+	if targetOS == "windows" && metadata.StubWindowsGUI {
+		// Build as GUI subsystem only when the original payload targets the GUI subsystem
 		ldflags += " -H=windowsgui"
 	}
 

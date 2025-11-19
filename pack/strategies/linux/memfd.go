@@ -13,8 +13,13 @@ func Resolve(mode common.Mode) (common.Mode, error) {
 		return common.ModeOff, nil
 	case common.ModeAuto, common.ModeMemfd:
 		return common.ModeMemfd, nil
-	case common.ModeProcessHollowing, common.ModeAtomicBombing:
-		return common.ModeOff, fmt.Errorf("in-memory mode %q is only available for PE targets", mode)
+	case common.ModeProcessHollowing,
+		common.ModeAtomicBombing,
+		common.ModeSelfInjection,
+		common.ModeStealthLoader,
+		common.ModeReflectiveLoader:
+		// Unsupported on ELF targets; silently fall back to disk execution so the packer can warn.
+		return common.ModeOff, nil
 	default:
 		return common.ModeOff, fmt.Errorf("unknown in-memory mode %q", mode)
 	}
