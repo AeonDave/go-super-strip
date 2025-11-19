@@ -206,7 +206,7 @@ func (ppe *PEPolymorphicEngine) addFakeSections(peData []byte) []byte {
 	// 4. Append dei dati della sezione
 
 	// Per semplicità, appendiamo solo dati alla fine (overlay)
-	fakeDataSize := 256 + randomInt(768) // 256-1024 bytes
+	fakeDataSize := 64 + randomInt(192) // 64-255 bytes
 	fakeData := randomBytes(fakeDataSize)
 
 	result := make([]byte, 0, len(peData)+fakeDataSize)
@@ -253,7 +253,7 @@ func (ppe *PEPolymorphicEngine) addOverlayData(peData []byte) []byte {
 	// L'overlay è qualsiasi dato dopo l'ultimo byte del PE
 	// Non viene caricato in memoria ma è presente nel file
 
-	overlaySize := 512 + randomInt(1536) // 512-2048 bytes
+	overlaySize := 128 + randomInt(384) // 128-511 bytes
 	overlayData := randomBytes(overlaySize)
 
 	result := make([]byte, 0, len(peData)+overlaySize)

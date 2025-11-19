@@ -194,7 +194,7 @@ func (c *PackConfig) Validate() error {
 	}
 
 	if !c.InMemoryMode.Valid() {
-		return fmt.Errorf("invalid in-memory mode: %s (valid: off, auto, memfd, process_hollowing, atomic_bombing)", c.InMemoryMode)
+		return fmt.Errorf("invalid in-memory mode: %s (valid: off, auto, memfd, process_hollowing, atomic_bombing, self_injection)", c.InMemoryMode)
 	}
 
 	if strings.ContainsRune(c.Params, '\x00') {
