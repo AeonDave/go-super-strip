@@ -524,6 +524,14 @@ func (p *PEFile) ObfuscateExecutablePadding(force bool) *common.OperationResult 
 		{0x0F, 0x1F, 0x00},
 		{0x2E, 0x90},
 	}
+	if force {
+		nopPatterns = append(nopPatterns,
+			[]byte{0x0F, 0x1F, 0x40, 0x00},
+			[]byte{0x66, 0x0F, 0x1F, 0x44, 0x00, 0x00},
+			[]byte{0x0F, 0x1F, 0x80, 0x00, 0x00, 0x00, 0x00},
+			[]byte{0x66, 0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00},
+		)
+	}
 	totalRuns := 0
 	for _, section := range p.Sections {
 		if section.Flags&IMAGE_SCN_MEM_EXECUTE == 0 || section.Size <= 0 {
@@ -585,31 +593,6 @@ func (p *PEFile) fillPaddingRun(run []byte, patterns [][]byte, force bool) bool 
 			}
 		}
 		pos += len(pat)
-	}
-	if force && len(run) >= 6 {
-		step := 8
-		if step > len(run)-2 {
-			step = len(run) - 2
-		}
-		for off := 0; off+2 < len(run); off += step {
-			jumpSize := byte(2)
-			if len(run)-off-2 > 5 {
-				randByte, _ := common.GenerateRandomBytes(1)
-				jumpSize = 2 + randByte[0]%4
-			}
-			run[off] = 0xEB
-			run[off+1] = jumpSize
-			for fill := off + 2; fill < off+int(jumpSize); fill++ {
-				if fill >= len(run) {
-					break
-				}
-				if run[fill] != 0x90 {
-					run[fill] = 0x90
-					changed = true
-				}
-			}
-			changed = true
-		}
 	}
 	return changed
 }
