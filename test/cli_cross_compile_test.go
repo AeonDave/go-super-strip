@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"gosstrip/common"
 	"gosstrip/elfrw"
@@ -461,7 +462,18 @@ func buildCSource(t *testing.T, baseName, targetOS string) string {
 
 func copyBinary(t *testing.T, src string) string {
 	t.Helper()
-	dstDir := t.TempDir()
+	dstDir, err := os.MkdirTemp("", "gosstrip-pack-matrix-")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	t.Cleanup(func() {
+		for i := 0; i < 5; i++ {
+			if remErr := os.RemoveAll(dstDir); remErr == nil {
+				return
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+	})
 	dst := filepath.Join(dstDir, filepath.Base(src))
 	srcFile, err := os.Open(src)
 	if err != nil {

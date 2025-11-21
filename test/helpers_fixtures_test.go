@@ -1,6 +1,7 @@
 package test
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -149,6 +150,19 @@ func wslRun(cmd string) error {
 	out, err := c.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("WSL command failed: %v\n%s", err, string(out))
+	}
+	return nil
+}
+
+func wslRunExpect(cmd string, expected string) error {
+	c := exec.Command("wsl.exe", "bash", "-lc", cmd)
+	c.Env = os.Environ()
+	out, err := c.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("WSL command failed: %v\n%s", err, string(out))
+	}
+	if !bytes.Contains(out, []byte(expected)) {
+		return fmt.Errorf("WSL output missing %q\n%s", expected, out)
 	}
 	return nil
 }

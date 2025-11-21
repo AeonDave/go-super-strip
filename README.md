@@ -121,13 +121,17 @@ The packer rewrites the binary into a self-extracting Go stub plus encrypted pay
 - Enabling polymorphism increases the stub size roughly in proportion to the density/mutation flags above; leave it disabled (or set low density) when you need the smallest stub.
 
 **Execution & Telemetry**
-- `inmemory=off|auto|memfd|process_hollowing|atomic_bombing|self_injection|stealth_loader|reflective_loader`
+- `inmemory=off|auto|memfd|process_hollowing|atomic_bombing|process_doppelganging|transacted_hollowing|self_injection|nt_syscall_reflective|reflective_loader`
   - `auto` selects `memfd` on Linux and the safest architecture-aware Windows strategy (PE32/PE32+ binaries keep their native loaders).
   - `memfd` (`auto` on Linux) uses `memfd_create` + `fexecve` to run without touching disk; it falls back to temp files if the syscall is unavailable.
   - `process_hollowing` (Windows) spawns a suspended process, calls `NtUnmapViewOfSection`, writes the payload with `WriteProcessMemory`, fixes the context, and resumes the thread.
   - `atomic_bombing` splits the payload into atoms, reconstructs it via a hidden window callback, then injects it with the APC-based reflective loader.
+  - `process_doppelganging` performs a hollowing-style swap while using a synthesized section/transaction; currently implemented with the hardened hollowing path.
+  - `transacted_hollowing` executes via a transacted source and hollowing mechanics; currently implemented with the hardened hollowing path.
+  - `early_bird` maps the payload into a suspended sacrificial process and queues the entry point as an APC (Early Bird) before the original image runs.
+  - `early_bird_atomic_bombing` performs the same Early Bird APC launch but stages the payload through atom strings (useful for comparing telemetry vs. the classic atom flow).
+  - `nt_syscall_reflective` disables ETW/AMSI, locks the OS thread, disables GC, pins the payload buffer, allocates executable memory with `NtAllocateVirtualMemory`, and launches it with `NtCreateThreadEx` (no sacrificial process).
   - `self_injection` reflectively maps the payload inside the current process (supports both PE32 and PE32+), fixes relocations/imports, and calls the entry point directly.
-  - `stealth_loader` disables ETW/AMSI, locks the OS thread, disables GC, pins the payload buffer, allocates executable memory with `NtAllocateVirtualMemory`, and launches it with `NtCreateThreadEx` (no sacrificial process).
   - `reflective_loader` is an extremely small loader (inspired by go-loader/Doge-MemX) that pins/reflects the payload inside the current process and launches it via `NtCreateThreadEx` after disabling GC/OS thread migration.
 - `params="ascii command"` appends a default command line when the payload is executed. These arguments run before user-supplied CLI args, so you can bake in sequences like `-sn 127.0.0.1 -oN output.txt`.
 - `cleanup=true/false` deletes temporary files when not running in-memory.
@@ -149,8 +153,12 @@ During packing, technique tags are emitted in the CLI result (e.g., `stub_varian
 | Windows | `off` | Writes to `%TEMP%`, runs via normal process creation, then cleans up when `cleanup=true`. |
 | Windows | `auto` / `process_hollowing` | Spawns a sacrificial process, unmaps it, and injects the payload before resuming the thread. |
 | Windows | `atomic_bombing` | Splits the payload into atom-encoded chunks, rebuilds it via a hidden window, and delivers the bytes through the APC-based injector. |
+| Windows | `process_doppelganging` | Transaction-based hollowing flow (currently uses the hardened hollowing runtime). |
+| Windows | `transacted_hollowing` | Hollowing using a transacted source (currently uses the hardened hollowing runtime). |
+| Windows | `early_bird` | Suspended-process injection that maps the packed payload and queues the entry point as an APC before the original image resumes. |
+| Windows | `early_bird_atomic_bombing` | Uses the Early Bird APC technique to queue the payload entry point before the sacrificial process resumes, offering a stealthier APC path. |
 | Windows | `self_injection` | Reflectively maps the payload inside the current process (available for both PE32 and PE32+). |
-| Windows | `stealth_loader` | Disables ETW/AMSI, pins the payload buffer, allocates executable memory via `NtAllocateVirtualMemory`, and spawns with `NtCreateThreadEx` (no child processes). |
+| Windows | `nt_syscall_reflective` | Disables ETW/AMSI, pins the payload buffer, allocates executable memory via `NtAllocateVirtualMemory`, and spawns with `NtCreateThreadEx` (no child processes). |
 | Windows | `reflective_loader` | Minimal reflective loader (no sacrificial process). Disables GC, pins the payload buffer, and launches it inside the current process via `NtCreateThreadEx`. |
 
 Regardless of mode, the stub compiler includes only the routines required for the resolved architecture/strategy, so unused loaders never ship in the final binary. Compression/encryption/padding operate solely on the payload blob; polymorphism is the only option that physically enlarges the stub itself.

@@ -10,6 +10,14 @@ import (
 )
 
 func buildGoFixture(t *testing.T, targetOS, baseName string) string {
+	return buildFixtureFromSource(t, targetOS, baseName, "./testfiles/simple_go.go")
+}
+
+func buildProbeFixture(t *testing.T, targetOS, baseName string) string {
+	return buildFixtureFromSource(t, targetOS, baseName, "./testfiles/probe_payload.go")
+}
+
+func buildFixtureFromSource(t *testing.T, targetOS, baseName, source string) string {
 	t.Helper()
 
 	name := baseName
@@ -20,7 +28,7 @@ func buildGoFixture(t *testing.T, targetOS, baseName string) string {
 	tmpDir := t.TempDir()
 	output := filepath.Join(tmpDir, name)
 
-	cmd := exec.Command("go", "build", "-o", output, "./testfiles/simple_go.go")
+	cmd := exec.Command("go", "build", "-o", output, source)
 	cmd.Dir = ".."
 	env := append(os.Environ(),
 		"GOOS="+targetOS,

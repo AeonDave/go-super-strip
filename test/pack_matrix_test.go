@@ -14,10 +14,22 @@ func TestPEPackingMatrix(t *testing.T) {
 	}
 	t.Setenv("GOSSTRIP_TEST_STUB", "")
 
-	fixture := buildGoFixture(t, "windows", "simple.exe")
+	fixture := buildProbeFixture(t, "windows", "probe.exe")
 	compressions := []string{"xz", "lzma", "none"}
 	encryption := []string{"aes-256-gcm", "chacha20", "none"}
-	inmemory := []string{"off", "auto", "process_hollowing", "atomic_bombing"}
+	inmemory := []string{
+		"off",
+		"auto",
+		"process_hollowing",
+		"atomic_bombing",
+		"early_bird",
+		"early_bird_atomic_bombing",
+		"process_doppelganging",
+		"transacted_hollowing",
+		"self_injection",
+		"nt_syscall_reflective",
+		"reflective_loader",
+	}
 
 	for _, comp := range compressions {
 		for _, enc := range encryption {
@@ -42,7 +54,7 @@ func TestELFPackingMatrix(t *testing.T) {
 	}
 	t.Setenv("GOSSTRIP_TEST_STUB", "")
 
-	fixture := buildGoFixture(t, "linux", "simple")
+	fixture := buildProbeFixture(t, "linux", "probe")
 	compressions := []string{"xz", "lzma", "none"}
 	encryption := []string{"aes-256-gcm", "chacha20", "none"}
 	inmemory := []string{"off", "auto", "memfd"}

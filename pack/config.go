@@ -16,6 +16,8 @@ const (
 	InMemoryMemfd            InMemoryMode = stratcommon.ModeMemfd
 	InMemoryProcessHollowing InMemoryMode = stratcommon.ModeProcessHollowing
 	InMemoryAtomicBombing    InMemoryMode = stratcommon.ModeAtomicBombing
+	InMemoryEarlyBird        InMemoryMode = stratcommon.ModeEarlyBird
+	InMemoryEarlyBirdAtomic  InMemoryMode = stratcommon.ModeEarlyBirdAtomic
 )
 
 // PackConfig rappresenta la configurazione per il packing
@@ -194,7 +196,7 @@ func (c *PackConfig) Validate() error {
 	}
 
 	if !c.InMemoryMode.Valid() {
-		return fmt.Errorf("invalid in-memory mode: %s (valid: off, auto, memfd, process_hollowing, atomic_bombing, self_injection, stealth_loader, reflective_loader)", c.InMemoryMode)
+		return fmt.Errorf("invalid in-memory mode: %s (valid: off, auto, memfd, process_hollowing, atomic_bombing, process_doppelganging, transacted_hollowing, early_bird, early_bird_atomic_bombing, self_injection, nt_syscall_reflective, reflective_loader)", c.InMemoryMode)
 	}
 
 	if strings.ContainsRune(c.Params, '\x00') {

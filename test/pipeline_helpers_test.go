@@ -107,3 +107,49 @@ func runELFBinary(t *testing.T, path string) {
 		t.Skipf("ELF execution not supported on %s", runtime.GOOS)
 	}
 }
+
+func runPEBinaryExpect(t *testing.T, path, expected string) {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		t.Skip("PE pipeline execution verification requires a Windows host")
+	}
+	cmd := exec.Command(path)
+	cmd.Env = os.Environ()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("PE binary execution failed: %v\n%s", err, out)
+	}
+	if !bytes.Contains(out, []byte(expected)) {
+		t.Fatalf("PE binary output missing %q\nOutput:\n%s", expected, out)
+	}
+}
+
+func runELFBinaryExpect(t *testing.T, path, expected string) {
+	t.Helper()
+	switch runtime.GOOS {
+	case "linux":
+		cmd := exec.Command(path)
+		cmd.Env = os.Environ()
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("ELF binary execution failed: %v\n%s", err, out)
+		}
+		if !bytes.Contains(out, []byte(expected)) {
+			t.Fatalf("ELF binary output missing %q\nOutput:\n%s", expected, out)
+		}
+	case "windows":
+		if !hasWSL() {
+			t.Skip("ELF pipeline execution requires WSL on Windows hosts")
+		}
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			t.Fatalf("failed to resolve ELF path: %v", err)
+		}
+		cmd := fmt.Sprintf("'%s'", toWSLPath(abs))
+		if err := wslRunExpect(expected, cmd); err != nil {
+			t.Fatalf("failed to run ELF via WSL: %v", err)
+		}
+	default:
+		t.Skipf("ELF execution not supported on %s", runtime.GOOS)
+	}
+}

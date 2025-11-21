@@ -69,10 +69,6 @@ func PackPE(inputPath string, config *PackConfig) (*PackResult, error) {
 		return nil, err
 	}
 	inMemoryEnabled := resolvedMode.Enabled()
-	fallbackNote := formatInMemoryFallback(requestedMode, resolvedMode)
-	if fallbackNote != "" {
-		fmt.Println(fallbackNote)
-	}
 
 	// 5. Crea metadata
 	metadata := &PayloadMetadata{
@@ -159,9 +155,6 @@ func PackPE(inputPath string, config *PackConfig) (*PackResult, error) {
 	result.AddDetail(fmt.Sprintf("Execution mode: %s", winstrat.Describe(resolvedMode)))
 	result.AddDetail(fmt.Sprintf("Polymorphic techniques: %v", techniques))
 	result.AddDetail(fmt.Sprintf("Output: %s", outputPath))
-	if fallbackNote != "" {
-		result.AddDetail(fallbackNote)
-	}
 	if config.Params != "" {
 		result.AddDetail(fmt.Sprintf("Params: %s", config.Params))
 	}

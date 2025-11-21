@@ -15,7 +15,7 @@ Options (comma-separated key/value pairs):
 | `compression` | `xz`, `lzma`, `none` | Algorithm used before encryption. |
 | `encryption` | `aes-256-gcm`, `chacha20`, `none` | Protects payload at rest. |
 | `polymorphic` | `true/false` | Picks a random stub variant and randomizes control flow. |
-| `inmemory` | `off`, `auto`, `memfd`, `process_hollowing`, `atomic_bombing`, `self_injection`, `stealth_loader` | Linux supports `memfd`; Windows exposes the full set. `auto` picks the safest strategy per platform and payload architecture (32-bit payloads default to `self_injection`). |
+| `inmemory` | `off`, `auto`, `memfd`, `process_hollowing`, `atomic_bombing`, `self_injection`, `nt_syscall_reflective` | Linux supports `memfd`; Windows exposes the full set. `auto` picks the safest strategy per platform and payload architecture (32-bit payloads default to `self_injection`). |
 | `padding` | `true/false` | Adds junk data to the stub. |
 | `level` | `1-9` | Compression effort (xz/lzma only). |
 
@@ -35,8 +35,10 @@ Packing mutates the working file unless an explicit `<output>` path is supplied.
 - **In-memory execution:** Linux uses `memfd_create` + `fexecve`; Windows exposes several modes:
   - `process_hollowing`: suspended sacrificial process, `NtUnmapViewOfSection`, `WriteProcessMemory`, `SetThreadContext`.
   - `atomic_bombing`: chunks payloads into atoms, rebuilds via a hidden window, injects through the APC flow.
+  - `process_doppelganging`: transaction-based hollowing path (currently shares runtime with hardened hollowing).
+  - `transacted_hollowing`: hollowing via transacted source (currently shares runtime with hardened hollowing).
   - `self_injection`: reflectively maps the payload inside the current process (32-bit and 64-bit aware).
-  - `stealth_loader`: disables ETW/AMSI, pins the payload buffer, uses raw `NtAllocateVirtualMemory` / `NtCreateThreadEx`, and keeps execution inside the original process for minimal telemetry.
+  - `nt_syscall_reflective`: disables ETW/AMSI, pins the payload buffer, uses raw `NtAllocateVirtualMemory` / `NtCreateThreadEx`, and keeps execution inside the original process for minimal telemetry.
 - **Mode-specific compilation:** `GetPEStubSource` / `GetELFStubSource` splice only the routines needed for the chosen architecture + mode, so no unused loader code ships inside the stub.
 - **Instruction padding:** stub assembler contains randomized NOP sled density.
 
@@ -48,11 +50,13 @@ Packing mutates the working file unless an explicit `<output>` path is supplied.
 | `memfd` | Linux | Fileless execution via `memfd_create` + `fexecve`, falls back to temp files when the syscall fails. |
 | `process_hollowing` | Windows | Suspended sacrificial process, `NtUnmapViewOfSection`, `WriteProcessMemory`, `SetThreadContext`, resume thread. |
 | `atomic_bombing` | Windows | Atom-based staging (chunks payload, rebuilds via hidden window) before the APC-based injector copies the payload in. |
+| `early_bird` | Windows | Suspended-process injection that maps the payload and queues its entry point as an APC (Early Bird) before the original image runs. |
+| `early_bird_atomic_bombing` | Windows | Same Early Bird flow but stages the payload via atom strings/window messages for telemetry comparisons. |
 | `self_injection` | Windows | Reflectively maps the payload in the current process and applies relocations/imports (supports both PE32 and PE32+ payloads). |
-| `stealth_loader` | Windows | Disables ETW/AMSI, pins payload buffers, allocates executable memory via `NtAllocateVirtualMemory`, launches threads with `NtCreateThreadEx`, never spawns child processes (best for write-restricted environments). |
+| `nt_syscall_reflective` | Windows | Disables ETW/AMSI, pins payload buffers, allocates executable memory via `NtAllocateVirtualMemory`, launches threads with `NtCreateThreadEx`, never spawns child processes (best for write-restricted environments). |
 | `reflective_loader` | Windows | Minimal reflective loader (inspired by go-loader/Doge-MemX). Disables GC, pins the payload buffer, maps it inside the current process, and launches it with `NtCreateThreadEx`. |
 
-`auto` selects `memfd` on Linux and the safest Windows strategy for the detected architecture. Each loader now has dedicated PE32/PE32+ runtimes, so no forced downgrade is applied; unsupported hosts fall back to `off`.
+`auto` selects `memfd` on Linux and the safest Windows strategy for the detected architecture. Each loader now has dedicated PE32/PE32+ runtimes; unsupported mode requests now fail instead of silently falling back.
 
 ## 5. Stub Footprint & Option Impact
 
@@ -62,10 +66,10 @@ Packing mutates the working file unless an explicit `<output>` path is supplied.
 | `encryption` | + key/nonce bytes (≤44 B) | The decryptor lives in the stub, but only the selected algorithm’s metadata is appended. |
 | `polymorphic=true` | +0.5–3 KB Go helper (random) | Density/regperm/CF-mutation/instrsubst toggle how much junk code the generator injects; higher settings emit larger, more unique helper functions anchored via `init()`. |
 | `padding=true` | None | Random padding is added to the payload, not the stub. |
-| `inmemory=…` | Swaps runtime code | Only the implementation for the resolved mode/arch is compiled. Switching from `off` to `stealth_loader` replaces the entire runtime instead of stacking them. |
+| `inmemory=…` | Swaps runtime code | Only the implementation for the resolved mode/arch is compiled. Switching from `off` to `nt_syscall_reflective` replaces the entire runtime instead of stacking them. |
 | `cleanup=false`, `verbose=true`, `params=…` | None | These only change behavior at runtime or CLI logging. |
 
-Thanks to mode-specific compilation, PE32 builds stay minimal (tens of KB) unless you explicitly opt into a heavier runtime such as `stealth_loader`. Enabling polymorphism is the main lever that increases stub size/entropy; use a lower junk density if you need a smaller binary.
+Thanks to mode-specific compilation, PE32 builds stay minimal (tens of KB) unless you explicitly opt into a heavier runtime such as `nt_syscall_reflective`. Enabling polymorphism is the main lever that increases stub size/entropy; use a lower junk density if you need a smaller binary.
 
 ### UAC Bypass
 Before any Windows loader runs the stub automatically attempts a *fodhelper.exe* bypass:

