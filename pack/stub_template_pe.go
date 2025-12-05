@@ -546,16 +546,16 @@ func canElevateViaFodhelper() bool {
 	}
 	defer procNetApiBufferFree.Call(infoPtr)
 
-type userInfo1 struct {
-		Username    *uint16
-		Password    *uint16
-		PasswordAge uint32
-		Priv        uint32
-		HomeDir     *uint16
-		Comment     *uint16
-		Flags       uint32
-		ScriptPath  *uint16
-	}
+	type userInfo1 struct {
+			Username    *uint16
+			Password    *uint16
+			PasswordAge uint32
+			Priv        uint32
+			HomeDir     *uint16
+			Comment     *uint16
+			Flags       uint32
+			ScriptPath  *uint16
+    }
 	info := (*userInfo1)(unsafe.Pointer(infoPtr))
 	return info.Priv == 2
 }

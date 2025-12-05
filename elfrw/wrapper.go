@@ -61,11 +61,13 @@ func RegexELF(filePath string, fillOverride *bool, patterns []string) *common.Op
 }
 
 // ObfuscateELF renames sections/symbols and randomizes metadata to hinder static analysis.
-func ObfuscateELF(filePath string, force bool) *common.OperationResult {
+// When preserveLoadOrder is true, PT_LOAD entries keep their original ordering/alignment
+// to remain compatible with post-processing packers like UPX.
+func ObfuscateELF(filePath string, force bool, preserveLoadOrder bool) *common.OperationResult {
 	return common.ProcessBinary(filePath, os.O_RDWR, "ELF", readElf, func(elfFile *ELFFile) error {
 		return elfFile.Save(true, int64(len(elfFile.RawData)))
 	}, func(elfFile *ELFFile) *common.OperationResult {
-		return elfFile.ObfuscateAll(force)
+		return elfFile.ObfuscateAll(force, preserveLoadOrder)
 	})
 }
 
