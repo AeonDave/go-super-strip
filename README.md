@@ -53,9 +53,9 @@ extract overlay (-el)
 | Flag | Purpose | Options |
 |------|---------|---------|
 | `-a[=format=text|json,mode=simple|deep]` | Analyzer for PE/ELF metadata. JSON output is available only for `mode=deep`. | Defaults: `format=text`, `mode=simple`. |
-| `-s[=force=true/false,fill=auto|zero|random]` | Strips debug information, COFF/Rich headers, symbol tables, etc. | `force=false`, `fill=auto` by default. |
-| `-c[=force=true/false,keep_resources=true/false]` | Trims dead ranges and normalizes headers. | `keep_resources=true` preserves PE `.rsrc` data unless disabled. |
-| `-o[=force=true/false]` | Renames sections/symbols and randomizes tables. | Force enables aggressive renames. |
+| `-s[=force=true/false,fill=auto|zero|random]` | Strips debug information, COFF/Rich headers, symbol tables, etc. | `force=false` (alias: `f`), `fill=auto` by default. |
+| `-c[=force=true/false,keep_resources=true/false]` | Trims dead ranges and normalizes headers. | `force=false` (alias: `f`), `keep_resources=true` (aliases: `keep-resources`, `keepresources`) preserves PE `.rsrc` data unless disabled. |
+| `-o[=force=true/false]` | Renames sections/symbols and randomizes tables. | `force=false` (alias: `f`) enables aggressive renames. |
 | `-r=pattern=…[,pattern=…][,fill=zero|random]` | Overwrites bytes that match one or more regexes. | `pattern` accepts literal regexes or file paths; default fill is zeroes. Multiple `-r` flags accumulate patterns. |
 | `-i=name=…,file|data=…,password=…` | Inserts a new encrypted section. | Provide exactly one of `file` or `data` (ASCII or `0x` hex). `password` accepts ASCII or hex. Names longer than 8 chars are truncated for PE. |
 | `-l=file|data=…,password=…` | Appends an overlay payload after the executable image. | Same data/password rules as section insertion. |
@@ -110,18 +110,18 @@ extract overlay (-el)
 The packer rewrites the binary into a self-extracting Go stub plus encrypted payload.
 
 **Compression & Encryption**
-- `compression=xz|lzma|none` and `level=0-9` (ignored when compression is `none`).
-- `encryption=xor|aes-256-gcm|chacha20|none`. AES/ChaCha automatically create keys/nonces when none are provided.
+- `compression=xz|lzma|none` (alias `comp`) and `level=0-9` (ignored when compression is `none`).
+- `encryption=xor|aes-256-gcm|chacha20|none` (aliases `encrypt`, `encr`). AES/ChaCha automatically create keys/nonces when none are provided. Accepted aliases for algorithms: `aes`, `aes-gcm`, `aes256` → `aes-256-gcm`; `chacha`, `chacha20poly1305` → `chacha20`.
 
 **Polymorphism & Noise**
 - `polymorphic=true/false` (alias `poly`). When true you can also tune:
-  - `junkdensity=0.0-1.0`
+  - `junkdensity=0.0-1.0` (alias `junk`)
   - `regperm=true/false`, `cfmutation=true/false`, `instrsubst=true/false`
 - `padding=true/false` toggles random padding; padding sizes follow the defaults (512–4096 bytes) to avoid exposing custom fingerprints.
 - Enabling polymorphism increases the stub size roughly in proportion to the density/mutation flags above; leave it disabled (or set low density) when you need the smallest stub.
 
 **Execution & Telemetry**
-- `inmemory=off|auto|memfd|process_hollowing|atomic_bombing|process_doppelganging|transacted_hollowing|self_injection|nt_syscall_reflective|reflective_loader`
+- `inmemory=off|auto|memfd|process_hollowing|atomic_bombing|process_doppelganging|transacted_hollowing|early_bird|early_bird_atomic_bombing|self_injection|nt_syscall_reflective|reflective_loader` (alias `inmem`)
   - `auto` selects `memfd` on Linux and the safest architecture-aware Windows strategy (PE32/PE32+ binaries keep their native loaders).
   - `memfd` (`auto` on Linux) uses `memfd_create` + `fexecve` to run without touching disk; it falls back to temp files if the syscall is unavailable.
   - `process_hollowing` (Windows) spawns a suspended process, calls `NtUnmapViewOfSection`, writes the payload with `WriteProcessMemory`, fixes the context, and resumes the thread.
@@ -133,12 +133,9 @@ The packer rewrites the binary into a self-extracting Go stub plus encrypted pay
   - `nt_syscall_reflective` disables ETW/AMSI, locks the OS thread, disables GC, pins the payload buffer, allocates executable memory with `NtAllocateVirtualMemory`, and launches it with `NtCreateThreadEx` (no sacrificial process).
   - `self_injection` reflectively maps the payload inside the current process (supports both PE32 and PE32+), fixes relocations/imports, and calls the entry point directly.
   - `reflective_loader` is an extremely small loader (inspired by go-loader/Doge-MemX) that pins/reflects the payload inside the current process and launches it via `NtCreateThreadEx` after disabling GC/OS thread migration.
-- `params="ascii command"` appends a default command line when the payload is executed. These arguments run before user-supplied CLI args, so you can bake in sequences like `-sn 127.0.0.1 -oN output.txt`.
+- `params="ascii command"` appends a default command line when the payload is executed. These arguments run before user-supplied CLI args, so you can bake in sequences like `-sn 127.0.0.1 -oN output.txt`. Strings with spaces should be quoted.
 - `cleanup=true/false` deletes temporary files when not running in-memory.
-- `verbose=true/false` prints the pack configuration before building the stub.
-- `params="ascii command"` appends a default command line when the payload is executed. These arguments run before user-supplied CLI args, so you can bake in sequences like `-sn 127.0.0.1 -oN output.txt`.
-- `cleanup=true/false` deletes temporary files when not running in-memory.
-- `verbose=true/false` prints the pack configuration before building the stub.
+- `verbose=true/false` (alias `v`) prints the pack configuration before building the stub.
 - `output` still follows the CLI positional argument—`-p` mutates `input` unless an `output` path is provided.
 
 **Polymorphic Techniques**
