@@ -31,7 +31,7 @@ func TestELFPipelineOperations(t *testing.T) {
 	requireApplied(t, "compact", elfrw.CompactELF(elfPath, false, true))
 	assertAnalysisLooksComprehensive(t, analyze(), "post-compact analyze")
 
-	requireApplied(t, "obfuscate", elfrw.ObfuscateELF(elfPath, true))
+	requireApplied(t, "obfuscate", elfrw.ObfuscateELF(elfPath, true, false))
 	assertAnalysisLooksComprehensive(t, analyze(), "post-obfuscate analyze")
 
 	const regexTarget = "ELFPipelineRegexTarget"

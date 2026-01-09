@@ -52,7 +52,7 @@ func generateSyntheticSectionName(used map[string]bool) (string, error) {
 	return "", fmt.Errorf("unable to generate unique section name")
 }
 
-func (e *ELFFile) ObfuscateAll(force bool) *common.OperationResult {
+func (e *ELFFile) ObfuscateAll(force bool, preserveLoadOrder bool) *common.OperationResult {
 	if err := e.validateELF(); err != nil {
 		return common.NewSkipped(fmt.Sprintf("ELF validation failed: %v", err))
 	}
@@ -76,7 +76,7 @@ func (e *ELFFile) ObfuscateAll(force bool) *common.OperationResult {
 		return e.obfuscateReservedHeaderFields(), nil
 	})
 	pipeline.AddStep("program headers", func() (*common.OperationResult, error) {
-		return e.obfuscateProgramHeaders(force, originalSize), nil
+		return e.obfuscateProgramHeaders(force, originalSize, preserveLoadOrder), nil
 	})
 	pipeline.AddStep("dynamic symbols", func() (*common.OperationResult, error) {
 		return e.obfuscateDynamicSymbols(force), nil
@@ -271,7 +271,7 @@ func (e *ELFFile) fetchProgramHeaderMeta() (*programHeaderMeta, error) {
 
 const maxForceGrowthRatio = 1.15
 
-func (e *ELFFile) obfuscateProgramHeaders(force bool, originalSize uint64) *common.OperationResult {
+func (e *ELFFile) obfuscateProgramHeaders(force bool, originalSize uint64, preserveLoadOrder bool) *common.OperationResult {
 	meta, err := e.fetchProgramHeaderMeta()
 	if err != nil || len(e.Segments) == 0 {
 		return common.NewSkipped("no program headers available for obfuscation")
@@ -305,17 +305,19 @@ func (e *ELFFile) obfuscateProgramHeaders(force bool, originalSize uint64) *comm
 			changesApplied += noteCount
 		}
 	}
-	if e.reverseSegmentType(entries, PT_LOAD) {
-		loadCount := e.countSegmentsOfType(PT_LOAD, phCount)
-		if loadCount > 0 {
-			result.AddDetail(fmt.Sprintf("reordered %d PT_LOAD entries", loadCount), loadCount, false)
-			changesApplied += loadCount
+	if !preserveLoadOrder {
+		if e.reverseSegmentType(entries, PT_LOAD) {
+			loadCount := e.countSegmentsOfType(PT_LOAD, phCount)
+			if loadCount > 0 {
+				result.AddDetail(fmt.Sprintf("reordered %d PT_LOAD entries", loadCount), loadCount, false)
+				changesApplied += loadCount
+			}
 		}
-	}
 
-	if alignCount, alignErr := e.randomizeLoadAlignments(entries); alignErr == nil && alignCount > 0 {
-		result.AddDetail(fmt.Sprintf("randomized alignment on %d load segments", alignCount), alignCount, false)
-		changesApplied += alignCount
+		if alignCount, alignErr := e.randomizeLoadAlignments(entries); alignErr == nil && alignCount > 0 {
+			result.AddDetail(fmt.Sprintf("randomized alignment on %d load segments", alignCount), alignCount, false)
+			changesApplied += alignCount
+		}
 	}
 
 	if paddrCount, paddrErr := e.randomizePhysicalAddresses(entries); paddrErr == nil && paddrCount > 0 {

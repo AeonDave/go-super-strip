@@ -75,7 +75,8 @@ type CompactOptions struct {
 }
 
 type ObfuscateOptions struct {
-	Force bool
+	Force             bool
+	PreserveLoadOrder bool
 }
 
 type RegexOptions struct {
@@ -474,6 +475,12 @@ func parseObfuscate(opt string) (*ObfuscateOptions, error) {
 				return nil, fmt.Errorf("obfuscate force: %w", err)
 			}
 			cfg.Force = v
+		case "preserve_load_order", "preserve-load-order", "keep_load_order", "keep-load-order":
+			v, err := parseBool(value)
+			if err != nil {
+				return nil, fmt.Errorf("obfuscate preserve_load_order: %w", err)
+			}
+			cfg.PreserveLoadOrder = v
 		default:
 			return nil, fmt.Errorf("unknown obfuscate option %q", key)
 		}
@@ -978,7 +985,7 @@ func runObfuscate(path string, opts *ObfuscateOptions, isPE bool) (*common.Opera
 		if res := perw.ObfuscatePE(path, opts.Force); res != nil {
 			return res, nil
 		}
-	} else if res := elfrw.ObfuscateELF(path, opts.Force); res != nil {
+	} else if res := elfrw.ObfuscateELF(path, opts.Force, opts.PreserveLoadOrder); res != nil {
 		return res, nil
 	}
 	return nil, common.WrapStageError("obfuscate", fmt.Errorf("obfuscation operation returned no result"))
