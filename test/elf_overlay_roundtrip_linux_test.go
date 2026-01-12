@@ -33,7 +33,7 @@ func buildNativeELF(t *testing.T, outName string) string {
 	return out
 }
 
-func extractOverlayData(t *testing.T, elfPath string) []byte {
+func extractOverlayDataELF(t *testing.T, elfPath string) []byte {
 	t.Helper()
 
 	file, err := os.Open(elfPath)
@@ -99,7 +99,7 @@ func TestOverlayELF_RoundTrip_Linux(t *testing.T) {
 		t.Fatalf("expected overlay applied, got %#v", res)
 	}
 
-	overlay := extractOverlayData(t, host)
+	overlay := extractOverlayDataELF(t, host)
 	pbytes, err := os.ReadFile(payload)
 	if err != nil {
 		t.Fatalf("read payload failed: %v", err)
@@ -123,7 +123,7 @@ func TestOverlayELF_RoundTrip_Encrypted_Linux(t *testing.T) {
 		t.Fatalf("expected overlay applied, got %#v", res)
 	}
 
-	overlay := extractOverlayData(t, host)
+	overlay := extractOverlayDataELF(t, host)
 	pbytes, err := os.ReadFile(payload)
 	if err != nil {
 		t.Fatalf("read payload failed: %v", err)

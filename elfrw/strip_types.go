@@ -217,7 +217,11 @@ func GetRegexStripRules() []RegexStripRule {
 		},
 		{
 			Patterns: []string{
-				`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`,
+				// NOTE: keep these conservative to avoid wiping legitimate config strings.
+				// Email-like patterns are common in user data; keep behind a word boundary.
+				`\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b`,
+				// ld.so path fingerprints (common in dynamically linked binaries).
+				// This is not strictly necessary for execution, but avoid matching arbitrary file paths.
 				`/(?:lib|usr/lib|lib64|usr/lib64)[^"\s\x00]*ld-(?:linux|musl)[^"\s\x00]*`,
 			},
 			Description: "Contact strings and loader fingerprints",

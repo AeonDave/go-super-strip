@@ -101,6 +101,23 @@ func TestStripELF_PreservesELFValidity(t *testing.T) {
 	}
 }
 
+func TestStripELF_PreservesGoPclnByDefault(t *testing.T) {
+	elfPath := copyELFFixture(t, "simple_go_pcln")
+	original := readELFSectionData(t, elfPath, ".gopclntab")
+	if len(original) == 0 {
+		t.Skip("fixture missing .gopclntab; skipping preservation check")
+	}
+
+	if res := elfrw.StripELF(elfPath, false, nil); res == nil {
+		t.Fatal("expected result from StripELF, got nil")
+	}
+
+	after := readELFSectionData(t, elfPath, ".gopclntab")
+	if !bytes.Equal(original, after) {
+		t.Fatalf(".gopclntab changed after default strip (%d -> %d bytes)", len(original), len(after))
+	}
+}
+
 func TestCompactELF_SafeOperation(t *testing.T) {
 	elfPath := copyELFFixture(t, "simple_c")
 
@@ -194,6 +211,65 @@ func TestStripELF_FillOverrideRandom(t *testing.T) {
 	data := readELFSectionData(t, elfPath, sectionName)
 	if isAllZero(data) {
 		t.Fatalf("expected section %s to be randomized", sectionName)
+	}
+}
+
+func TestStripELF_RegexPackerUsesRandomFill(t *testing.T) {
+	elfPath := copyELFFixture(t, "regex_packer")
+	sectionName := ".packupx"
+	payload := "5.02 UPX! DEMO"
+
+	requireApplied(t, "insert", elfrw.InsertELF(elfPath, sectionName, payload, ""))
+
+	before := readELFSectionData(t, elfPath, sectionName)
+	if !strings.Contains(string(before), "UPX!") {
+		t.Fatalf("expected UPX marker to be present before strip")
+	}
+
+	res := elfrw.StripELF(elfPath, false, nil)
+	requireApplied(t, "strip", res)
+
+	after := readELFSectionData(t, elfPath, sectionName)
+	if strings.Contains(string(after), "UPX!") {
+		t.Fatalf("expected UPX marker removed after strip")
+	}
+	if isAllZero(after) {
+		t.Fatalf("expected random fill for packer rule, got all zeros")
+	}
+}
+
+func TestStripELF_PreservesInterpFromRegex(t *testing.T) {
+	elfPath := copyELFFixture(t, "strip_interp")
+	sectionName := ".interp"
+	payload := "/lib64/ld-linux-gosstrip-test.so.2"
+	requireApplied(t, "insert", elfrw.InsertELF(elfPath, sectionName, payload, ""))
+
+	before := readELFSectionData(t, elfPath, sectionName)
+	if !bytes.Contains(before, []byte("ld-linux-gosstrip-test")) {
+		t.Fatalf("expected loader path marker to be present before strip")
+	}
+
+	if res := elfrw.StripELF(elfPath, false, nil); res == nil {
+		t.Fatalf("expected strip result, got nil")
+	}
+	after := readELFSectionData(t, elfPath, sectionName)
+	if !bytes.Contains(after, []byte("ld-linux-gosstrip-test")) {
+		t.Fatalf("expected .interp payload to remain after safe strip")
+	}
+}
+
+func TestStripELF_PreservesExceptionTableByDefault(t *testing.T) {
+	elfPath := copyELFFixture(t, "strip_except")
+	sectionName := ".gcc_except_table"
+	payload := strings.Repeat("E", 64)
+	requireApplied(t, "insert", elfrw.InsertELF(elfPath, sectionName, payload, ""))
+
+	if res := elfrw.StripELF(elfPath, false, nil); res == nil {
+		t.Fatalf("expected strip result, got nil")
+	}
+	data := readELFSectionData(t, elfPath, sectionName)
+	if isAllZero(data) {
+		t.Fatalf("expected %s to remain in safe strip mode", sectionName)
 	}
 }
 

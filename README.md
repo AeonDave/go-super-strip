@@ -28,25 +28,25 @@ gosstrip [-s[=...]] [-c[=...]] [-o[=...]] [-r=...] [-i=...] [-l=...] [-ei=...] [
 - When multiple operations are provided the CLI enforces the canonical order below and mutates `input` in-place unless an `output` path is supplied.
 
 ```
-   analyze (optional)
-        │
-    strip (-s)
-        ↓
-  compact (-c)
-        ↓
- obfuscate (-o)
-        ↓
- regex (-r)*   (*can appear multiple times)
-        ↓
+analyze (optional)
+  |
+strip (-s)
+  |
+compact (-c)
+  |
+obfuscate (-o)
+  |
+regex (-r)*   (*can appear multiple times)
+  |
 insert section (-i)
-        ↓
+  |
 overlay (-l)
-        ↓
+  |
 extract section (-ei)
-        ↓
+  |
 extract overlay (-el)
-        ↓
-   pack (-p)
+  |
+pack (-p)
 ```
 
 ## Feature Flags & Options
@@ -55,7 +55,7 @@ extract overlay (-el)
 | `-a[=format=text|json,mode=simple|deep]` | Analyzer for PE/ELF metadata. JSON output is available only for `mode=deep`. | Defaults: `format=text`, `mode=simple`. |
 | `-s[=force=true/false,fill=auto|zero|random]` | Strips debug information, COFF/Rich headers, symbol tables, etc. | `force=false`, `fill=auto` by default. |
 | `-c[=force=true/false,keep_resources=true/false]` | Trims dead ranges and normalizes headers. | `keep_resources=true` preserves PE `.rsrc` data unless disabled. |
-| `-o[=force=true/false]` | Renames sections/symbols and randomizes tables. | Force enables aggressive renames. |
+| `-o[=force=true/false,preserve_load_order=true/false]` | Renames sections/symbols and randomizes tables. | `preserve_load_order` applies to ELF program headers; `force` enables aggressive renames. |
 | `-r=pattern=…[,pattern=…][,fill=zero|random]` | Overwrites bytes that match one or more regexes. | `pattern` accepts literal regexes or file paths; default fill is zeroes. Multiple `-r` flags accumulate patterns. |
 | `-i=name=…,file|data=…,password=…` | Inserts a new encrypted section. | Provide exactly one of `file` or `data` (ASCII or `0x` hex). `password` accepts ASCII or hex. Names longer than 8 chars are truncated for PE. |
 | `-l=file|data=…,password=…` | Appends an overlay payload after the executable image. | Same data/password rules as section insertion. |
@@ -74,14 +74,48 @@ extract overlay (-el)
 - `force=true` ignores safe lists (e.g., drops PE relocation/exception data).
 - `fill=auto` respects per-rule fill requirements, while `zero` or `random` override the wipe pattern.
 
+Flow (ASCII, PE)
+```
+[Read PE] -> [Section wipe] -> [Header scrub] -> [Directory scrub] -> [Regex scrub] -> [Save]
+```
+
+Flow (ASCII, ELF)
+```
+[Read ELF] -> [Section wipe] -> [Header scrub] -> [Regex scrub] -> [Save]
+```
+
+- Safe defaults: skips loader tables (PT_INTERP/relocations), preserves Go runtime tables (`.gopclntab`) and PE resources/manifests (`.rsrc`) unless `force=true`. Regex scrubbing avoids string tables/interpreter paths unless forced.
+- Force mode: required for relocation/exception stripping, resource removal, and any loader-facing mutation that can break execution.
+
 ### Compact (`-c`)
 - Reflows headers, truncates trailing padding, and rebuilds ELF section/header tables.
 - `force=true` removes relocation helpers (e.g., ELF SHT) even if downstream tooling expects them.
 - `keep_resources=false` allows `.rsrc` to be removed from PE binaries.
 
+Flow (ASCII, PE)
+```
+[Read PE] -> [Identify removable] -> [Remove/trim] -> [Recalc headers] -> [Save]
+```
+
+Flow (ASCII, ELF)
+```
+[Read ELF] -> [Identify removable] -> [Remove/trim] -> [Rebuild SHT] -> [Validate] -> [Save]
+```
+
 ### Obfuscate (`-o`)
 - Renames sections/imports, shuffles metadata, and injects harmless noise.
 - `force=true` enables high-risk path mutations (duplicate removal, custom entrypoints).
+- `preserve_load_order=true` keeps ELF PT_LOAD ordering stable when obfuscating program headers.
+
+Flow (ASCII, PE)
+```
+[Read PE] -> [Rename sections] -> [Scrub padding] -> [Runtime strings] -> [Header metadata] -> [Imports] -> [Save]
+```
+
+Flow (ASCII, ELF)
+```
+[Read ELF] -> [Rename sections] -> [Scrub padding] -> [Runtime strings] -> [Header fields] -> [Program headers] -> [Dynsym] -> [Save]
+```
 
 ### Regex (`-r`)
 - Each `pattern=` token can contain a literal regex or a path to a newline-separated rules file (blank lines and `#` comments ignored).
@@ -231,6 +265,17 @@ gosstrip -s -c -o -r=pattern='UPX!' -i=name=.intel,data=SECRET \
 Review the generated logs—especially analyzer summaries at the start and end—to catch regressions before shipping changes.
 
 ## Architecture
+Flow (ASCII)
+```
+[CLI] -> [Pipeline]
+           |
+           +-> [perw]  (PE read/write + transforms)
+           |
+           +-> [elfrw] (ELF read/write + transforms)
+           |
+           +-> [pack]  (stub builder + payload wrap)
+```
+
 | Path | Description |
 |------|-------------|
 | `main.go` | CLI entry point, flag parsing, pipeline orchestration. |
@@ -242,13 +287,13 @@ Review the generated logs—especially analyzer summaries at the start and end�
 | `testfiles/` | Small C/Go sources compiled during tests. |
 
 ```
-gosstrip
-├── main.go
-├── perw/   (PE utilities)
-├── elfrw/  (ELF utilities)
-├── pack/   (packer + stubs)
-├── test/   (integration + scripts)
-├── docs/   (technique guides)
-└── testfiles/
+gosstrip/
+|-- main.go
+|-- perw/     (PE utilities)
+|-- elfrw/    (ELF utilities)
+|-- pack/     (packer + stubs)
+|-- test/     (integration + scripts)
+|-- docs/     (technique guides)
+`-- testfiles/
 ```
 Use `docs/` for methodology deep dives and `AGENTS.md` for contributor workflow expectations.

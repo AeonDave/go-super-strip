@@ -68,7 +68,7 @@ func SectionSpecs() []SectionRuleSpec {
 			PrefixNames: []string{".gnu.linkonce."},
 			Description: "symbol table information",
 			Fill:        FillZero,
-			Targets:     TargetAllPE | TargetELFBin,
+			Targets:     TargetAllPE | TargetAllELF,
 		},
 		{
 			Key:         SectionKeyRelocation,
@@ -91,7 +91,7 @@ func SectionSpecs() []SectionRuleSpec {
 			Key: SectionKeyNonEssential,
 			ExactNames: []string{
 				".comment", ".note", ".drectve", ".shared", ".sxdata",
-				".gcc_except_table", ".note.gnu.build-id", ".note.ABI-tag",
+				".note.gnu.build-id", ".note.ABI-tag",
 				".note.gnu.gold-version", ".gnu_debuglink", ".gnu_debugaltlink",
 			},
 			PrefixNames: []string{".note.", ".gnu.warning.", ".mdebug."},
@@ -113,11 +113,15 @@ func SectionSpecs() []SectionRuleSpec {
 			Key: SectionKeyBuildInfo,
 			ExactNames: []string{
 				".buildid", ".gfids", ".giats", ".gljmp", ".textbss",
-				".noptrdata", ".typelink", ".itablink", ".gosymtab", ".gopclntab",
+				".noptrdata", ".typelink", ".itablink",
+				// Go-specific tables: stripping these can break the runtime (especially PIE/RELRO).
+				// Keep them behind force mode.
+				".gosymtab", ".gopclntab",
 			},
 			PrefixNames: []string{".go.", ".gopkg."},
 			Description: "build information and toolchain metadata",
 			Fill:        FillZero,
+			IsRisky:     true,
 			Targets:     TargetAll,
 		},
 		{
@@ -133,7 +137,6 @@ func SectionSpecs() []SectionRuleSpec {
 			ExactNames: []string{
 				".rustc", ".rust_eh_personality", ".llvm_addrsig",
 				".llvm.embedded.object", ".jcr", ".tm_clone_table",
-				".data.rel.ro", ".data.rel.ro.local",
 			},
 			PrefixNames: []string{".rust.", ".llvm.", ".msvcrt.", ".mingw32."},
 			Description: "runtime and compiler-specific sections",
@@ -146,8 +149,9 @@ func SectionSpecs() []SectionRuleSpec {
 				".rsrc", ".rsrc$01", ".rsrc$02", ".rsrc$DATA",
 			},
 			PrefixNames: []string{".rsrc$"},
-			Description: "embedded resources",
+			Description: "embedded resources (manifests, message tables)",
 			Fill:        FillZero,
+			IsRisky:     true,
 			Targets:     TargetAllPE,
 		},
 		{

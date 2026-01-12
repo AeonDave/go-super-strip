@@ -84,12 +84,16 @@ func (e *ELFFile) StripByteRegex(pattern *regexp.Regexp, useRandom bool, force b
 	if err != nil {
 		return 0, err
 	}
+	protected := []sectionRange(nil)
+	if !force {
+		protected = e.buildProtectedRegexRanges()
+	}
 	for _, match := range matches {
 		start, end := match[0], match[1]
 		if start < 0 || end > len(e.RawData) || start >= end {
 			continue
 		}
-		if !force && e.matchProtectedStringTableRange(start, end) {
+		if !force && (e.matchProtectedStringTableRange(start, end) || rangesOverlap(protected, start, end)) {
 			continue
 		}
 		if err := e.fillRegion(uint64(start), end-start, useRandom); err != nil {
@@ -475,6 +479,52 @@ func (e *ELFFile) matchProtectedStringTableRange(start, end int) bool {
 		secStart := int(section.Offset)
 		secEnd := secStart + int(section.Size)
 		if start < secEnd && end > secStart {
+			return true
+		}
+	}
+	return false
+}
+
+type sectionRange struct {
+	start int
+	end   int
+}
+
+func (e *ELFFile) buildProtectedRegexRanges() []sectionRange {
+	critical := e.identifyCriticalSections(false)
+	ranges := make([]sectionRange, 0, len(critical)+len(e.Segments))
+	for idx := range critical {
+		if idx < 0 || idx >= len(e.Sections) {
+			continue
+		}
+		section := e.Sections[idx]
+		if section.Type == SHT_NOBITS || section.Offset < 0 || section.Size <= 0 {
+			continue
+		}
+		start := int(section.Offset)
+		end := start + int(section.Size)
+		if start < 0 || end > len(e.RawData) || start >= end {
+			continue
+		}
+		ranges = append(ranges, sectionRange{start: start, end: end})
+	}
+	for _, segment := range e.Segments {
+		if segment.Type != PT_INTERP || segment.FileSize == 0 {
+			continue
+		}
+		start := int(segment.Offset)
+		end := start + int(segment.FileSize)
+		if start < 0 || end > len(e.RawData) || start >= end {
+			continue
+		}
+		ranges = append(ranges, sectionRange{start: start, end: end})
+	}
+	return ranges
+}
+
+func rangesOverlap(ranges []sectionRange, start, end int) bool {
+	for _, r := range ranges {
+		if start < r.end && end > r.start {
 			return true
 		}
 	}

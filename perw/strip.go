@@ -272,6 +272,10 @@ func (p *PEFile) StripAllDirs() *common.OperationResult {
 		operations = append(operations, result.Message)
 		totalCount += result.Count
 	}
+	if result := p.StripImportDirectoryMetadata(); result != nil && result.Applied {
+		operations = append(operations, result.Message)
+		totalCount += result.Count
+	}
 
 	if result := p.StripResourceDirectory(); result != nil && result.Applied {
 		operations = append(operations, result.Message)
@@ -419,10 +423,58 @@ func (p *PEFile) StripDebugDirectory() *common.OperationResult {
 	if rva == 0 && size == 0 {
 		return common.NewSkipped("no debug directory found")
 	}
+	payloadsWiped := 0
+	tableWiped := false
+	if rva != 0 && size > 0 {
+		if debugDirPhys, err := p.rvaToPhysical(uint64(rva)); err == nil {
+			dirStart := int(debugDirPhys)
+			if dirStart >= 0 && dirStart < len(p.RawData) {
+				maxSize := int(size)
+				if dirStart+maxSize > len(p.RawData) {
+					maxSize = len(p.RawData) - dirStart
+				}
+				const entrySize = 28
+				zeroEntry := make([]byte, entrySize)
+				dirEnd := dirStart + maxSize
+				for offset := dirStart; offset+entrySize <= dirEnd; offset += entrySize {
+					entry := p.RawData[offset : offset+entrySize]
+					if bytes.Equal(entry, zeroEntry) {
+						break
+					}
+					sizeOfData := binary.LittleEndian.Uint32(entry[16:20])
+					ptrToRaw := binary.LittleEndian.Uint32(entry[24:28])
+					if sizeOfData > 0 && ptrToRaw > 0 {
+						payloadStart := int(ptrToRaw)
+						if payloadStart < len(p.RawData) {
+							payloadEnd := payloadStart + int(sizeOfData)
+							if payloadEnd > len(p.RawData) {
+								payloadEnd = len(p.RawData)
+							}
+							if payloadEnd > payloadStart {
+								_ = p.fillRegion(int64(payloadStart), payloadEnd-payloadStart, ZeroFill)
+								payloadsWiped++
+							}
+						}
+					}
+				}
+				if maxSize > 0 {
+					_ = p.fillRegion(int64(dirStart), maxSize, ZeroFill)
+					tableWiped = true
+				}
+			}
+		}
+	}
 	if err := p.fillRegion(debugDirEntryOffset, 8, ZeroFill); err != nil {
 		return common.NewSkipped(fmt.Sprintf("failed to strip debug directory entry: %v", err))
 	}
-	return common.NewApplied("removed debug directory entry from PE header", 1)
+	message := "removed debug directory entry from PE header"
+	if tableWiped {
+		message = "removed debug directory entry from PE header; wiped debug directory data"
+		if payloadsWiped > 0 {
+			message = fmt.Sprintf("%s and %d payload(s)", message, payloadsWiped)
+		}
+	}
+	return common.NewApplied(message, 1)
 }
 
 func (p *PEFile) StripResourceDirectory() *common.OperationResult {
@@ -482,6 +534,62 @@ func (p *PEFile) StripLoadConfigDirectory() *common.OperationResult {
 		return common.NewApplied("removed timestamp and version from load config directory", modifications)
 	}
 	return common.NewSkipped("no load config fields could be stripped")
+}
+
+func (p *PEFile) StripImportDirectoryMetadata() *common.OperationResult {
+	offsets, err := p.calculateOffsets()
+	if err != nil {
+		return common.NewSkipped(fmt.Sprintf("failed to calculate offsets: %v", err))
+	}
+	importDirOffset := offsets.OptionalHeader + directoryOffsets.importTable[p.Is64Bit]
+	if err := p.validateOffset(importDirOffset, 8); err != nil {
+		return common.NewSkipped("import directory entry not accessible")
+	}
+	rva := binary.LittleEndian.Uint32(p.RawData[importDirOffset:])
+	size := binary.LittleEndian.Uint32(p.RawData[importDirOffset+4:])
+	if rva == 0 || size < 20 {
+		return common.NewSkipped("no import directory found")
+	}
+	importPhys, err := p.rvaToPhysical(uint64(rva))
+	if err != nil || int(importPhys) >= len(p.RawData) {
+		return common.NewSkipped("failed to map import directory RVA")
+	}
+	maxSize := int(size)
+	if int(importPhys)+maxSize > len(p.RawData) {
+		maxSize = len(p.RawData) - int(importPhys)
+	}
+	if maxSize < 20 {
+		return common.NewSkipped("import directory entry not accessible")
+	}
+
+	const descriptorSize = 20
+	zeroDesc := make([]byte, descriptorSize)
+	modifications := 0
+	entries := 0
+	for offset := int(importPhys); offset+descriptorSize <= int(importPhys)+maxSize; offset += descriptorSize {
+		desc := p.RawData[offset : offset+descriptorSize]
+		if bytes.Equal(desc, zeroDesc) {
+			break
+		}
+		entries++
+		if binary.LittleEndian.Uint32(desc[4:8]) != 0 {
+			for i := 0; i < 4; i++ {
+				desc[4+i] = 0
+			}
+			modifications++
+		}
+		if binary.LittleEndian.Uint32(desc[8:12]) != 0 {
+			for i := 0; i < 4; i++ {
+				desc[8+i] = 0
+			}
+			modifications++
+		}
+	}
+	if modifications == 0 {
+		return common.NewSkipped("no import descriptor metadata found")
+	}
+	message := fmt.Sprintf("cleared import descriptor metadata in %d entries", entries)
+	return common.NewApplied(message, modifications)
 }
 
 func (p *PEFile) StripSingleRegexRule(regex string) *common.OperationResult {

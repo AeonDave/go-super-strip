@@ -318,8 +318,9 @@ func (e *ELFFile) identifyCriticalSections(force bool) map[int]struct{} {
 		".gnu.hash", ".hash",
 		".got", ".got.plt", ".plt", ".plt.got",
 		".rel.plt", ".rela.plt", ".rel.dyn", ".rela.dyn",
-		".init_array", ".fini_array", ".ctors", ".dtors",
+		".init_array", ".preinit_array", ".fini_array", ".ctors", ".dtors",
 		".eh_frame", ".eh_frame_hdr", ".gcc_except_table",
+		".data.rel.ro", ".data.rel.ro.local",
 	}
 	optional := []string{
 		".comment", ".note.gnu.property",
@@ -690,6 +691,16 @@ func (e *ELFFile) rebuildSectionHeaderTable() error {
 
 	// 4. Calcola il nuovo layout del file, determinando gli offset per i nuovi dati.
 	maxDataOffset, newSHTOffset := e.calculateLayout(shstrtabIndex)
+	fileLen := int64(len(e.RawData))
+	if maxDataOffset < 0 {
+		maxDataOffset = 0
+	}
+	if maxDataOffset > fileLen {
+		maxDataOffset = fileLen
+	}
+	if newSHTOffset < 0 {
+		newSHTOffset = maxDataOffset
+	}
 
 	// 5. Serializza le nuove intestazioni di sezione in un buffer di byte.
 	headerTableData := e.serializeHeaders(nameOffsets, shstrtabIndex)

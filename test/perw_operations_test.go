@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -162,6 +163,39 @@ func TestStripPE_PreservesPEValidity(t *testing.T) {
 	}
 	if result.Applied && newStat.Size() > origStat.Size() {
 		t.Fatalf("stripped file grew from %d to %d bytes", origStat.Size(), newStat.Size())
+	}
+}
+
+func TestStripPE_SkipsResourceSectionByDefault(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skipf("resource preservation check requires Windows host; current OS: %s", runtime.GOOS)
+	}
+	systemRoot := os.Getenv("SystemRoot")
+	if systemRoot == "" {
+		t.Skip("SystemRoot not set; skipping resource preservation check")
+	}
+	src := filepath.Join(systemRoot, "System32", "whoami.exe")
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Skipf("failed to read system binary %s: %v", src, err)
+	}
+	dst := filepath.Join(t.TempDir(), "whoami.exe")
+	if err := os.WriteFile(dst, data, 0o700); err != nil {
+		t.Fatalf("failed to write temp system copy: %v", err)
+	}
+
+	before := readPESectionData(t, dst, ".rsrc")
+	if len(before) == 0 {
+		t.Skip("fixture missing .rsrc section; cannot verify preservation")
+	}
+
+	if res := perw.StripPE(dst, false, nil); res == nil {
+		t.Fatal("expected result from StripPE, got nil")
+	}
+
+	after := readPESectionData(t, dst, ".rsrc")
+	if isAllZero(after) {
+		t.Fatal(".rsrc section wiped despite force=false")
 	}
 }
 
@@ -463,6 +497,57 @@ func TestStripPE_FillOverrideRandom(t *testing.T) {
 	data := readPESectionData(t, pePath, sectionName)
 	if isAllZero(data) {
 		t.Fatalf("expected section %s to be randomized, all bytes were zero", sectionName)
+	}
+}
+
+func TestStripPE_RegexPackerUsesRandomFill(t *testing.T) {
+	pePath := copyPEFixture(t, "regex_packer.exe")
+	sectionName := common.SanitizeSectionName(".upxsign")
+	payload := "5.02 UPX! DEMO"
+
+	requireApplied(t, "insert", perw.InsertPE(pePath, sectionName, payload, ""))
+
+	before := readPESectionData(t, pePath, sectionName)
+	if !bytes.Contains(before, []byte("UPX!")) {
+		t.Fatalf("expected UPX marker to be present before strip")
+	}
+
+	res := perw.StripPE(pePath, false, nil)
+	requireApplied(t, "strip", res)
+
+	after := readPESectionData(t, pePath, sectionName)
+	if bytes.Contains(after, []byte("UPX!")) {
+		t.Fatalf("expected UPX marker removed after strip")
+	}
+	if isAllZero(after) {
+		t.Fatalf("expected random fill for packer rule, got all zeros")
+	}
+}
+
+func TestStripPE_ZeroesImportDescriptorMetadata(t *testing.T) {
+	pePath := copyPEFixture(t, "simple.exe")
+
+	orig := readPESectionData(t, pePath, ".idata")
+	if len(orig) == 0 {
+		t.Skip(".idata not present in fixture")
+	}
+
+	res := perw.StripPE(pePath, false, nil)
+	if res == nil || !res.Applied {
+		t.Fatalf("expected strip to apply: %#v", res)
+	}
+
+	// Reload and verify descriptor fields cleared (TimeDateStamp + ForwarderChain)
+	data := readPESectionData(t, pePath, ".idata")
+	if len(data) < 20 {
+		t.Skip(".idata too small to validate descriptor")
+	}
+	desc := data[:20]
+	if binary.LittleEndian.Uint32(desc[4:8]) != 0 {
+		t.Fatalf("TimeDateStamp not cleared in import descriptor")
+	}
+	if binary.LittleEndian.Uint32(desc[8:12]) != 0 {
+		t.Fatalf("ForwarderChain not cleared in import descriptor")
 	}
 }
 

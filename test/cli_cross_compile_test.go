@@ -437,6 +437,9 @@ func buildCSource(t *testing.T, baseName, targetOS string) string {
 	}
 	sourcePath := filepath.Join("testfiles", baseName)
 	args := []string{"-O2", "-o", output, sourcePath}
+	if targetOS != "windows" {
+		args = append(args, "-lm")
+	}
 	cmd := exec.Command(compiler, args...)
 	cmd.Dir = ".."
 	if out, err := cmd.CombinedOutput(); err != nil {
