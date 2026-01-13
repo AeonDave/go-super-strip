@@ -436,10 +436,7 @@ func buildCSource(t *testing.T, baseName, targetOS string) string {
 		t.Fatalf("required compiler %s not found in PATH", compiler)
 	}
 	sourcePath := filepath.Join("testfiles", baseName)
-	args := []string{"-O2", "-o", output, sourcePath}
-	if targetOS != "windows" {
-		args = append(args, "-lm")
-	}
+	args := []string{"-O2", "-o", output, sourcePath, "-lm"}
 	cmd := exec.Command(compiler, args...)
 	cmd.Dir = ".."
 	if out, err := cmd.CombinedOutput(); err != nil {

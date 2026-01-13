@@ -44,7 +44,7 @@ build_pe_fixture() {
   local output="$RUN_ROOT/simple_pe.exe"
   local source="$REPO_ROOT/testfiles/simple.c"
   require_tool x86_64-w64-mingw32-gcc
-  x86_64-w64-mingw32-gcc -O2 "$source" -o "$output"
+  x86_64-w64-mingw32-gcc -O2 "$source" -o "$output" -lm
   printf '%s\n' "$output"
 }
 
@@ -57,15 +57,15 @@ build_elf_fixture() {
   local source="$REPO_ROOT/testfiles/simple.c"
   if [[ "$(uname -s)" == "Linux" ]]; then
     require_tool gcc
-    gcc -O2 "$source" -o "$output"
+    gcc -O2 "$source" -o "$output" -lm
   elif command -v wsl.exe >/dev/null 2>&1; then
     local src_wsl out_wsl
     src_wsl=$(to_wsl_path "$source")
     out_wsl=$(to_wsl_path "$output")
-    wsl.exe bash -lc "gcc -O2 '$src_wsl' -o '$out_wsl'"
+    wsl.exe bash -lc "gcc -O2 '$src_wsl' -o '$out_wsl' -lm"
   else
     require_tool gcc
-    gcc -O2 "$source" -o "$output"
+    gcc -O2 "$source" -o "$output" -lm
   fi
   chmod +x "$output" 2>/dev/null || true
   printf '%s\n' "$output"

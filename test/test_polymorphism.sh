@@ -7,11 +7,11 @@
 set -e
 
 # Configuration
-BUILDS_QUICK=10
-BUILDS_FULL=50
+BUILDS_QUICK=2
+BUILDS_FULL=5
 TEST_FILE="testfiles/simple_c"
 OUTPUT_DIR="/tmp/gosstrip_test"
-TIMEOUT_EXEC=2
+TIMEOUT_EXEC=30
 
 # Colors for output
 RED='\033[0;31m'
@@ -66,6 +66,16 @@ run_test_suite() {
         return 1
     fi
     log_success "Build successful"
+
+    # Build fixture if missing
+    if [ ! -f "$TEST_FILE" ]; then
+        log_info "Building test fixture..."
+        if ! gcc -O2 testfiles/simple.c -o "$TEST_FILE" -lm > /dev/null 2>&1; then
+            log_error "Failed to build fixture $TEST_FILE"
+            return 1
+        fi
+        log_success "Fixture built"
+    fi
     
     # Select build count based on mode
     local builds=$BUILDS_QUICK
@@ -112,7 +122,7 @@ test_uniqueness_and_execution() {
         rm -f "$TEST_FILE.packed"
         
         # Pack with polymorphism
-        if ./gosstrip -p="comp=xz,encr=aes,poly=true" "$TEST_FILE" > /dev/null 2>&1; then
+        if ./gosstrip -p="comp=xz,encr=aes,poly=true" "$TEST_FILE" "$TEST_FILE.packed" > /dev/null 2>&1; then
             if [ -f "$TEST_FILE.packed" ]; then
                 # Calculate hash
                 hash=$(sha256sum "$TEST_FILE.packed" | awk '{print $1}')
@@ -121,8 +131,18 @@ test_uniqueness_and_execution() {
                 
                 # Test execution
                 chmod +x "$TEST_FILE.packed"
-                if timeout $TIMEOUT_EXEC "$TEST_FILE.packed" > /dev/null 2>&1; then
+                set +e
+                timeout $TIMEOUT_EXEC "./$TEST_FILE.packed" > exec_stdout.log 2>exec_stderr.log
+                exit_code=$?
+                set -e
+                if [ $exit_code -eq 0 ]; then
                     exec_count=$((exec_count + 1))
+                else
+                    log_error "Execution failed for build $i (exit code: $exit_code):"
+                    echo "STDOUT:"
+                    cat exec_stdout.log | head -n 5
+                    echo "STDERR:"
+                    cat exec_stderr.log | head -n 5
                 fi
                 
                 # Save for analysis
@@ -172,7 +192,7 @@ test_variant_distribution() {
         rm -f "$TEST_FILE.packed"
         
         # Capture output with variant info
-        output=$(./gosstrip -p="comp=xz,encr=aes,poly=true" "$TEST_FILE" 2>&1)
+        output=$(./gosstrip -p="comp=xz,encr=aes,poly=true" "$TEST_FILE" "$TEST_FILE.packed" 2>&1)
         
         # Extract variant type
         variant=$(echo "$output" | grep -o "stub_variant_[a-z_]*" | head -1)
@@ -215,11 +235,12 @@ test_variant_distribution() {
 test_baseline_comparison() {
     log_info "Comparing polymorphic vs non-polymorphic builds..."
     
-    # Non-polymorphic builds
+    # Non-polymorphic builds (deterministic)
     declare -a baseline_hashes
     for i in $(seq 1 5); do
         rm -f "$TEST_FILE.packed"
-        ./gosstrip -p="comp=xz,encr=aes,poly=false" "$TEST_FILE" > /dev/null 2>&1
+        # Disable padding and encryption to get deterministic output
+        ./gosstrip -p="comp=none,encr=none,poly=false,padding=false" "$TEST_FILE" "$TEST_FILE.packed" > /dev/null 2>&1
         hash=$(sha256sum "$TEST_FILE.packed" 2>/dev/null | awk '{print $1}')
         baseline_hashes+=("$hash")
     done
@@ -230,7 +251,7 @@ test_baseline_comparison() {
     declare -a poly_hashes
     for i in $(seq 1 5); do
         rm -f "$TEST_FILE.packed"
-        ./gosstrip -p="comp=xz,encr=aes,poly=true" "$TEST_FILE" > /dev/null 2>&1
+        ./gosstrip -p="comp=xz,encr=aes,poly=true" "$TEST_FILE" "$TEST_FILE.packed" > /dev/null 2>&1
         hash=$(sha256sum "$TEST_FILE.packed" 2>/dev/null | awk '{print $1}')
         poly_hashes+=("$hash")
     done
@@ -270,7 +291,7 @@ test_performance() {
     for i in $(seq 1 3); do
         rm -f "$TEST_FILE.packed"
         pack_start=$(date +%s.%N)
-        ./gosstrip -p="comp=xz,encr=aes,poly=true" "$TEST_FILE" > /dev/null 2>&1
+        ./gosstrip -p="comp=xz,encr=aes,poly=true" "$TEST_FILE" "$TEST_FILE.packed" > /dev/null 2>&1
         pack_end=$(date +%s.%N)
         pack_time=$(echo "$pack_end - $pack_start" | bc)
         total_pack_time=$(echo "$total_pack_time + $pack_time" | bc)

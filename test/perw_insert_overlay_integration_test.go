@@ -41,7 +41,7 @@ func extractSectionData(t *testing.T, pePath, sectionName string) []byte {
 	return append([]byte(nil), data...)
 }
 
-func extractOverlayDataPE(t *testing.T, pePath string) []byte {
+func extractPEOverlayData(t *testing.T, pePath string) []byte {
 	t.Helper()
 	f, err := os.Open(pePath)
 	if err != nil {
@@ -118,7 +118,7 @@ func TestPE_Insert_Overlay_NoPassword(t *testing.T) {
 	if len(sectionData) == 0 {
 		t.Fatalf("expected section payload data")
 	}
-	overlay := extractOverlayDataPE(t, host)
+	overlay := extractPEOverlayData(t, host)
 	if len(overlay) == 0 {
 		t.Fatalf("expected overlay payload data")
 	}
@@ -144,7 +144,7 @@ func TestPE_Insert_Overlay_WithPassword(t *testing.T) {
 	if len(sectionData) == 0 {
 		t.Fatalf("expected encrypted section payload data")
 	}
-	overlay := extractOverlayDataPE(t, host)
+	overlay := extractPEOverlayData(t, host)
 	if len(overlay) == 0 {
 		t.Fatalf("expected encrypted overlay payload data")
 	}
