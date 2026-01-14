@@ -532,12 +532,40 @@ func (p *PEFile) ObfuscateExecutablePadding(force bool) *common.OperationResult 
 			[]byte{0x66, 0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00},
 		)
 	}
+	totalTail := 0
 	totalRuns := 0
 	for _, section := range p.Sections {
 		if section.Flags&IMAGE_SCN_MEM_EXECUTE == 0 || section.Size <= 0 {
 			continue
 		}
-		data, err := p.ReadBytes(section.Offset, int(section.Size))
+
+		if section.VirtualSize > 0 && int64(section.VirtualSize) < section.Size {
+			start := section.Offset + int64(section.VirtualSize)
+			end := section.Offset + section.Size
+			if start >= 0 && start < int64(len(p.RawData)) {
+				if end > int64(len(p.RawData)) {
+					end = int64(len(p.RawData))
+				}
+				if end > start {
+					if err := p.fillRegion(start, int(end-start), RandomFill); err != nil {
+						return common.NewSkipped(fmt.Sprintf("failed to randomize executable tail padding: %v", err))
+					}
+					totalTail++
+				}
+			}
+		}
+
+		if !force {
+			continue
+		}
+		loadedSize := section.Size
+		if section.VirtualSize > 0 && int64(section.VirtualSize) < loadedSize {
+			loadedSize = int64(section.VirtualSize)
+		}
+		if loadedSize <= 0 {
+			continue
+		}
+		data, err := p.ReadBytes(section.Offset, int(loadedSize))
 		if err != nil || len(data) == 0 {
 			continue
 		}
@@ -568,14 +596,17 @@ func (p *PEFile) ObfuscateExecutablePadding(force bool) *common.OperationResult 
 			copy(p.RawData[section.Offset:section.Offset+int64(len(data))], data)
 		}
 	}
-	if totalRuns == 0 {
+	if totalTail == 0 && totalRuns == 0 {
 		return common.NewSkipped("no executable padding found for obfuscation")
 	}
-	mode := "default"
-	if force {
-		mode = "force"
+	var messages []string
+	if totalTail > 0 {
+		messages = append(messages, fmt.Sprintf("randomized tail padding in %d executable sections", totalTail))
 	}
-	return common.NewApplied(fmt.Sprintf("scrambled %d executable padding runs (%s)", totalRuns, mode), totalRuns)
+	if totalRuns > 0 {
+		messages = append(messages, fmt.Sprintf("scrambled %d executable padding runs (force)", totalRuns))
+	}
+	return common.NewApplied(strings.Join(messages, "; "), totalTail+totalRuns)
 }
 
 func (p *PEFile) fillPaddingRun(run []byte, patterns [][]byte, force bool) bool {

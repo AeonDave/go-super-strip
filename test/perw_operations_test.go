@@ -218,6 +218,71 @@ func TestObfuscatePE_AppliesChanges(t *testing.T) {
 	}
 }
 
+func TestObfuscatePE_PreservesLoadedExecutableBytes(t *testing.T) {
+	pePath := copyPEFixture(t, "simple.exe")
+
+	f, err := os.Open(pePath)
+	if err != nil {
+		t.Fatalf("failed to open PE: %v", err)
+	}
+	peFile, err := perw.ReadPE(f)
+	if err != nil {
+		_ = f.Close()
+		t.Fatalf("failed to parse PE: %v", err)
+	}
+
+	var execSection *perw.Section
+	for i := range peFile.Sections {
+		sec := &peFile.Sections[i]
+		if sec.Flags&perw.IMAGE_SCN_MEM_EXECUTE != 0 && sec.Size > 0 {
+			execSection = sec
+			break
+		}
+	}
+	if execSection == nil {
+		_ = peFile.Close()
+		_ = f.Close()
+		t.Skip("no executable section found in fixture")
+	}
+
+	loadedSize := execSection.Size
+	if execSection.VirtualSize > 0 && int64(execSection.VirtualSize) < loadedSize {
+		loadedSize = int64(execSection.VirtualSize)
+	}
+	if loadedSize <= 0 {
+		_ = peFile.Close()
+		_ = f.Close()
+		t.Skip("executable section has no loaded bytes")
+	}
+
+	if execSection.Offset < 0 || execSection.Offset+loadedSize > int64(len(peFile.RawData)) {
+		_ = peFile.Close()
+		_ = f.Close()
+		t.Fatalf("executable section range out of bounds")
+	}
+
+	before := make([]byte, loadedSize)
+	copy(before, peFile.RawData[execSection.Offset:execSection.Offset+loadedSize])
+	_ = peFile.Close()
+	_ = f.Close()
+
+	if res := perw.ObfuscatePE(pePath, false); res == nil || !res.Applied {
+		t.Fatalf("expected obfuscation to apply: %#v", res)
+	}
+
+	afterData, err := os.ReadFile(pePath)
+	if err != nil {
+		t.Fatalf("failed to read obfuscated PE: %v", err)
+	}
+	if execSection.Offset+loadedSize > int64(len(afterData)) {
+		t.Fatalf("obfuscated PE shorter than expected executable section range")
+	}
+	after := afterData[execSection.Offset : execSection.Offset+loadedSize]
+	if !bytes.Equal(before, after) {
+		t.Fatal("obfuscation modified loaded executable bytes in non-force mode")
+	}
+}
+
 func TestObfuscatePE_PreservesImports(t *testing.T) {
 	pePath := copyPEFixture(t, "simple.exe")
 	res := perw.ObfuscatePE(pePath, true)
