@@ -187,6 +187,8 @@ func GetRegexStripRules() []RegexStripRule {
 				`[0-9]\.[0-9]{2}\s+UPX!`,                                       // UPX version signature
 				`UPX![0-9\.\x00-\x20]{1,10}`,                                   // UPX signature
 				`\$UPX: [a-zA-Z0-9._\-\s]{5,}\$`,                               // UPX marker string
+				`(?i)\$Id:\s*UPX[^$]{10,}\$`,                                   // UPX $Id banner string
+				`(?i)http://upx\.sf\.net\s*\$`,                                 // UPX website marker
 				`(?i)Info: This file is packed with the UPX executable packer`, // Informational banner
 				`(?i)\b(UPX!|PECompact|ASPack|themida|vmprotect)\b`,            // Known packers (case-insensitive)
 			},

@@ -276,6 +276,9 @@ func (e *ELFFile) obfuscateProgramHeaders(force bool, originalSize uint64, prese
 	if err != nil || len(e.Segments) == 0 {
 		return common.NewSkipped("no program headers available for obfuscation")
 	}
+	if !force && !preserveLoadOrder && (e.IsPacked || e.usedFallbackMode || len(e.Sections) == 0) {
+		preserveLoadOrder = true
+	}
 	segmentCount := len(e.Segments)
 	phCount := int(meta.count)
 	if phCount > segmentCount {
