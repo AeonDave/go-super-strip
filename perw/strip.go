@@ -94,7 +94,7 @@ func (p *PEFile) StripAll(force bool, fillOverride *bool) *common.OperationResul
 		return p.StripAllHeaders(), nil
 	})
 	pipeline.AddStep("directories", func() (*common.OperationResult, error) {
-		return p.StripAllDirs(), nil
+		return p.StripAllDirs(force), nil
 	})
 	pipeline.AddStep("regex", func() (*common.OperationResult, error) {
 		return p.StripAllRegexRules(force, fillOverride), nil
@@ -264,7 +264,7 @@ func (p *PEFile) StripAllHeaders() *common.OperationResult {
 	return common.NewApplied(message, totalCount)
 }
 
-func (p *PEFile) StripAllDirs() *common.OperationResult {
+func (p *PEFile) StripAllDirs(force bool) *common.OperationResult {
 	var operations []string
 	totalCount := 0
 
@@ -272,9 +272,12 @@ func (p *PEFile) StripAllDirs() *common.OperationResult {
 		operations = append(operations, result.Message)
 		totalCount += result.Count
 	}
-	if result := p.StripImportDirectoryMetadata(); result != nil && result.Applied {
-		operations = append(operations, result.Message)
-		totalCount += result.Count
+
+	if force {
+		if result := p.StripImportDirectoryMetadata(); result != nil && result.Applied {
+			operations = append(operations, result.Message)
+			totalCount += result.Count
+		}
 	}
 
 	if result := p.StripResourceDirectory(); result != nil && result.Applied {
