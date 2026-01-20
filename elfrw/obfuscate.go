@@ -22,6 +22,10 @@ func generateRandomOffset() (uint64, error) {
 	return offset, nil
 }
 
+func isPowerOfTwo64(v uint64) bool {
+	return v != 0 && (v&(v-1)) == 0
+}
+
 func getVAddrOffset(is64bit bool) uint64 {
 	if is64bit {
 		return ELF64_P_VADDR // p_vaddr offset in 64-bit program header
@@ -276,7 +280,7 @@ func (e *ELFFile) obfuscateProgramHeaders(force bool, originalSize uint64, prese
 	if err != nil || len(e.Segments) == 0 {
 		return common.NewSkipped("no program headers available for obfuscation")
 	}
-	if !force && !preserveLoadOrder && (e.IsPacked || e.usedFallbackMode || len(e.Sections) == 0) {
+	if !force && !preserveLoadOrder && (e.IsPacked || e.usedFallbackMode || len(e.Sections) == 0 || e.hasInterpreter || e.isDynamic) {
 		preserveLoadOrder = true
 	}
 	segmentCount := len(e.Segments)
@@ -416,7 +420,7 @@ func (e *ELFFile) countSegmentsOfType(segmentType uint32, limit int) int {
 
 func (e *ELFFile) randomizeLoadAlignments(entries [][]byte) (int, error) {
 	changed := 0
-	alignCandidates := []uint64{0x1000, 0x1800, 0x2000, 0x3000, 0x4000}
+	alignCandidates := []uint64{0x1000, 0x2000, 0x4000, 0x8000, 0x10000}
 	for idx, seg := range e.Segments {
 		if idx >= len(entries) {
 			break
@@ -424,11 +428,20 @@ func (e *ELFFile) randomizeLoadAlignments(entries [][]byte) (int, error) {
 		if seg.Type != PT_LOAD || seg.Alignment == 0 {
 			continue
 		}
+		if !isPowerOfTwo64(seg.Alignment) {
+			continue
+		}
 		randBytes, err := common.GenerateRandomBytes(2)
 		if err != nil {
 			return changed, err
 		}
 		nextAlign := alignCandidates[int(binary.LittleEndian.Uint16(randBytes))%len(alignCandidates)]
+		if nextAlign > seg.Alignment || seg.Alignment%nextAlign != 0 {
+			continue
+		}
+		if seg.VirtualAddr%nextAlign != seg.Offset%nextAlign {
+			continue
+		}
 		if nextAlign == seg.Alignment {
 			continue
 		}
@@ -1013,6 +1026,9 @@ type dynsymEntry struct {
 }
 
 func (e *ELFFile) obfuscateDynamicSymbols(force bool) *common.OperationResult {
+	if e.isDynamic || e.hasInterpreter {
+		return common.NewSkipped("dynamic ELF detected; skipping dynsym obfuscation to preserve loader resolution")
+	}
 	dynsymIdx, found := e.findSectionIndexByType(SHT_DYNSYM)
 	if !found {
 		return common.NewSkipped("no .dynsym section present")
