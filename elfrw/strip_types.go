@@ -195,12 +195,12 @@ func GetRegexStripRules() []RegexStripRule {
 		{
 			Patterns: []string{
 				`[0-9]\.[0-9]{2}\s+UPX!`,                                       // UPX version signature (e.g., 5.02 UPX!)
-				`UPX![0-9\.\x00-\x20]{1,10}`,                                   // UPX magic blocks with padding
+				`UPX![0-9\.\x00-\x20]{0,10}`,                                   // UPX magic blocks with optional padding
 				`\$UPX: [a-zA-Z0-9._\-\s]{5,}\$`,                               // UPX metadata marker
 				`(?i)\$Id:\s*UPX[^$]{10,}\$`,                                   // UPX $Id banner string
 				`(?i)http://upx\.sf\.net\s*\$`,                                 // UPX website marker
 				`(?i)Info: This file is packed with the UPX executable packer`, // Informational banner
-				`(?i)\b(UPX!|PECompact|ASPack|themida|vmprotect)\b`,            // Common packer names
+				`(?i)\b(PECompact|ASPack|themida|vmprotect)\b`,                 // Other known packers
 			},
 			Description: "Known packer signatures",
 			Fill:        RandomFill,

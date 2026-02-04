@@ -523,11 +523,23 @@ func TestStripPE_RemovesUPXMarkers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read PE after strip: %v", err)
 	}
-	if bytes.Contains(dataAfter, []byte("UPX!")) {
-		t.Fatalf("expected UPX marker to be removed after stripping")
-	}
+	// Evidence-based policy: raw UPX magic ("UPX!") is force-only because clobbering it can break UPX stubs.
 	if bytes.Contains(dataAfter, []byte("Info: This file is packed")) {
 		t.Fatalf("expected UPX banner to be removed after stripping")
+	}
+	if bytes.Contains(dataAfter, []byte("http://upx.sf.net")) {
+		t.Fatalf("expected UPX url to be removed after stripping")
+	}
+
+	// With force enabled, the UPX magic itself can be stripped.
+	stripForce := perw.StripPE(pePath, true, nil)
+	requireApplied(t, "strip(force)", stripForce)
+	dataAfterForce, err := os.ReadFile(pePath)
+	if err != nil {
+		t.Fatalf("failed to read PE after force strip: %v", err)
+	}
+	if bytes.Contains(dataAfterForce, []byte("UPX!")) {
+		t.Fatalf("expected UPX magic marker to be removed with force")
 	}
 }
 
@@ -577,7 +589,8 @@ func TestStripPE_RegexPackerUsesRandomFill(t *testing.T) {
 		t.Fatalf("expected UPX marker to be present before strip")
 	}
 
-	res := perw.StripPE(pePath, false, nil)
+	// UPX magic header patterns are force-only.
+	res := perw.StripPE(pePath, true, nil)
 	requireApplied(t, "strip", res)
 
 	after := readPESectionData(t, pePath, sectionName)

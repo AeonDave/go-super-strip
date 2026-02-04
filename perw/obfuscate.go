@@ -515,6 +515,9 @@ func randomAscii(n int) string {
 }
 
 func (p *PEFile) ObfuscateExecutablePadding(force bool) *common.OperationResult {
+	if p.IsPacked && !force {
+		return common.NewSkipped("packed binary detected; skipping executable padding obfuscation")
+	}
 	if len(p.Sections) == 0 {
 		return common.NewSkipped("no sections to obfuscate")
 	}

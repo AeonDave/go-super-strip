@@ -312,6 +312,11 @@ func (p *PEFile) sectionRemoval(force bool, keepResources bool) (*common.Operati
 	if err := p.clearDataDirectoriesForRemovedRVAs(removedRanges); err != nil {
 		return nil, fmt.Errorf("failed to clear data directories: %w", err)
 	}
+	// Update AddressOfEntryPoint if entry point RVA falls in removed sections
+	// Calculate how much the entry point needs to shift based on removed virtual ranges
+	if err := p.updateEntryPointAfterSectionRemoval(removedRanges); err != nil {
+		return nil, fmt.Errorf("failed to update entry point: %w", err)
+	}
 	metadataDetails, err := p.updateRelocationMetadata(removedNames)
 	if err != nil {
 		return nil, fmt.Errorf("failed to update relocation metadata: %w", err)
@@ -410,8 +415,10 @@ func (p *PEFile) sectionRemoval(force bool, keepResources bool) (*common.Operati
 	}
 
 	// Optionally trim overlay if there is no Authenticode (Security Directory empty)
+	// IMPORTANT: Skip overlay trimming for packed binaries - packers like UPX store
+	// compressed data in the overlay region that extends beyond the last section.
 	trimmedOverlay := int64(0)
-	if err2 == nil {
+	if err2 == nil && !p.IsPacked {
 		// Read Security directory entry (index 4)
 		var dataDirsBase int64
 		if p.Is64Bit {
@@ -620,6 +627,66 @@ func rvaFallsInRemovedRange(rva uint32, ranges []virtualRange) bool {
 		}
 	}
 	return false
+}
+
+// updateEntryPointAfterSectionRemoval adjusts AddressOfEntryPoint if sections before it were removed.
+// When sections are removed, the virtual address space compacts, so RVAs after removed sections must shift down.
+func (p *PEFile) updateEntryPointAfterSectionRemoval(removedRanges []virtualRange) error {
+	if len(removedRanges) == 0 {
+		return nil
+	}
+
+	originalEntryPoint := p.entryPoint
+
+	// Check if entry point falls within a removed range (invalid after compaction)
+	if rvaFallsInRemovedRange(originalEntryPoint, removedRanges) {
+		// Entry point is in a removed section - this is critical and should have been caught earlier
+		// We can't fix this, just report it
+		return fmt.Errorf("entry point 0x%X falls within removed section range", originalEntryPoint)
+	}
+
+	// Calculate RVA shift: sum of all removed virtual ranges that start before the entry point
+	var rvaShift uint32 = 0
+	for _, rng := range removedRanges {
+		// Only count ranges that end before or at the entry point
+		if rng.end <= originalEntryPoint {
+			// The size of this removed range
+			removedSize := rng.end - rng.start
+			rvaShift += removedSize
+		}
+	}
+
+	// If no shift needed, we're done
+	if rvaShift == 0 {
+		return nil
+	}
+
+	// Calculate new entry point (shift down by the removed size)
+	newEntryPoint := originalEntryPoint - rvaShift
+
+	// Update the in-memory field
+	p.entryPoint = newEntryPoint
+
+	// Write back to PE Optional Header in RawData
+	offsets, err := p.calculateOffsets()
+	if err != nil {
+		return fmt.Errorf("calculate offsets: %w", err)
+	}
+
+	var entryPointOffset int64
+	if p.Is64Bit {
+		entryPointOffset = offsets.OptionalHeader + PE64_ENTRY_POINT
+	} else {
+		entryPointOffset = offsets.OptionalHeader + PE32_ENTRY_POINT
+	}
+
+	if err := p.validateOffset(entryPointOffset, 4); err != nil {
+		return fmt.Errorf("entry point offset out of bounds: %w", err)
+	}
+
+	binary.LittleEndian.PutUint32(p.RawData[entryPointOffset:], newEntryPoint)
+
+	return nil
 }
 
 func (p *PEFile) updateRelocationMetadata(removedSections []string) ([]string, error) {

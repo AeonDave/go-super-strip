@@ -295,6 +295,9 @@ func (e *ELFFile) stripELFHeaderFields() *common.OperationResult {
 }
 
 func (e *ELFFile) stripProgramHeaderTimestamps() *common.OperationResult {
+	if len(e.Sections) == 0 {
+		return common.NewSkipped("no section headers available; skipping PT_NOTE scrubbing")
+	}
 	totalCount := 0
 	result := common.NewApplied("removed program header timestamps", 0)
 
@@ -336,6 +339,8 @@ func (e *ELFFile) StripSingleRegexRule(regex string) *common.OperationResult {
 }
 
 func (e *ELFFile) stripAllRegexRules(force bool, fillOverride *bool) *common.OperationResult {
+	// Allow non-risky regex (packer signatures, build IDs) even on packed binaries without section headers
+	// Skip risky patterns if no sections available (unless force)
 	rules := GetRegexStripRules()
 	totalModifications := 0
 	result := common.NewApplied("Regex pattern stripping", 0)
@@ -346,6 +351,10 @@ func (e *ELFFile) stripAllRegexRules(force bool, fillOverride *bool) *common.Ope
 
 	for _, rule := range rules {
 		if rule.IsRisky && !force {
+			continue
+		}
+		// Skip risky patterns on packed binaries (no section headers) unless force
+		if rule.IsRisky && len(e.Sections) == 0 && !force {
 			continue
 		}
 
@@ -508,8 +517,9 @@ func (e *ELFFile) buildProtectedRegexRanges() []sectionRange {
 		}
 		ranges = append(ranges, sectionRange{start: start, end: end})
 	}
+	// Protect PT_INTERP (interpreter path) and PT_LOAD (executable code, including UPX stub)
 	for _, segment := range e.Segments {
-		if segment.Type != PT_INTERP || segment.FileSize == 0 {
+		if (segment.Type != PT_INTERP && segment.Type != PT_LOAD) || segment.FileSize == 0 {
 			continue
 		}
 		start := int(segment.Offset)

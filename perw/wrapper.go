@@ -10,7 +10,14 @@ func readPe(filePath string, flags int) (*PEFile, error) {
 	if err != nil {
 		return nil, err
 	}
-	return ReadPE(file)
+	peFile, err := ReadPE(file)
+	if err != nil {
+		return nil, err
+	}
+	// Ensure packed detection is available in normal pipelines (-s/-c/-o), not only in analyze mode.
+	peFile.calculateSectionEntropy()
+	peFile.IsPacked = peFile.detectPacking()
+	return peFile, nil
 }
 
 // AnalyzePE loads a PE file and generates an analysis report using the provided options.

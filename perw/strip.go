@@ -51,7 +51,7 @@ func (p *PEFile) StripSectionsByType(sectionType SectionType, fillMode FillMode,
 	return common.NewApplied(message, strippedCount)
 }
 
-func (p *PEFile) StripByPattern(pattern *regexp.Regexp, fillMode FillMode) (int, error) {
+func (p *PEFile) StripByPattern(pattern *regexp.Regexp, fillMode FillMode, force bool) (int, error) {
 	if pattern == nil {
 		return 0, fmt.Errorf("regex pattern cannot be nil")
 	}
@@ -61,9 +61,18 @@ func (p *PEFile) StripByPattern(pattern *regexp.Regexp, fillMode FillMode) (int,
 	if err != nil {
 		return 0, err
 	}
+	// Build protected ranges if not force mode
+	protected := []sectionRange(nil)
+	if !force {
+		protected = p.buildProtectedRegexRanges()
+	}
 	for _, match := range matches {
 		start, end := match[0], match[1]
 		if start < 0 || end > len(p.RawData) || start >= end {
+			continue
+		}
+		// Skip matches that overlap protected ranges (unless force)
+		if !force && rangesOverlap(protected, start, end) {
 			continue
 		}
 		if err := p.fillRegion(int64(start), end-start, fillMode); err != nil {
@@ -91,7 +100,7 @@ func (p *PEFile) StripAll(force bool, fillOverride *bool) *common.OperationResul
 		return p.runStripSectionPhase(force, fillOverride), nil
 	})
 	pipeline.AddStep("headers", func() (*common.OperationResult, error) {
-		return p.StripAllHeaders(), nil
+		return p.StripAllHeaders(force), nil
 	})
 	pipeline.AddStep("directories", func() (*common.OperationResult, error) {
 		return p.StripAllDirs(force), nil
@@ -175,7 +184,7 @@ func (p *PEFile) StripAllRegexRules(force bool, fillOverride *bool) *common.Oper
 					fill = ZeroFill
 				}
 			}
-			modifications, err := p.StripByPattern(pattern, fill)
+			modifications, err := p.StripByPattern(pattern, fill, force)
 			if err != nil {
 				messages = append(messages, fmt.Sprintf("error processing '%s': %v", patternStr, err))
 				continue
@@ -215,7 +224,7 @@ func (p *PEFile) ApplyRegexPatterns(patterns []string, fillOverride *bool) *comm
 			warnings = append(warnings, msg)
 			continue
 		}
-		modifications, err := p.StripByPattern(pattern, fill)
+		modifications, err := p.StripByPattern(pattern, fill, false)
 		if err != nil {
 			msg := fmt.Sprintf("error processing '%s': %v", patternStr, err)
 			result.AddDetail(msg, 0, false)
@@ -237,13 +246,17 @@ func (p *PEFile) ApplyRegexPatterns(patterns []string, fillOverride *bool) *comm
 	return result
 }
 
-func (p *PEFile) StripAllHeaders() *common.OperationResult {
+func (p *PEFile) StripAllHeaders(force bool) *common.OperationResult {
 	var operations []string
 	totalCount := 0
 
-	if result := p.StripPEHeaderTimeDateStamp(); result != nil && result.Applied {
-		operations = append(operations, result.Message)
-		totalCount += result.Count
+	// Packed loaders sometimes key off or validate PE header fields.
+	// Evidence: packed samples can crash when only the COFF timestamp changes.
+	if !(p.IsPacked && !force) {
+		if result := p.StripPEHeaderTimeDateStamp(); result != nil && result.Applied {
+			operations = append(operations, result.Message)
+			totalCount += result.Count
+		}
 	}
 
 	if result := p.StripRichHeader(); result != nil && result.Applied {
@@ -600,7 +613,7 @@ func (p *PEFile) StripSingleRegexRule(regex string) *common.OperationResult {
 	if err != nil {
 		return common.NewSkipped(fmt.Sprintf("invalid regex '%s': %v", regex, err))
 	}
-	modifications, err := p.StripByPattern(pattern, ZeroFill)
+	modifications, err := p.StripByPattern(pattern, ZeroFill, true)
 	if err != nil {
 		return common.NewSkipped(fmt.Sprintf("error processing '%s': %v", regex, err))
 	}
@@ -725,6 +738,90 @@ func (p *PEFile) trimZeroTailBeyond(limit int64) {
 	p.HasOverlay = false
 	p.OverlayOffset = 0
 	p.OverlaySize = 0
+}
+
+type sectionRange struct {
+	start int
+	end   int
+}
+
+func (p *PEFile) buildProtectedRegexRanges() []sectionRange {
+	ranges := make([]sectionRange, 0, 8)
+
+	// Protect a small window around the entrypoint stub (executed loader code).
+	if epRVA, err := p.GetEntryPoint(); err == nil && epRVA != 0 {
+		if phys, err := p.rvaToPhysical(uint64(epRVA)); err == nil {
+			start := int(phys)
+			end := start + 0x1000 // one page is enough to cover the stub in typical packed layouts
+			if start < 0 {
+				start = 0
+			}
+			if end > len(p.RawData) {
+				end = len(p.RawData)
+			}
+			if start < end {
+				ranges = append(ranges, sectionRange{start: start, end: end})
+			}
+		}
+	}
+
+	// Protect Import Directory/IAT region - touched by loader and easy to corrupt.
+	offsets, err := p.calculateOffsets()
+	if err == nil {
+		importDirOffset := offsets.OptionalHeader + directoryOffsets.importTable[p.Is64Bit]
+		if importDirOffset+8 <= int64(len(p.RawData)) {
+			rva := binary.LittleEndian.Uint32(p.RawData[importDirOffset:])
+			size := binary.LittleEndian.Uint32(p.RawData[importDirOffset+4:])
+			if rva != 0 && size > 0 {
+				if phys, err := p.rvaToPhysical(uint64(rva)); err == nil {
+					start := int(phys)
+					end := start + int(size)
+					if start >= 0 && end <= len(p.RawData) && start < end {
+						ranges = append(ranges, sectionRange{start: start, end: end})
+					}
+				}
+			}
+		}
+	}
+
+	// Generic packed-binary protection: packed payload sections often contain compressed/encrypted
+	// data. Regex patterns can match by chance inside that data and corrupt the stream.
+	// Protect the whole packed payload section(s) so regex stripping only affects safer areas.
+	if p.IsPacked {
+		const largeSection = 0x20000
+		for _, section := range p.Sections {
+			if section.Offset <= 0 || section.Size <= 0 {
+				continue
+			}
+			isRWX := section.Flags&IMAGE_SCN_MEM_EXECUTE != 0 && section.Flags&IMAGE_SCN_MEM_WRITE != 0
+			isHighEntropy := section.Entropy >= 7.0
+			isLikelyPayload := isHighEntropy || (isRWX && section.Size >= largeSection)
+			if !isLikelyPayload {
+				continue
+			}
+			start := int(section.Offset)
+			end := start + int(section.Size)
+			if start < 0 || start >= len(p.RawData) {
+				continue
+			}
+			if end > len(p.RawData) {
+				end = len(p.RawData)
+			}
+			if start < end {
+				ranges = append(ranges, sectionRange{start: start, end: end})
+			}
+		}
+	}
+	return ranges
+}
+
+func rangesOverlap(ranges []sectionRange, start, end int) bool {
+	for _, r := range ranges {
+		if start < r.end && end > r.start {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *PEFile) rvaToPhysical(rva uint64) (uint64, error) {

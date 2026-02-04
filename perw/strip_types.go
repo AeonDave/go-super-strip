@@ -184,13 +184,13 @@ func GetRegexStripRules() []RegexStripRule {
 		// Packer/Compressor signatures (more comprehensive)
 		{
 			Patterns: []string{
-				`[0-9]\.[0-9]{2}\s+UPX!`,                                       // UPX version signature
-				`UPX![0-9\.\x00-\x20]{1,10}`,                                   // UPX signature
+				`[0-9]\.[0-9]{2}\s+UPX!`,                                       // UPX version signature (e.g., "3.96 UPX!")
+				`UPX![0-9\.\x00-\x20]{0,10}`,                                   // UPX signature with optional trailing chars
 				`\$UPX: [a-zA-Z0-9._\-\s]{5,}\$`,                               // UPX marker string
 				`(?i)\$Id:\s*UPX[^$]{10,}\$`,                                   // UPX $Id banner string
 				`(?i)http://upx\.sf\.net\s*\$`,                                 // UPX website marker
 				`(?i)Info: This file is packed with the UPX executable packer`, // Informational banner
-				`(?i)\b(UPX!|PECompact|ASPack|themida|vmprotect)\b`,            // Known packers (case-insensitive)
+				`(?i)\b(PECompact|ASPack|themida|vmprotect)\b`,                 // Other known packers (case-insensitive)
 			},
 			Description: "Known packer signatures (comprehensive)",
 			Fill:        RandomFill,
