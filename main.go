@@ -82,6 +82,7 @@ type ObfuscateOptions struct {
 type RegexOptions struct {
 	Patterns         []string
 	FillModeOverride *bool
+	Force            bool
 }
 
 type InsertOptions struct {
@@ -504,6 +505,17 @@ func parseRegex(existing *RegexOptions, opt string) (*RegexOptions, error) {
 	}
 	for key, values := range kv {
 		switch key {
+		case "force":
+			value := values[len(values)-1]
+			if value == "" {
+				existing.Force = true
+				continue
+			}
+			v, err := strconv.ParseBool(value)
+			if err != nil {
+				return nil, fmt.Errorf("regex force: %w", err)
+			}
+			existing.Force = v
 		case "fill":
 			value := values[len(values)-1]
 			switch strings.ToLower(value) {
@@ -997,9 +1009,9 @@ func runRegex(path string, opts *RegexOptions, isPE bool) (*common.OperationResu
 	}
 	var result *common.OperationResult
 	if isPE {
-		result = perw.RegexPE(path, opts.FillModeOverride, opts.Patterns)
+		result = perw.RegexPE(path, opts.FillModeOverride, opts.Patterns, opts.Force)
 	} else {
-		result = elfrw.RegexELF(path, opts.FillModeOverride, opts.Patterns)
+		result = elfrw.RegexELF(path, opts.FillModeOverride, opts.Patterns, opts.Force)
 	}
 	if result == nil {
 		return common.NewSkipped("regex operation returned no result"), nil

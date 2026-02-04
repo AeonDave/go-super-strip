@@ -64,7 +64,7 @@ func (p *PEFile) StripByPattern(pattern *regexp.Regexp, fillMode FillMode, force
 	// Build protected ranges if not force mode
 	protected := []sectionRange(nil)
 	if !force {
-		protected = p.buildProtectedRegexRanges()
+		protected = p.buildProtectedRegexRangesForPattern(pattern)
 	}
 	for _, match := range matches {
 		start, end := match[0], match[1]
@@ -204,7 +204,7 @@ func (p *PEFile) StripAllRegexRules(force bool, fillOverride *bool) *common.Oper
 	return common.NewSkipped("no regex-based metadata found")
 }
 
-func (p *PEFile) ApplyRegexPatterns(patterns []string, fillOverride *bool) *common.OperationResult {
+func (p *PEFile) ApplyRegexPatterns(patterns []string, fillOverride *bool, force bool) *common.OperationResult {
 	if len(patterns) == 0 {
 		return common.NewSkipped("no regex patterns provided")
 	}
@@ -224,7 +224,7 @@ func (p *PEFile) ApplyRegexPatterns(patterns []string, fillOverride *bool) *comm
 			warnings = append(warnings, msg)
 			continue
 		}
-		modifications, err := p.StripByPattern(pattern, fill, false)
+		modifications, err := p.StripByPattern(pattern, fill, force)
 		if err != nil {
 			msg := fmt.Sprintf("error processing '%s': %v", patternStr, err)
 			result.AddDetail(msg, 0, false)
@@ -813,6 +813,71 @@ func (p *PEFile) buildProtectedRegexRanges() []sectionRange {
 		}
 	}
 	return ranges
+}
+
+func (p *PEFile) buildProtectedRegexRangesForPattern(pattern *regexp.Regexp) []sectionRange {
+	// Start with the default protected ranges.
+	ranges := p.buildProtectedRegexRanges()
+	// For UPX header patterns, allow matches inside packed payload to restore previous behavior.
+	// We still protect entrypoint and import ranges.
+	if isUPXHeaderPattern(pattern) {
+		filtered := make([]sectionRange, 0, len(ranges))
+		for _, r := range ranges {
+			if !p.isPackedPayloadRange(r) {
+				filtered = append(filtered, r)
+			}
+		}
+		return filtered
+	}
+	return ranges
+}
+
+func (p *PEFile) isPackedPayloadRange(r sectionRange) bool {
+	if !p.IsPacked {
+		return false
+	}
+	const largeSection = 0x20000
+	for _, section := range p.Sections {
+		if section.Offset <= 0 || section.Size <= 0 {
+			continue
+		}
+		isRWX := section.Flags&IMAGE_SCN_MEM_EXECUTE != 0 && section.Flags&IMAGE_SCN_MEM_WRITE != 0
+		isHighEntropy := section.Entropy >= 7.0
+		isLikelyPayload := isHighEntropy || (isRWX && section.Size >= largeSection)
+		if !isLikelyPayload {
+			continue
+		}
+		start := int(section.Offset)
+		end := start + int(section.Size)
+		if start < 0 || start >= len(p.RawData) {
+			continue
+		}
+		if end > len(p.RawData) {
+			end = len(p.RawData)
+		}
+		if r.start >= start && r.end <= end {
+			return true
+		}
+	}
+	return false
+}
+
+func isUPXHeaderPattern(pattern *regexp.Regexp) bool {
+	if pattern == nil {
+		return false
+	}
+	p := pattern.String()
+	if !strings.Contains(p, "UPX!") {
+		return false
+	}
+	// Version + UPX header patterns.
+	if strings.Contains(p, "[0-9]\\.[0-9]{2}") {
+		return true
+	}
+	if strings.Contains(p, "\\x00") || strings.Contains(p, "\\s+") {
+		return true
+	}
+	return false
 }
 
 func rangesOverlap(ranges []sectionRange, start, end int) bool {

@@ -58,11 +58,11 @@ func CompactPE(filePath string, force bool, keepResources bool) *common.Operatio
 }
 
 // RegexPE applies byte-pattern removals across the PE image.
-func RegexPE(filePath string, fillOverride *bool, patterns []string) *common.OperationResult {
+func RegexPE(filePath string, fillOverride *bool, patterns []string, force bool) *common.OperationResult {
 	return common.ProcessBinary(filePath, os.O_RDWR, "PE", readPe, func(peFile *PEFile) error {
 		return peFile.Save(true, int64(len(peFile.RawData)))
 	}, func(peFile *PEFile) *common.OperationResult {
-		return peFile.ApplyRegexPatterns(patterns, fillOverride)
+		return peFile.ApplyRegexPatterns(patterns, fillOverride, force)
 	})
 }
 

@@ -52,11 +52,11 @@ func CompactELF(filePath string, force bool, _ bool) *common.OperationResult {
 }
 
 // RegexELF applies regex removals across ELF sections and segments.
-func RegexELF(filePath string, fillOverride *bool, patterns []string) *common.OperationResult {
+func RegexELF(filePath string, fillOverride *bool, patterns []string, force bool) *common.OperationResult {
 	return common.ProcessBinary(filePath, os.O_RDWR, "ELF", readElf, func(elfFile *ELFFile) error {
 		return elfFile.Save(true, int64(len(elfFile.RawData)))
 	}, func(elfFile *ELFFile) *common.OperationResult {
-		return elfFile.ApplyRegexPatterns(patterns, fillOverride)
+		return elfFile.ApplyRegexPatterns(patterns, fillOverride, force)
 	})
 }
 

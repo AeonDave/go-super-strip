@@ -36,7 +36,7 @@ func TestPEPipelineOperations(t *testing.T) {
 
 	const regexTarget = "PEPipelineRegexTarget"
 	appendPatternToBinary(t, pePath, regexTarget)
-	regexResult := perw.RegexPE(pePath, nil, []string{regexTarget})
+	regexResult := perw.RegexPE(pePath, nil, []string{regexTarget}, false)
 	if regexResult == nil || !regexResult.Applied || regexResult.Count == 0 {
 		t.Fatalf("expected regex to remove %q, got %#v", regexTarget, regexResult)
 	}

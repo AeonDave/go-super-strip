@@ -405,7 +405,7 @@ func TestInsertPE_AddsSection(t *testing.T) {
 func TestRegexPE_InvalidPattern(t *testing.T) {
 	pePath := copyPEFixture(t, "simple.exe")
 
-	result := perw.RegexPE(pePath, nil, []string{"["})
+	result := perw.RegexPE(pePath, nil, []string{"["}, false)
 	if result == nil {
 		t.Fatal("expected result from RegexPE, got nil")
 	}
@@ -435,7 +435,7 @@ func TestRegexPE_RemovesMatches(t *testing.T) {
 		t.Fatalf("expected inserted marker %q to be present", marker)
 	}
 
-	regexResult := perw.RegexPE(pePath, nil, []string{marker})
+	regexResult := perw.RegexPE(pePath, nil, []string{marker}, false)
 	if regexResult == nil {
 		t.Fatal("expected result from RegexPE, got nil")
 	}
@@ -458,7 +458,7 @@ func TestRegexPE_FillZeroOverride(t *testing.T) {
 	payload := "FillZeroMarker"
 
 	requireApplied(t, "insert", perw.InsertPE(pePath, sectionName, payload, ""))
-	res := perw.RegexPE(pePath, boolPointer(false), []string{payload})
+	res := perw.RegexPE(pePath, boolPointer(false), []string{payload}, false)
 	if res == nil || !res.Applied {
 		t.Fatalf("expected regex operation to apply: %#v", res)
 	}
@@ -477,7 +477,7 @@ func TestRegexPE_FillRandomOverride(t *testing.T) {
 	payload := "FillRandomMarker"
 
 	requireApplied(t, "insert", perw.InsertPE(pePath, sectionName, payload, ""))
-	res := perw.RegexPE(pePath, boolPointer(true), []string{payload})
+	res := perw.RegexPE(pePath, boolPointer(true), []string{payload}, false)
 	if res == nil || !res.Applied {
 		t.Fatalf("expected regex operation to apply: %#v", res)
 	}

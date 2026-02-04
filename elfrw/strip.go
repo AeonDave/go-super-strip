@@ -391,7 +391,7 @@ func (e *ELFFile) stripAllRegexRules(force bool, fillOverride *bool) *common.Ope
 	return common.NewSkipped("no regex-based metadata found")
 }
 
-func (e *ELFFile) ApplyRegexPatterns(patterns []string, fillOverride *bool) *common.OperationResult {
+func (e *ELFFile) ApplyRegexPatterns(patterns []string, fillOverride *bool, force bool) *common.OperationResult {
 	if len(patterns) == 0 {
 		return common.NewSkipped("no regex patterns provided")
 	}
@@ -412,7 +412,7 @@ func (e *ELFFile) ApplyRegexPatterns(patterns []string, fillOverride *bool) *com
 			warnings = append(warnings, msg)
 			continue
 		}
-		modifications, err := e.StripByteRegex(pattern, useRandom, false)
+		modifications, err := e.StripByteRegex(pattern, useRandom, force)
 		if err != nil {
 			msg := fmt.Sprintf("error processing '%s': %v", patternStr, err)
 			result.AddDetail(msg, 0, false)

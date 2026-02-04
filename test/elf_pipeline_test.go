@@ -36,7 +36,7 @@ func TestELFPipelineOperations(t *testing.T) {
 
 	const regexTarget = "ELFPipelineRegexTarget"
 	appendPatternToBinary(t, elfPath, regexTarget)
-	regexResult := elfrw.RegexELF(elfPath, nil, []string{regexTarget})
+	regexResult := elfrw.RegexELF(elfPath, nil, []string{regexTarget}, false)
 	if regexResult == nil || !regexResult.Applied || regexResult.Count == 0 {
 		t.Fatalf("expected regex to remove %q, got %#v", regexTarget, regexResult)
 	}
