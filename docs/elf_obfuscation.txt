@@ -1,0 +1,320 @@
+# ELF OBFUSCATION - TECHNICAL REFERENCE
+
+## FLOW: ObfuscateAll(force, preserveLoadOrder) -> elfrw/obfuscate.go
+
+Pipeline:
+1. section names -> obfuscateSectionNames
+2. section padding -> obfuscateSectionPadding
+3. runtime strings -> obfuscateRuntimeStrings
+4. header fields -> obfuscateReservedHeaderFields
+5. program headers -> obfuscateProgramHeaders(force, originalSize, preserveLoadOrder)
+6. dynamic symbols -> obfuscateDynamicSymbols(force)
+7. (force only) section string scramble -> scrambleSectionStringTableForce
+8. (force only) section string wipe -> wipeSectionStringTableBeforeSave
+
+---
+
+## preserveLoadOrder AUTO-DETECTION
+
+Set to true if ANY of:
+- e.IsPacked == true
+- e.usedFallbackMode == true
+- len(e.Sections) == 0
+- e.hasInterpreter == true
+- e.isDynamic == true
+
+---
+
+## 1. obfuscateSectionNames
+
+### Operation:
+- Skip section index 0 (SHT_NULL)
+- Skip .shstrtab (required for section names)
+- Generate synthetic names: .sec<6_hex_digits>
+
+### Post-operation:
+- rebuildSectionHeaderTable() - rebuild .shstrtab with new names
+- clearNameOffsetCache()
+
+---
+
+## 2. obfuscateSectionPadding
+
+### Operation:
+- Sort sections by file offset
+- For each consecutive pair:
+  - end = Sections[i].Offset + Sections[i].Size
+  - start = Sections[i+1].Offset
+  - If gap exists AND gap < 64KB AND end > 0:
+    - Skip if gap overlaps any PT_LOAD segment
+    - Fill RawData[end:start] with random bytes
+
+---
+
+## 3. obfuscateRuntimeStrings
+
+### Target sections: name contains "data", "rodata", or ".str"
+### SKIP: .dynstr, .strtab (linker/loader required)
+
+### Replacements:
+- "fprintf" -> "foutput" (7 bytes)
+- "printf" -> "output" (6 bytes)
+- "libgcc.so" -> "libsys.so" (9 bytes)
+- "main" -> "entry" (padded to match)
+- "__libc_" -> "__std_" (padded to match)
+
+### Patterns searched:
+1. \x00original\x00 -> \x00replacement\x00
+2. original -> replacement (direct match)
+
+---
+
+## 4. obfuscateReservedHeaderFields
+
+### Header padding (e_ident[9:16]):
+- Fill 7 bytes with random data
+
+### Processor flags (e_flags):
+- Zero 4 bytes at offset 0x30 (64-bit) or 0x24 (32-bit)
+- NOT randomized (would break loaders)
+
+---
+
+## 5. obfuscateProgramHeaders(force, originalSize, preserveLoadOrder)
+
+### Fetch metadata:
+- e_phoff: program header table offset
+- e_phentsize: entry size (32/56 bytes)
+- e_phnum: entry count
+
+### Copy entries to buffer for manipulation
+
+### Operations:
+
+#### rotateSegmentType(PT_NOTE):
+- Find all PT_NOTE indices
+- Rotate entries: [0,1,2] -> [1,2,0]
+- Update both Segments[] and raw entries[]
+
+#### reverseSegmentType(PT_LOAD) - SKIP if preserveLoadOrder:
+- Find all PT_LOAD indices
+- Reverse order: [0,1,2] -> [2,1,0]
+- Update both Segments[] and raw entries[]
+
+#### randomizeLoadAlignments - SKIP if preserveLoadOrder:
+- Candidates: 0x1000, 0x2000, 0x4000, 0x8000, 0x10000
+- For each PT_LOAD with power-of-two alignment:
+  - Select smaller alignment from candidates
+  - Verify: VAddr % newAlign == Offset % newAlign
+  - Write to p_align field
+
+#### randomizePhysicalAddresses:
+- For each NON-PT_LOAD segment:
+  - Generate random page-aligned address
+  - Write to p_paddr field
+- p_paddr is unused at runtime for non-LOAD segments
+
+#### relocateMetadataSegments (force only):
+- For PT_NOTE and PT_GNU_EH_FRAME segments:
+  - appendSegmentDataCopy() - copy segment data to end of file
+  - Fill original location with random bytes
+  - updateSectionsForRelocatedRange() - update section offsets
+  - Update p_offset in entry
+- Growth limit: 15% of original size (maxForceGrowthRatio = 1.15)
+
+### Write modified entries back to RawData
+
+---
+
+## 6. obfuscateDynamicSymbols(force)
+
+### SKIP if e.isDynamic || e.hasInterpreter:
+- Dynamic ELF requires intact dynsym for loader resolution
+
+### Locate sections:
+- .dynsym (SHT_DYNSYM)
+- .dynstr (dynamic string table)
+
+### Parse dynsym entries:
+- Entry size: 24 bytes (64-bit) or 16 bytes (32-bit)
+- Store originalIndex + raw data for each entry
+
+### collectDynsymUsage:
+- Scan .rela.dyn, .rel.dyn, .rela.plt, .rel.plt
+- Extract symbol indices from r_info field
+- Build set of indices actually referenced by relocations
+
+### shuffleDynsymEntries:
+- Keep entry[0] fixed (null symbol)
+- Fisher-Yates shuffle on entries[1:]
+- Build indexMap: old_index -> new_index
+
+### injectFakeLocalSymbols:
+- For unused STB_LOCAL symbols (not in relocation set):
+  - Find padding region in loaded segment
+  - Randomize symbol name in .dynstr
+  - Set: binding=STB_LOCAL, type=STT_NOTYPE, value=padding_addr, size=0
+
+### Write shuffled entries back to RawData
+
+### rewriteDynsymRelocations:
+- For each relocation entry referencing shuffled symbol:
+  - Read r_info, extract old symbol index
+  - Lookup new index in indexMap
+  - Write updated r_info
+
+### reorderVersionTable:
+- If .gnu.version (SHT_GNU_VERSYM) exists:
+  - Reorder version entries to match new symbol order
+  - Each entry is 2 bytes
+
+### Force mode - scrambleDynstrForce:
+- For STB_LOCAL symbols not in essential set:
+  - XOR symbol name bytes in .dynstr with random bytes
+
+---
+
+## 7. scrambleSectionStringTableForce (force only)
+
+### Locate .shstrtab section
+
+### Operation:
+- Skip byte 0 (must remain null)
+- For each non-null byte in .shstrtab:
+  - Replace with random printable character
+  - Ensure result != 0
+
+---
+
+## 8. wipeSectionStringTableBeforeSave (force only)
+
+### Locate .shstrtab section
+
+### Operation:
+- Fill .shstrtab[1:] with zeros
+- Preserves null terminator at [0]
+- Section names become empty strings
+
+---
+
+## DYNSYM ENTRY LAYOUT
+
+### 64-bit (24 bytes):
+```
+Offset  Size  Field
+0       4     st_name (offset in .dynstr)
+4       1     st_info (binding << 4 | type)
+5       1     st_other
+6       2     st_shndx (section index)
+8       8     st_value
+16      8     st_size
+```
+
+### 32-bit (16 bytes):
+```
+Offset  Size  Field
+0       4     st_name
+4       4     st_value
+8       4     st_size
+12      1     st_info
+13      1     st_other
+14      2     st_shndx
+```
+
+---
+
+## RELOCATION ENTRY LAYOUT
+
+### RELA 64-bit (24 bytes):
+```
+Offset  Size  Field
+0       8     r_offset
+8       8     r_info (sym << 32 | type)
+16      8     r_addend
+```
+
+### RELA 32-bit (12 bytes):
+```
+Offset  Size  Field
+0       4     r_offset
+4       4     r_info (sym << 8 | type)
+8       4     r_addend
+```
+
+### REL 64-bit (16 bytes):
+```
+Offset  Size  Field
+0       8     r_offset
+8       8     r_info
+```
+
+### REL 32-bit (8 bytes):
+```
+Offset  Size  Field
+0       4     r_offset
+4       4     r_info
+```
+
+---
+
+## PROGRAM HEADER FIELDS
+
+### 64-bit (56 bytes):
+```
+Offset  Size  Field
+0       4     p_type
+4       4     p_flags
+8       8     p_offset
+16      8     p_vaddr
+24      8     p_paddr
+32      8     p_filesz
+40      8     p_memsz
+48      8     p_align
+```
+
+### 32-bit (32 bytes):
+```
+Offset  Size  Field
+0       4     p_type
+4       4     p_offset
+8       4     p_vaddr
+12      4     p_paddr
+16      4     p_filesz
+20      4     p_memsz
+24      4     p_flags
+28      4     p_align
+```
+
+---
+
+## SEGMENT TYPES (p_type)
+
+- PT_NULL: 0
+- PT_LOAD: 1 (loadable segment - CRITICAL)
+- PT_DYNAMIC: 2
+- PT_INTERP: 3 (interpreter path)
+- PT_NOTE: 4 (auxiliary info)
+- PT_SHLIB: 5
+- PT_PHDR: 6
+- PT_TLS: 7
+- PT_GNU_EH_FRAME: 0x6474e550
+- PT_GNU_STACK: 0x6474e551
+- PT_GNU_RELRO: 0x6474e552
+
+---
+
+## SYMBOL BINDING (st_info >> 4)
+
+- STB_LOCAL: 0
+- STB_GLOBAL: 1
+- STB_WEAK: 2
+
+## SYMBOL TYPE (st_info & 0xf)
+
+- STT_NOTYPE: 0
+- STT_OBJECT: 1
+- STT_FUNC: 2
+- STT_SECTION: 3
+- STT_FILE: 4
+- STT_COMMON: 5
+- STT_TLS: 6

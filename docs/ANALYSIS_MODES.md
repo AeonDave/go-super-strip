@@ -9,7 +9,7 @@ gosstrip -a[=format=json,mode=deep] <input> [output]
 ```
 
 - `mode=simple` (default): curated summary meant for CI logs and manual inspection.
-- `mode=deep`: legacy verbose dump that mirrors the original analyzers, useful when hunting parser bugs.
+- `mode=deep`: verbose dump that includes full tables and heuristics, useful when hunting parser bugs.
 - `format=text` (default) prints the report to stdout unless an `<output>` file is provided.
 - `format=json` wraps the same report inside a JSON envelope (`{"file":"...", "format":"PE", "mode":"simple", "text_report":"..."}`) so automated tooling can parse it.
 
@@ -23,6 +23,7 @@ Implementation: `perw/analyze.go`.
 
 - File type, architecture, entry point, subsystem, security directory presence, signed/unsigned status.
 - Header hygiene warnings (timestamps, checksum, Rich header presence).
+- Packed heuristics (entropy + RWX flags) in deep mode.
 
 ### 2.2 Section Table
 
@@ -52,7 +53,7 @@ Implementation: `elfrw/analyze.go`.
 ### 3.1 Binary Summary
 
 - ELF class, endianness, machine, ABI, entry point, interpreter path.
-- Flags mismatched ABI signatures or unsupported features (e.g., CHERI).
+- Flags mismatched ABI signatures or unsupported features.
 
 ### 3.2 Program Headers
 
@@ -61,13 +62,12 @@ Implementation: `elfrw/analyze.go`.
 
 ### 3.3 Section Inventory
 
-- Each section’s type, flags, offset, and size with warnings for overlaps or off-end ranges (common in Go builds with packed debug data).
+- Each section’s type, flags, offset, and size with warnings for overlaps or off-end ranges.
 - Highlights stripped names and prints “(obfuscated)” tags when names no longer match canonical expectations.
 
 ### 3.4 Symbol/Relocation Overview
 
 - Count of static/dynamic symbols, relocations per type, TLS usage, Go metadata presence (`.gopclntab`, `.typelink`, `.itablink`).
-- Notes whether compact successfully removed typelink sections when requested.
 
 ### 3.5 Note & Build Info
 

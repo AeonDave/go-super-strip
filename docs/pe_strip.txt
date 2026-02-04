@@ -1,0 +1,195 @@
+# PE STRIP + COMPACT - TECHNICAL REFERENCE
+
+## FLOW: StripAll(force, fillOverride) -> perw/strip.go
+Pipeline:
+1. sections -> runStripSectionPhase
+2. headers  -> StripAllHeaders
+3. directories -> StripAllDirs(force)
+4. regex -> StripAllRegexRules(force, fillOverride)
+
+---
+
+## SECTION STRIPPING (runStripSectionPhase)
+
+### SectionTypes stripped:
+- DebugSections: .debug, .zdebug, .debug_* prefixes
+- SymbolSections: .symtab, .strtab, .sym*, COFF symbols
+- BuildInfoSections: .go.*, .gopkg.*, .note.go.buildid
+- NonEssentialSections: .comment, .note, .note.*
+- ExceptionSections: .pdata, .xdata (risky if force)
+- RelocationSections: .reloc (risky if force)
+- TLSSections: .tls (risky if force)
+- CertificateSections: Security directory data (risky)
+- RuntimeSections: .rdata metadata
+- ResourceSections: .rsrc (risky)
+
+### Per-section operation:
+1. Match section name via ExactNames/PrefixNames from GetSectionStripRule()
+2. wipeSectionData(section, fillMode):
+   - fillRegion(section.Offset, section.Size, ZeroFill|RandomFill)
+3. Mark section.Stripped = true
+4. If SymbolSections: fixCOFFHeaderAfterStripping()
+   - Zero PointerToSymbolTable (coffHeaderOffset+8)
+   - Zero NumberOfSymbols (coffHeaderOffset+12)
+
+---
+
+## HEADER STRIPPING (StripAllHeaders)
+
+### StripPEHeaderTimeDateStamp:
+- Offset: peHeaderOffset + 4 (COFF TimeDateStamp)
+- Action: Zero 4 bytes
+- Packed guard: skipped when packed and force=false
+
+### StripRichHeader:
+- Search: "Rich" (0x52696368) in DOS stub area (0x40 to e_lfanew)
+- Find: "DanS" (0x44616E53) marker before Rich
+- Action: Zero from DanS offset to Rich+8
+
+### StripHeader (DOS Header):
+- Offset: 0x1C to 0x3C (DOS reserved fields)
+- Action: Zero 32 bytes (PE_ELFANEW_OFFSET - 0x1C)
+
+---
+
+## DIRECTORY STRIPPING (StripAllDirs)
+
+### StripDebugDirectory:
+- Location: Data Directory entry 6 (debug)
+- Steps:
+  1. Read debug dir RVA/Size from optional header
+  2. Convert RVA to physical offset
+  3. Parse debug directory entries (28 bytes each)
+  4. For each entry: zero payload data at PointerToRawData
+  5. Zero entire debug directory table
+  6. Zero debug directory entry in data directories (8 bytes)
+
+### StripResourceDirectory (non-risky):
+- Section: .rsrc
+- Action: Zero timestamp (offset+4) and version (offset+8) in resource directory header
+- NOT entire section (preserves manifests/icons)
+
+### StripLoadConfigDirectory:
+- Location: Data Directory entry 10 (load config)
+- Action: Zero timestamp (offset+4) and version (offset+8)
+
+### StripImportDirectoryMetadata (force only):
+- Location: Data Directory entry 1 (import table)
+- For each import descriptor (20 bytes):
+  - Zero TimeDateStamp field (offset 4-8)
+  - Zero ForwarderChain field (offset 8-12)
+
+---
+
+## REGEX STRIPPING (StripAllRegexRules)
+
+### Protection for packed binaries:
+- Non-risky patterns: ALWAYS applied (UPX signatures, build IDs)
+- Risky patterns: skipped unless force
+
+### Protected ranges (buildProtectedRegexRanges):
+1. Entry-point page (stub loader code)
+2. Import Directory/IAT region (loader metadata)
+3. Packed payload sections (high-entropy or RWX-large sections)
+
+### Exception: UPX header patterns
+- For patterns matching UPX header/version (`UPX!` + version), packed payload protection is relaxed so the header can be removed.
+
+### Per-pattern operation:
+1. Go build/runtime: buildid, go version, module paths
+2. GCC/MinGW: compiler version, libgcc, mingw_ symbols
+3. C++ markers: __cplusplus, typeinfo, vtable
+4. Rust markers: rustc version, panic handlers
+5. .NET/C# markers: PDB paths, source paths, build metadata
+6. User/Host identifiers: C:\Users\*, /home/*, build@hostname
+7. Build metadata: $Id:, @(#), __DATE__, commit-, version
+8. Packer signatures: UPX!, ASPack, themida, vmprotect
+
+### Per-pattern operation:
+1. regexp.FindAllIndex on RawData
+2. Build protected ranges if !force (executable sections + IAT)
+3. For each match NOT overlapping protected:
+   - fillRegion(start, end-start, fill)
+4. trimZeroTailBeyond(maxSectionDataEnd) if matches found
+
+### Pattern categories (perw/strip_types.go):
+
+## COMPACT FLOW: Compact(force, keepResources) -> perw/compact.go
+
+Pipeline:
+1. section removal -> sectionRemoval
+2. restore timestamp
+3. scrub headers (force only) -> scrubSectionHeaderNames
+
+### Section identification (identifyStripSections):
+
+#### Always kept (critical):
+- .text, .code, .data, .rdata
+- .idata, .edata, .pdata, .xdata, .tls, .reloc (unless force)
+- Go sections: go.*, runtime, eh_frame, .ctors, .dtors
+- Sections referenced by Data Directories (unless force)
+
+#### Removable if:
+- section.Stripped == true
+- isCorruptedSection: invalid chars, suspicious size ratio, invalid offsets
+- isNullOrZeroSection (force only): entropy < 0.1
+- Matches strip rule AND zero-filled
+
+### Per-section removal (removeSingleSection):
+1. wipeSectionData(section, ZeroFill)
+2. Calculate aligned removal size (fileAlignment)
+3. Splice out bytes from RawData
+4. Update offsets of subsequent sections (Offset -= removedSize)
+
+### Post-removal updates:
+1. updateNumberOfSections(newCount) - COFF header
+2. buildNewSectionsWithCorrectVirtualSize - adjust VirtualSize for gaps
+3. updateSectionTableWithNewSections - rewrite section headers
+4. clearDataDirectoriesForRemovedRVAs - zero directories pointing to removed sections
+5. updateRelocationMetadata if .reloc removed:
+   - Set IMAGE_FILE_RELOCS_STRIPPED flag
+   - Clear DYNAMIC_BASE flag (disable ASLR)
+
+### Header updates:
+- SizeOfImage: recalculated (max section VA + aligned size)
+- SizeOfHeaders: recalculated (first section offset aligned)
+- CheckSum: zeroed
+
+### Overlay trimming:
+- SKIP if p.IsPacked == true (UPX stores data in overlay)
+- If Security Directory empty (no Authenticode):
+  - Trim RawData to max(section end, SizeOfHeaders)
+
+### Force mode extras:
+- scrubSectionHeaderNames: zero all 8-byte section names, rename to sec_00, sec_01...
+
+---
+
+## KEY OFFSETS (PE32/PE64)
+
+DOS Header:
+- e_lfanew: 0x3C (4 bytes)
+
+COFF Header (at e_lfanew + 4):
+- NumberOfSections: +2 (2 bytes)
+- TimeDateStamp: +4 (4 bytes)
+- PointerToSymbolTable: +8 (4 bytes)
+- NumberOfSymbols: +12 (4 bytes)
+- Characteristics: +18 (2 bytes)
+
+Optional Header (after COFF):
+- LinkerVersion: +2/+3 (2 bytes)
+- SizeOfImage: +56/+80 (4 bytes)
+- SizeOfHeaders: +60/+84 (4 bytes)
+- CheckSum: +64/+88 (4 bytes)
+- Subsystem: +68/+92 (2 bytes)
+- DllCharacteristics: +70/+94 (2 bytes)
+- DataDirectories: +96/+112 (128 bytes, 16 entries x 8)
+
+Section Header (40 bytes each):
+- Name: +0 (8 bytes)
+- VirtualSize: +8 (4 bytes)
+- VirtualAddress: +12 (4 bytes)
+- SizeOfRawData: +16 (4 bytes)
+- PointerToRawData: +20 (4 bytes)
+- Characteristics: +36 (4 bytes)

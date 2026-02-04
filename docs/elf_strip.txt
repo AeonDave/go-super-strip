@@ -1,0 +1,189 @@
+# ELF STRIP + COMPACT - TECHNICAL REFERENCE
+
+## FLOW: StripAll(force, fillOverride) -> elfrw/strip.go
+
+Pre-step: snapshotProtectedStringTables() -> backup .shstrtab
+Pipeline:
+1. sections -> runStripSectionPhase
+2. headers  -> stripAllHeaders
+3. regex -> stripAllRegexRules(force, fillOverride)
+Post-step: restoreProtectedStringTables() -> restore .shstrtab
+
+---
+
+## SECTION STRIPPING (runStripSectionPhase)
+
+### SectionTypes stripped (elfrw/strip_types.go):
+- DebugSections: .debug_*, .zdebug_*, .stab*, .line, .dwarf*
+- SymbolSections: .symtab, .strtab
+- BuildInfoSections: .go.*, .gopkg.* (prefix only)
+- NonEssentialSections: .comment, .note.* (except .note.gnu.property)
+- ExceptionSections: .eh_frame, .eh_frame_hdr, .gcc_except_table (risky)
+- RelocationSections: .rel.*, .rela.* (risky, SKIP if isDynamic || hasInterpreter)
+- TLSSections: .tdata, .tbss (risky)
+- NoteSections: .note, .note.* (except gnu.property)
+- RuntimeSections: (minimal)
+
+### Guard: RelocationSections
+- SKIP if e.isDynamic || e.hasInterpreter (dynamic ELF needs relocations)
+
+### Per-section operation (stripSectionData):
+1. Validate bounds: offset + size <= len(RawData)
+2. fillRegion(section.Offset, section.Size, useRandom)
+3. Mark section.Stripped = true
+4. updateSectionHeaders() - rebuild section header table
+
+### Protected sections (NEVER stripped):
+- .shstrtab (section header string table)
+- section.ExecutionCritical == true
+
+---
+
+## HEADER STRIPPING (stripAllHeaders)
+
+### stripELFHeaderFields:
+- e_flags: Zero (offset 0x30/0x24 for 64/32-bit)
+- EI_ABIVERSION: Zero (e_ident[8])
+- EI_PAD: Zero 7 bytes (e_ident[9:16])
+- NOT touched: EI_VERSION (e_ident[6]), OSABI (e_ident[7])
+
+### stripProgramHeaderTimestamps:
+- SKIP if len(Sections) == 0 (no section headers = packed binary)
+- For each PT_NOTE segment: fillRegion(segment.Offset, segment.FileSize, false)
+
+---
+
+## REGEX STRIPPING (stripAllRegexRules)
+
+### Guard:
+- SKIP if len(Sections) == 0 && !force (packed binary protection)
+
+### Pattern categories (elfrw/strip_types.go):
+1. Go build/runtime: buildid, go version, module paths
+2. GCC/GNU toolchain: GCC version, __GNUC__, gnu_debuglink
+3. C++ markers: __cplusplus, typeinfo, vtable
+4. Rust markers: rustc version, panic handlers, eh_personality
+5. Source file paths: /home/*, /build/*, /go/pkg/mod/*
+6. Build metadata: $Id:, @(#), __DATE__, commit-, version
+7. User/Host: /home/user/, /tmp/*, build@hostname
+8. Debug info: DWARF, stabs, __func__, __LINE__
+9. Packer signatures: UPX!, $UPX:
+
+### Per-pattern operation (StripByteRegex):
+1. regexp.FindAllIndex on RawData
+2. Build protected ranges if !force:
+   - buildProtectedRegexRanges() -> critical sections + PT_INTERP
+   - matchProtectedStringTableRange() -> .shstrtab
+3. For each match NOT overlapping protected:
+   - fillRegion(start, end-start, useRandom)
+4. trimZeroTailBeyond(logicalFileEnd) if matches found
+
+---
+
+## COMPACT FLOW: Compact(force) -> elfrw/compact.go
+
+Pipeline:
+1. remove sections -> compactRemovalPhase
+2. rebuild headers -> compactRebuildPhase
+3. validate -> compactValidationPhase
+
+### Section identification (identifyCompactableSections):
+
+#### Always kept (critical - identifyCriticalSections):
+- Core: .text, .data, .rodata, .bss, .init, .fini, .tdata, .tbss
+- Loader: .interp, .dynamic, .dynsym, .dynstr, .gnu.hash, .hash
+- GOT/PLT: .got, .got.plt, .plt, .plt.got
+- Relocations: .rel.plt, .rela.plt, .rel.dyn, .rela.dyn
+- Init arrays: .init_array, .preinit_array, .fini_array, .ctors, .dtors
+- Exceptions: .eh_frame, .eh_frame_hdr, .gcc_except_table
+- Data relro: .data.rel.ro, .data.rel.ro.local
+- Go-specific: go.*, runtime, .gosymtab, .gopclntab
+- Optional (unless force): .comment, .note.gnu.property
+
+#### Removable if:
+- section.Stripped == true
+- isCorruptedSection: offset/size < 0, beyond file, etc.
+- isEmptySection: size == 0
+- isNullOrZeroSection (force): all bytes == 0, size <= 64KB
+- isAlreadyStrippedSection: stripped || (size==0 && offset==0)
+- matchesZeroFilledStripRule: matches strip rule AND all zeros
+
+### Per-section removal (removeCompactSection):
+1. fillRegion(section.Offset, section.Size, false)
+2. Determine if choppable: section.Offset >= maxLoadSegmentEnd()
+3. If choppable:
+   - Splice out aligned bytes from RawData
+   - Update offsets of subsequent sections (Offset -= removedSize)
+4. Mark section.Size = 0, Stripped = true
+5. Update flags: hasInterpreter, isDynamic if removing .interp/.dynamic
+
+### Post-removal:
+1. updateSections(removable) - remove from Sections slice
+2. trimZeroTailBeyond(logicalFileEnd) - trim trailing zeros
+3. Trim overlay: RawData = RawData[:maxSegmentEnd]
+
+### Header rebuild (compactRebuildPhase):
+1. rebuildSectionHeaderTable():
+   - buildShstrtab() -> new string table + name offsets
+   - findOrCreateShstrtabSection()
+   - calculateLayout() -> new offsets
+   - serializeHeaders() -> section headers
+   - Append .shstrtab data + section header table to RawData
+   - setShoff(newSHTOffset)
+2. updateELFHeaderSectionCount(len(Sections))
+
+### Force mode extras:
+- scrubSectionStringTable(): zero entire .shstrtab content
+
+---
+
+## KEY OFFSETS (ELF32/ELF64)
+
+ELF Header:
+- e_ident[0:16]: Magic + class + endian + version + OS/ABI + pad
+- e_type: 16/16 (2 bytes)
+- e_machine: 18/18 (2 bytes)
+- e_version: 20/20 (4 bytes)
+- e_entry: 24/24 (4/8 bytes)
+- e_phoff: 28/32 (4/8 bytes) - program header offset
+- e_shoff: 32/40 (4/8 bytes) - section header offset
+- e_flags: 36/48 (4 bytes)
+- e_ehsize: 40/52 (2 bytes)
+- e_phentsize: 42/54 (2 bytes)
+- e_phnum: 44/56 (2 bytes)
+- e_shentsize: 46/58 (2 bytes)
+- e_shnum: 48/60 (2 bytes)
+- e_shstrndx: 50/62 (2 bytes)
+
+Section Header (40/64 bytes):
+- sh_name: +0 (4 bytes) - offset in .shstrtab
+- sh_type: +4 (4 bytes)
+- sh_flags: +8 (4/8 bytes)
+- sh_addr: +12/16 (4/8 bytes)
+- sh_offset: +16/24 (4/8 bytes)
+- sh_size: +20/32 (4/8 bytes)
+- sh_link: +24/40 (4 bytes)
+- sh_info: +28/44 (4 bytes)
+- sh_addralign: +32/48 (4/8 bytes)
+- sh_entsize: +36/56 (4/8 bytes)
+
+Program Header (32/56 bytes):
+- p_type: +0 (4 bytes)
+- p_flags: +4/4 (4 bytes, position differs)
+- p_offset: +4/8 (4/8 bytes)
+- p_vaddr: +8/16 (4/8 bytes)
+- p_paddr: +12/24 (4/8 bytes)
+- p_filesz: +16/32 (4/8 bytes)
+- p_memsz: +20/40 (4/8 bytes)
+- p_align: +24/48 (4/8 bytes)
+
+---
+
+## PROTECTED RANGES (regex stripping)
+
+buildProtectedRegexRanges():
+1. All critical sections (identifyCriticalSections result)
+2. PT_INTERP segment (interpreter path)
+
+matchProtectedStringTableRange():
+- .shstrtab section (always protected from regex)

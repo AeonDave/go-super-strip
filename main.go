@@ -117,12 +117,15 @@ type PackOptions struct {
 }
 
 func main() {
-	if len(os.Args) < 2 {
+	args := os.Args[1:]
+	if len(args) == 0 {
 		printUsage()
 		os.Exit(1)
 	}
-
-	args := os.Args[1:]
+	if hasVersion(args) {
+		printVersion()
+		return
+	}
 	if hasHelp(args) {
 		printUsage()
 		return
@@ -155,6 +158,15 @@ func main() {
 func hasHelp(args []string) bool {
 	for _, a := range args {
 		if a == "-h" || a == "--help" || a == "help" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasVersion(args []string) bool {
+	for _, a := range args {
+		if a == "-v" || a == "--version" || a == "version" {
 			return true
 		}
 	}
@@ -1194,9 +1206,10 @@ func copyFile(src, dst string) error {
 }
 
 func printUsage() {
-	fmt.Println("go-super-strip - Binary transformation pipeline")
+	fmt.Printf("go-super-strip v%s - Binary transformation pipeline\n", Version)
 	fmt.Println()
 	fmt.Println("Usage:")
+	fmt.Println("  gosstrip -v")
 	fmt.Println("  gosstrip -a[=format=json,mode=deep] <input> [output]")
 	fmt.Println("  gosstrip [operations] <input> [output]")
 	fmt.Println()
@@ -1204,7 +1217,7 @@ func printUsage() {
 	fmt.Println("  -s=force=true           Strip sections")
 	fmt.Println("  -c=force=true,keep_resources=false Compact file")
 	fmt.Println("  -o=force=true           Obfuscate")
-	fmt.Println("  -r=pattern=rx[,pattern=rules.txt][,fill=random] Apply regex removals")
+	fmt.Println("  -r=pattern=rx[,pattern=rules.txt][,fill=random][,force=true] Apply regex removals")
 	fmt.Println("  -i=name=.sec,file=bin   Insert section")
 	fmt.Println("  -l=file=bin             Append overlay")
 	fmt.Println("  -ei=name=.sec[,index=0][,password=pass] Extract a section to disk")
@@ -1214,6 +1227,10 @@ func printUsage() {
 	fmt.Println("Analyze (-a), extract-section (-ei), and extract-overlay (-el) can be invoked standalone just like any other stage.")
 	fmt.Println()
 	fmt.Println("Specify at least one operation (other than analyze). Use output to write results to a new file; otherwise the input is modified in place.")
+}
+
+func printVersion() {
+	fmt.Printf("go-super-strip v%s\n", Version)
 }
 
 type commandSession struct {

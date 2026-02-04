@@ -12,3 +12,4 @@ go.work.sum
 .venv/
 /test/logs/
 /code-examples/
+gosstrip

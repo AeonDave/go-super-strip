@@ -23,8 +23,10 @@ go build -o gosstrip.exe
 ```
 gosstrip -a[=format=json,mode=deep] <input> [output]
 gosstrip [-s[=...]] [-c[=...]] [-o[=...]] [-r=...] [-i=...] [-l=...] [-ei=...] [-el=...] [-p=...] <input> [output]
+gosstrip -v
 ```
 - `-a` (analyze) runs alone and optionally writes the report to `output`.
+- `-v` prints the CLI version and exits.
 - When multiple operations are provided the CLI enforces the canonical order below and mutates `input` in-place unless an `output` path is supplied.
 
 ```
@@ -55,8 +57,9 @@ pack (-p)
 | `-a[=format=text|json,mode=simple|deep]` | Analyzer for PE/ELF metadata. JSON output is available only for `mode=deep`. | Defaults: `format=text`, `mode=simple`. |
 | `-s[=force=true/false,fill=auto|zero|random]` | Strips debug information, COFF/Rich headers, symbol tables, etc. | `force=false` (alias: `f`), `fill=auto` by default. |
 | `-c[=force=true/false,keep_resources=true/false]` | Trims dead ranges and normalizes headers. | `force=false` (alias: `f`), `keep_resources=true` (aliases: `keep-resources`, `keepresources`) preserves PE `.rsrc` data unless disabled. |
-| `-o[=force=true/false,preserve_load_order=true/false]` | Renames sections/symbols and randomizes tables. | `force=false` (alias: `f`); `preserve_load_order` applies to ELF program headers; `force` enables aggressive renames. |
-| `-r=pattern=…[,pattern=…][,fill=zero|random]` | Overwrites bytes that match one or more regexes. | `pattern` accepts literal regexes or file paths; default fill is zeroes. Multiple `-r` flags accumulate patterns. |
+| `-o[=force=true/false,preserve_load_order=true/false]` | Randomizes section names, fills padding gaps, and shuffles select metadata. | `force=false` (alias: `f`); `preserve_load_order` applies to ELF program headers. |
+| `-r=pattern=…[,pattern=…][,fill=zero|random][,force=true/false]` | Overwrites bytes that match one or more regexes. | `pattern` accepts literal regexes or file paths; default fill is zeroes. Multiple `-r` flags accumulate patterns. `force=true` disables protected ranges. |
+| `-v` | Print CLI version and exit. | No options. |
 | `-i=name=…,file|data=…,password=…` | Inserts a new encrypted section. | Provide exactly one of `file` or `data` (ASCII or `0x` hex). `password` accepts ASCII or hex. Names longer than 8 chars are truncated for PE. |
 | `-l=file|data=…,password=…` | Appends an overlay payload after the executable image. | Same data/password rules as section insertion. |
 | `-ei=name=…|index=N[,password=…][,destination=PATH]` | Extracts an inserted section by name or index (0-based). | One of `name` or `index` is mandatory. Output defaults to `<input>.extracted`. |
@@ -103,25 +106,26 @@ Flow (ASCII, ELF)
 ```
 
 ### Obfuscate (`-o`)
-- Renames sections/imports, shuffles metadata, and injects harmless noise.
-- `force=true` enables high-risk path mutations (duplicate removal, custom entrypoints).
-
+- Renames sections, fills padding gaps, tweaks header metadata, and reorders select tables.
+- `force=true` enables higher-risk mutations (e.g., import thunk shuffling, ELF segment relocation).
 - `preserve_load_order=true` keeps ELF PT_LOAD ordering stable when obfuscating program headers.
 
 Flow (ASCII, PE)
 ```
-[Read PE] -> [Rename sections] -> [Scrub padding] -> [Runtime strings] -> [Header metadata] -> [Imports] -> [Save]
+[Read PE] -> [Rename sections] -> [Fill gaps] -> [Runtime strings] -> [Header metadata] -> [Imports] -> [Save]
 ```
 
 Flow (ASCII, ELF)
 ```
-[Read ELF] -> [Rename sections] -> [Scrub padding] -> [Runtime strings] -> [Header fields] -> [Program headers] -> [Dynsym] -> [Save]
+[Read ELF] -> [Rename sections] -> [Header fields] -> [Program headers] -> [Dynsym] -> [Save]
 ```
 
 ### Regex (`-r`)
 - Each `pattern=` token can contain a literal regex or a path to a newline-separated rules file (blank lines and `#` comments ignored).
 - Multiple `pattern=` fragments on one flag or across repeated `-r` flags accumulate.
 - `fill=random` uses CSPRNG data; `fill=zero` (default) restores deterministic hashes.
+- `force=true` disables protected ranges (entrypoint/IAT for PE; PT_INTERP/PT_LOAD and `.shstrtab` for ELF).
+- Regex evaluation has a timeout and max-match cap to guard against runaway patterns.
 
 ### Section Insert (`-i`)
 - Adds a new section for implants, config blobs, etc.

@@ -43,26 +43,26 @@ All code lives under `perw/`:
 
 - **DOS stub** reserved words set to zero (except the initial stub message).
 - **COFF header** timestamp zeroed; symbol table pointer cleared when table removed.
-- **Optional header** clears checksum, loader flags that are unused, and Data Directory timestamps (Debug, LoadConfig, Resource root, Delay-Load entries).
-- **Rich header** (DanS...Rich block) is detected and blanked with deterministic XOR so compaction can later drop it entirely.
+	- Packed guard: COFF `TimeDateStamp` is skipped when `p.IsPacked && !force`.
+- **Rich header** (DanS...Rich block) is detected and blanked in-place.
 
 ### 3.3 Directory Sanitization
 
-- For each Data Directory, `stripDataDirectoryIfRemovable` validates size/RVA mapping and fills the referenced data range with zeros while keeping the directory entry consistent (size reset to `0`).
-- TLS: resets callbacks count and zero-fills callback array to break profilers; force mode additionally blanks the raw template.
-- Load Config: wipes Guard CF checksum and instrumentation fields.
-- Security Directory is untouched in default mode; force mode can zap it only when the binary is already unsigned.
+- Debug directory: zeroes the debug data and clears the Debug directory entry.
+- Resource directory: zeroes timestamp + version in the resource root header.
+- Load Config: zeroes timestamp + version in the load config header.
+- Import directory metadata: only in `force` (descriptor timestamps/forwarder chain).
 
 ### 3.4 Pattern Scrubbing
 
-- Regex rules from `perw/strip_types.go::GetRegexStripRules()` cover `go1\.[0-9]+`, `Go build ID`, compiler version banners, `@(#)`, `PDB` paths, user home paths, `Program Files`, and known packer signatures.
+- Regex rules from `perw/strip_types.go::GetRegexStripRules()` cover build IDs, compiler banners, PDB paths, user paths, and packer signatures.
 - Each match is replaced with zeros (or random when `fill=random` was requested upstream). We never change length to avoid shifting offsets.
+- Protected ranges (when `force=false`): entrypoint page, import directory/IAT, and packed payload sections (high-entropy or RWX-large).
+- UPX header patterns are allowed to bypass packed payload protection to restore historical behavior.
 
 ### 3.5 Force-only Extras
 
-- Force mode zeroes `.reloc` to defeat import rebuilding tools (compact may later drop the table entirely).
-- `.tls`, `.pdata`, `.xdata`, `.safeseh`, `.rsrc` are blanked only when `force` and the analyzer confirmed they are either empty or unused.
-- Debug directories receive fake GUIDs so debuggers cannot trace the original PDB path.
+- Force mode enables stripping of risky sections and import directory metadata.
 
 ## 4. ELF Techniques
 
@@ -76,23 +76,21 @@ Implementation lives in `elfrw/`:
 
 ### 4.2 Header & Note Cleanup
 
-- ELF header padding (EI_PAD bytes) is zeroed for deterministic builds.
-- Program headers with `p_flags` inconsistent with their sections are normalized (e.g., remove `PF_W` from read-only segments).
-- `.note.gnu.property`, `.note.go.buildinfo`, `.note.ABI-tag`, `.note.linker-build-id`, `.note.gnu.build-id`: the payload is blanked while lengths remain intact.
-- Force mode optionally removes the Section Header String Table and rewrites the section names map to random ASCII for obfuscation.
+- ELF header padding (EI_PAD bytes) and EI_ABIVERSION are zeroed; `e_flags` is zeroed.
+- PT_NOTE segment payloads are zeroed, but only when section headers are available (skip when packed/no sections).
 
 ### 4.3 TLS & Dynamic Data
 
-- Default mode keeps `.dynamic`, `.dynsym`, `.dynstr`, `.gnu.version*` but zeroes timestamps/sonames.
-- Force allows blanking `.interp`, `.dynamic`, `.init_array` entries for statically linked binaries (guarded by `hasInterpreter` and relocation count).
+- Default mode avoids touching loader-critical dynamic sections; risky removals are gated behind `force`.
 
 ### 4.4 Pattern Scrubbing
 
-- Regex rules mirror the PE set and include Go module paths, `build id`, GCC version banners, thin LTO metadata, glibc version strings, and absolute source directories. They are applied to all LOADable sections plus `.rodata`.
+- Regex rules mirror the PE set and include Go module paths, build IDs, compiler banners, and absolute source directories.
+- Protected ranges include critical sections and PT_INTERP, plus `.shstrtab` via a dedicated guard.
 
 ### 4.5 Fill Mode Coordination
 
-- Strip honors the CLI-level `fill` option by calling `common.ZeroFillData` or `common.RandomFillData`. This ensures both PE and ELF share the same deterministic RNG seeding for reproducible tests.
+- Strip honors the CLI-level `fill` option by calling `common.ZeroFillData` or `common.RandomFillData`.
 
 ## 5. Validation & Instrumentation
 

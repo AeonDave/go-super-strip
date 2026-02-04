@@ -1,0 +1,220 @@
+# PE OBFUSCATION - TECHNICAL REFERENCE
+
+## FLOW: ObfuscateAll(force) -> perw/obfuscate.go
+
+Pipeline:
+1. section names -> ObfuscateSectionNames
+2. section padding -> ObfuscateSectionPadding
+3. runtime strings -> ObfuscateRuntimeStrings
+4. header metadata -> ObfuscateHeaderMetadata(force)
+5. imports -> ObfuscateImportTable(force)
+6. executable padding -> ObfuscateExecutablePadding(force)
+7. (force only) debug directory -> InjectDebugDirectoryNoise
+
+---
+
+## 1. ObfuscateSectionNames
+
+### Operation:
+- Iterate section headers at (e_lfanew + 0x18 + OptionalHeaderSize + i*40)
+- Replace 8-byte name field with random realistic name
+
+### Realistic names pool:
+.text, .data, .rdata, .pdata, .rsrc, .reloc, .idata, .edata, .tls,
+.debug, .bss, .const, .code, .init, .fini, .rodata, .ctors, .dtors,
+.xdata, .sdata, .udata, .vdata, .zdata, .ndata, .cinit, .dinit...
+
+### Selection:
+1. Random byte -> index into pool
+2. Track used names to avoid duplicates
+3. Fallback: generate .abcde random alphanumeric
+
+---
+
+## 2. ObfuscateSectionPadding
+
+### Operation:
+- For each consecutive section pair (i, i+1):
+  - end = Sections[i].Offset + Sections[i].Size
+  - start = Sections[i+1].Offset
+  - If gap exists (end < start) AND gap < 64KB:
+    - Fill RawData[end:start] with random bytes
+
+---
+
+## 3. ObfuscateRuntimeStrings
+
+### Target sections: .data, .rdata (name contains "data" or "rdata")
+
+### Replacements (same length):
+- "fprintf" -> "foutput" (7 bytes)
+- "printf" -> "output" (6 bytes)
+- "libgcc2.c" -> "libsys2.c" (9 bytes)
+- "WinMain" -> "AppMain" (7 bytes)
+
+### Pattern: \x00original\x00 -> \x00replacement\x00
+
+---
+
+## 4. ObfuscateHeaderMetadata(force)
+
+### Always applied:
+
+#### TimeDateStamp (COFF header + 4):
+- Generate 4 random bytes
+- Write at coffHeaderOffset + 4
+
+#### Linker Version (Optional header + 2/3):
+- Generate 2 random bytes
+- Write Major at optionalHeader + 2
+- Write Minor at optionalHeader + 3
+
+### Force mode only:
+
+#### Subsystem (Optional header + 68/92):
+- Random selection: IMAGE_SUBSYSTEM_WINDOWS_GUI (2) or CUI (3)
+
+#### DLL Characteristics (Optional header + 70/94):
+- Read current value
+- Mask: NX_COMPAT | NO_SEH
+- Randomize masked bits
+
+---
+
+## 5. ObfuscateImportTable(force)
+
+### Locate import directory:
+- Data Directory entry 1 (RVA + Size at optionalHeader + 104/120)
+- Convert RVA to physical offset
+
+### Parse descriptors (20 bytes each):
+- Read until zero-terminated entry
+- Store each descriptor in entries[]
+
+### Shuffle descriptors:
+- Fisher-Yates shuffle on entries[]
+- Write shuffled descriptors back to original location
+
+### Force mode - shuffle thunks:
+- For each descriptor:
+  - shuffleThunkArray(OriginalFirstThunk RVA)
+  - shuffleThunkArray(FirstThunk RVA)
+- Thunk entry size: 4 bytes (32-bit) or 8 bytes (64-bit)
+
+---
+
+## 6. ObfuscateExecutablePadding(force)
+
+### Target: sections with IMAGE_SCN_MEM_EXECUTE flag (0x20000000)
+
+### Packed guard:
+- Skip when packed and force=false (to avoid corrupting packer stubs/payloads)
+
+### Tail padding (always):
+- If VirtualSize < SizeOfRawData:
+  - Fill RawData[Offset+VirtualSize : Offset+SizeOfRawData] with random bytes
+
+### Force mode - NOP pattern scrambling:
+- Find zero-byte runs >= 8 bytes within VirtualSize
+- Replace with multi-byte NOP patterns:
+  - 0x90 (1-byte NOP)
+  - 0x66, 0x90 (2-byte NOP)
+  - 0x0F, 0x1F, 0x00 (3-byte NOP)
+  - 0x2E, 0x90 (prefix + NOP)
+  - (force) 0x0F, 0x1F, 0x40, 0x00 (4-byte)
+  - (force) 0x66, 0x0F, 0x1F, 0x44, 0x00, 0x00 (6-byte)
+  - (force) 0x0F, 0x1F, 0x80, 0x00, 0x00, 0x00, 0x00 (7-byte)
+  - (force) 0x66, 0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00 (9-byte)
+
+---
+
+## 7. InjectDebugDirectoryNoise (force only)
+
+### Build fake CodeView record:
+```
+Offset  Size  Content
+0       4     'RSDS' signature
+4       16    Random GUID
+20      4     Random age
+24      var   Fake PDB path: "C:\builds\<random>\fake_<random>.pdb\0"
+```
+
+### Build fake debug directory entry (28 bytes):
+```
+Offset  Size  Content
+0       4     Characteristics (0)
+4       4     TimeDateStamp (current time)
+8       2     MajorVersion (0)
+10      2     MinorVersion (0)
+12      4     Type (IMAGE_DEBUG_TYPE_CODEVIEW = 2)
+16      4     SizeOfData (CodeView record size)
+20      4     AddressOfRawData (RVA of record)
+24      4     PointerToRawData (file offset of record)
+```
+
+### Injection process:
+1. Append CodeView record to RawData
+2. Collect existing debug directory entries (if any)
+3. Append new entry to collection
+4. Append new directory block to RawData
+5. Update Data Directory entry 6 (debug) with new RVA/Size
+
+---
+
+## OPTIONAL: ObfuscateBaseAddresses
+
+### Prerequisites:
+- hasBaseRelocations() must return true (binary supports relocation)
+
+### Operation:
+- Read ImageBase from optional header (+28/+24)
+- Calculate safe range:
+  - PE32: 0x400000 - 0x80000000
+  - PE64: 0x140000000 - 0x7FF00000000
+- Generate small random offset (aligned to 0x10000)
+- Write new ImageBase (within diff limit)
+
+---
+
+## KEY HEADER OFFSETS
+
+Optional Header (PE32/PE64):
+- LinkerMajorVersion: +2
+- LinkerMinorVersion: +3
+- ImageBase: +28/+24 (4/8 bytes)
+- SectionAlignment: +32/+32
+- FileAlignment: +36/+36
+- Subsystem: +68/+92 (2 bytes)
+- DllCharacteristics: +70/+94 (2 bytes)
+- DataDirectories: +96/+112
+
+Data Directory Entries (8 bytes each):
+- 0: Export Table
+- 1: Import Table
+- 2: Resource Table
+- 3: Exception Table
+- 4: Certificate Table
+- 5: Base Relocation Table
+- 6: Debug
+- 7: Architecture
+- 8: Global Ptr
+- 9: TLS Table
+- 10: Load Config Table
+- 11: Bound Import
+- 12: IAT
+- 13: Delay Import Descriptor
+- 14: CLR Runtime Header
+- 15: Reserved
+
+---
+
+## IMPORT DESCRIPTOR LAYOUT (20 bytes)
+
+```
+Offset  Size  Field
+0       4     OriginalFirstThunk (RVA to INT)
+4       4     TimeDateStamp
+8       4     ForwarderChain
+12      4     Name (RVA to DLL name)
+16      4     FirstThunk (RVA to IAT)
+```
