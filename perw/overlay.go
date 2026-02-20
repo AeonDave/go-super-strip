@@ -40,12 +40,13 @@ func (p *PEFile) AddOverlay(dataOrFile string, password string) *common.Operatio
 		}
 	}
 
+	wrapped := common.WrapOverlayWithTrailer(finalContent)
 	start := len(p.RawData)
-	p.RawData = append(p.RawData, finalContent...)
+	p.RawData = append(p.RawData, wrapped...)
 	p.FileSize = int64(len(p.RawData))
 	p.HasOverlay = true
 	p.OverlayOffset = int64(start)
-	p.OverlaySize = int64(len(finalContent))
+	p.OverlaySize = int64(len(wrapped))
 
 	message := "Added overlay data"
 	if password != "" {

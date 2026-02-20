@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
+	"fmt"
 	"testing"
 )
 
@@ -122,6 +123,70 @@ func TestCompressPayload_LZMA(t *testing.T) {
 
 	if !bytes.Equal(decompressed, data) {
 		t.Error("Decompressed data doesn't match original")
+	}
+}
+
+func TestCompressPayload_Zlib(t *testing.T) {
+	config := DefaultConfig()
+	config.CompressionAlgorithm = "zlib"
+	config.CompressionLevel = 6
+
+	data := bytes.Repeat([]byte("test data "), 100)
+	compressed, err := CompressPayload(data, config)
+	if err != nil {
+		t.Fatalf("CompressPayload(zlib) failed: %v", err)
+	}
+	if len(compressed) >= len(data) {
+		t.Logf("Warning: compressed size %d >= original %d", len(compressed), len(data))
+	}
+
+	decompressed, err := DecompressPayload(compressed, "zlib")
+	if err != nil {
+		t.Fatalf("DecompressPayload(zlib) failed: %v", err)
+	}
+	if !bytes.Equal(decompressed, data) {
+		t.Error("Decompressed zlib data doesn't match original")
+	}
+}
+
+func TestCompressPayload_ZlibLevels(t *testing.T) {
+	data := bytes.Repeat([]byte("abcdefghij"), 200)
+
+	for _, level := range []int{0, 1, 6, 9} {
+		t.Run(fmt.Sprintf("level_%d", level), func(t *testing.T) {
+			config := DefaultConfig()
+			config.CompressionAlgorithm = "zlib"
+			config.CompressionLevel = level
+
+			compressed, err := CompressPayload(data, config)
+			if err != nil {
+				t.Fatalf("CompressPayload level %d: %v", level, err)
+			}
+			decompressed, err := DecompressPayload(compressed, "zlib")
+			if err != nil {
+				t.Fatalf("DecompressPayload level %d: %v", level, err)
+			}
+			if !bytes.Equal(decompressed, data) {
+				t.Errorf("Round-trip failed at level %d", level)
+			}
+		})
+	}
+}
+
+func TestCompressPayload_UnknownAlgorithm(t *testing.T) {
+	config := DefaultConfig()
+	config.CompressionAlgorithm = "bogus"
+
+	_, err := CompressPayload([]byte("data"), config)
+	if err == nil {
+		t.Fatal("expected error for unknown algorithm, got nil")
+	}
+}
+
+func TestDecompressPayload_UnknownAlgorithm(t *testing.T) {
+	_, err := DecompressPayload([]byte("data"), "bogus")
+	if err == nil {
+		t.Fatal("expected error for unknown algorithm, got nil")
 	}
 }
 

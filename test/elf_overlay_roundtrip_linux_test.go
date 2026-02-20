@@ -16,6 +16,9 @@ import (
 
 func buildNativeELF(t *testing.T, outName string) string {
 	t.Helper()
+	if _, err := exec.LookPath("gcc"); err != nil {
+		t.Skip("gcc not available; skipping native ELF build test")
+	}
 
 	td := t.TempDir()
 	out := filepath.Join(td, outName)

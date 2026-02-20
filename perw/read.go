@@ -728,5 +728,8 @@ func (p *PEFile) ExtractOverlay() ([]byte, error) {
 	overlayData := make([]byte, overlayEnd-p.OverlayOffset)
 	copy(overlayData, p.RawData[p.OverlayOffset:overlayEnd])
 
+	if unwrapped, found := common.UnwrapOverlayTrailer(overlayData); found {
+		return unwrapped, nil
+	}
 	return overlayData, nil
 }

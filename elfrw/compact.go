@@ -90,10 +90,36 @@ func (e *ELFFile) updateSections(removable []int) {
 		removableSet[idx] = true
 	}
 
+	// Build old-index → new-index mapping so sh_link (and sh_info for reloc sections)
+	// can be remapped after sections are removed.  Without this, relocation sections keep
+	// stale Link values that no longer point to the right symbol table, which causes
+	// obfuscateDynamicSymbols to skip all reloc sections and shuffle .dynsym without
+	// patching relocations — resulting in a segfault at runtime.
+	indexRemap := make(map[int]int, len(e.Sections))
+	newIdx := 0
+	for i := range e.Sections {
+		if !removableSet[i] {
+			indexRemap[i] = newIdx
+			newIdx++
+		}
+	}
+
 	newSections := make([]Section, 0, len(e.Sections)-len(removable))
 	for i, section := range e.Sections {
 		if !removableSet[i] {
 			section.Index = len(newSections)
+			// Remap sh_link: always a section index when non-zero (symbol table, string table, etc.)
+			if section.Link != 0 {
+				if mapped, ok := indexRemap[int(section.Link)]; ok {
+					section.Link = uint32(mapped)
+				}
+			}
+			// Remap sh_info for relocation sections where it means "section being relocated"
+			if (section.Type == SHT_RELA || section.Type == SHT_REL) && section.Info != 0 {
+				if mapped, ok := indexRemap[int(section.Info)]; ok {
+					section.Info = uint32(mapped)
+				}
+			}
 			newSections = append(newSections, section)
 		}
 	}
@@ -628,12 +654,10 @@ func (e *ELFFile) serializeHeaders(nameOffsets map[int]uint32, shstrtabIndex int
 		data := headerTableData[offset : offset+entrySize]
 		nameOffset := nameOffsets[i]
 
-		// Il campo sh_entsize è significativo solo per tabelle che contengono entry di dimensione fissa,
-		// come la tabella dei simboli. Per le altre, è 0.
-		entsize := uint64(0)
-		if section.Type == SHT_SYMTAB || section.Type == SHT_DYNSYM || section.Type == SHT_RELA || section.Type == SHT_REL {
-			// Qui si potrebbe impostare la dimensione corretta, ma 0 è generalmente sicuro se non si gestiscono simboli in dettaglio.
-		}
+		// Preserve the original sh_entsize to avoid breaking the dynamic linker.
+		// Fields like sh_entsize in .dynsym, .rela.plt, .rel.dyn etc. are read by ld.so
+		// via DT_* tags; zeroing them corrupts relocation machinery in dynamically linked ELFs.
+		entsize := section.EntSize
 
 		if e.Is64Bit {
 			e.getEndian().PutUint32(data[0:], nameOffset)

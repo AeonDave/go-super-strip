@@ -1,3 +1,6 @@
+//go:build integration
+// +build integration
+
 package test
 
 import (
@@ -31,7 +34,6 @@ type cliScenario struct {
 	Verify      func(t *testing.T, fixture compiledFixture, binaryPath, output string)
 }
 
-const testStubPrefix = "gosstrip-test-stub"
 const (
 	cliSectionName    = ".clisec"
 	cliSectionPayload = "CLI_SECTION_PAYLOAD"
@@ -338,7 +340,7 @@ func compileAllFixtures(t *testing.T) []compiledFixture {
 	t.Helper()
 	var fixtures []compiledFixture
 
-	goSources, err := filepath.Glob(filepath.Join("..", "testfiles", "*.go"))
+	goSources, err := filepath.Glob(filepath.Join("..", "testfiles", "src", "*.go"))
 	if err != nil {
 		t.Fatalf("failed to glob go fixtures: %v", err)
 	}
@@ -355,7 +357,7 @@ func compileAllFixtures(t *testing.T) []compiledFixture {
 		}
 	}
 
-	cSources, err := filepath.Glob(filepath.Join("..", "testfiles", "*.c"))
+	cSources, err := filepath.Glob(filepath.Join("..", "testfiles", "src", "*.c"))
 	if err != nil {
 		t.Fatalf("failed to glob c fixtures: %v", err)
 	}
@@ -383,7 +385,7 @@ func buildGoSource(t *testing.T, baseName, targetOS string) string {
 	if targetOS == "windows" {
 		output += ".exe"
 	}
-	cmd := exec.Command("go", "build", "-o", output, filepath.Join("./testfiles", baseName))
+	cmd := exec.Command("go", "build", "-o", output, filepath.Join("./testfiles", "src", baseName))
 	cmd.Dir = ".."
 	env := append(os.Environ(),
 		"GOOS="+targetOS,
@@ -415,7 +417,7 @@ func buildCSource(t *testing.T, baseName, targetOS string) string {
 		compiler = "gcc"
 	}
 	if targetOS == "linux" && runtime.GOOS == "windows" && hasWSL() {
-		sourceAbs, err := filepath.Abs(filepath.Join("..", "testfiles", baseName))
+		sourceAbs, err := filepath.Abs(filepath.Join("..", "testfiles", "src", baseName))
 		if err != nil {
 			t.Fatalf("failed to resolve source path: %v", err)
 		}
@@ -435,7 +437,7 @@ func buildCSource(t *testing.T, baseName, targetOS string) string {
 	if _, err := exec.LookPath(compiler); err != nil {
 		t.Fatalf("required compiler %s not found in PATH", compiler)
 	}
-	sourcePath := filepath.Join("testfiles", baseName)
+	sourcePath := filepath.Join("testfiles", "src", baseName)
 	args := []string{"-O2", "-o", output, sourcePath, "-lm"}
 	cmd := exec.Command(compiler, args...)
 	cmd.Dir = ".."

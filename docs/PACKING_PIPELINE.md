@@ -1,6 +1,6 @@
 # PACKING PIPELINE & POLYMORPHISM
 
-This document describes the `-p` packer, its options, and how the polymorphic stub works. It complements `test_polymorphism.sh`.
+This document describes the `-p` packer, its options, and how the polymorphic stub works. It complements `test/pack_matrix.ps1`.
 
 ## 1. CLI Grammar
 
@@ -12,10 +12,10 @@ Options (comma-separated key/value pairs):
 
 | Option | Values | Description |
 |--------|--------|-------------|
-| `compression` | `xz`, `lzma`, `none` | Algorithm used before encryption. |
+| `compression` | `xz`, `lzma`, `zlib`, `none` | Algorithm used before encryption. |
 | `encryption` | `aes-256-gcm`, `chacha20`, `none` | Protects payload at rest. |
 | `polymorphic` | `true/false` | Picks a random stub variant and randomizes control flow. |
-| `inmemory` | `off`, `auto`, `memfd`, `process_hollowing`, `atomic_bombing`, `self_injection`, `nt_syscall_reflective` | Linux supports `memfd`; Windows exposes the full set. `auto` picks the safest strategy per platform and payload architecture (32-bit payloads default to `self_injection`). |
+| `inmemory` | `off`, `auto`, `memfd`, `process_hollowing`, `atomic_bombing`, `early_bird`, `early_bird_atomic_bombing`, `process_doppelganging`, `transacted_hollowing`, `self_injection`, `nt_syscall_reflective`, `reflective_loader` | Linux supports `memfd`; Windows exposes the full set. `auto` picks the safest strategy per platform and payload architecture (32-bit payloads default to `self_injection`). |
 | `padding` | `true/false` | Adds junk data to the stub. |
 | `level` | `1-9` | Compression effort (xz/lzma only). |
 
@@ -89,6 +89,6 @@ If any step fails (non-admin, hardened UAC, etc.) the stub simply runs at the ex
 
 ## 7. Testing
 
-- `test_polymorphism.sh` validates uniqueness and execution. Run quick mode during CI.
+- `test/pack_matrix.ps1` (Windows) exhaustively validates stub uniqueness and execution across all option combinations. Run it after any change to `pack/`.
 - CLI integration tests exercise a basic pack run to ensure the stub prefix is present.
 - Manual validation: run `gosstrip -p=... binary` then execute the output on both Windows and Linux to ensure anti-debug features behave as expected.

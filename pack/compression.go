@@ -7,6 +7,7 @@ import (
 	"io"
 
 	"github.com/ulikunitz/xz"
+	"github.com/ulikunitz/xz/lzma"
 )
 
 // CompressPayload comprime il payload secondo la configurazione
@@ -81,24 +82,24 @@ func decompressXZ(data []byte) ([]byte, error) {
 	return decompressed, nil
 }
 
-// compressLZMA comprime con LZMA (formato LZMA stream, non XZ container)
+// compressLZMA comprime con LZMA raw stream (non XZ container).
 func compressLZMA(data []byte, level int) ([]byte, error) {
 	var buf bytes.Buffer
 
-	// LZMA writer configuration (raw LZMA stream)
-	config := xz.WriterConfig{
-		DictCap: 1 << uint(20+level), // 1MB - 512MB based on level
+	cfg := lzma.WriterConfig{
+		DictCap: 1 << uint(20+level), // 1 MB – 512 MB secondo il livello
+	}
+	if err := cfg.Verify(); err != nil {
+		return nil, fmt.Errorf("invalid lzma config: %w", err)
 	}
 
-	// Per LZMA puro, usiamo lo stesso writer ma con formato diverso
-	// In produzione, si userebbe lzma.Writer specifico se disponibile
-	w, err := config.NewWriter(&buf)
+	w, err := cfg.NewWriter(&buf)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create lzma writer: %w", err)
 	}
 
 	if _, err := w.Write(data); err != nil {
-		return nil, fmt.Errorf("failed to write data: %w", err)
+		return nil, fmt.Errorf("failed to write lzma data: %w", err)
 	}
 
 	if err := w.Close(); err != nil {
@@ -108,18 +109,16 @@ func compressLZMA(data []byte, level int) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// decompressLZMA decomprime LZMA puro
+// decompressLZMA decomprime uno stream LZMA raw.
 func decompressLZMA(data []byte) ([]byte, error) {
-	// Per ora usiamo lo stesso decompressor di XZ
-	// In produzione, si userebbe lzma.Reader specifico se disponibile
-	r, err := xz.NewReader(bytes.NewReader(data))
+	r, err := lzma.NewReader(bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create lzma reader: %w", err)
 	}
 
 	decompressed, err := io.ReadAll(r)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decompress: %w", err)
+		return nil, fmt.Errorf("failed to decompress lzma: %w", err)
 	}
 
 	return decompressed, nil

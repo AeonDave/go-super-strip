@@ -4,21 +4,20 @@ import (
 	"fmt"
 	"strings"
 
-	stratcommon "gosstrip/pack/strategies/common"
+	"gosstrip/pack/strategies"
 )
 
-// InMemoryMode describes how the packed payload should be executed.
-type InMemoryMode = stratcommon.Mode
-
-const (
-	InMemoryOff              InMemoryMode = stratcommon.ModeOff
-	InMemoryAuto             InMemoryMode = stratcommon.ModeAuto
-	InMemoryMemfd            InMemoryMode = stratcommon.ModeMemfd
-	InMemoryProcessHollowing InMemoryMode = stratcommon.ModeProcessHollowing
-	InMemoryAtomicBombing    InMemoryMode = stratcommon.ModeAtomicBombing
-	InMemoryEarlyBird        InMemoryMode = stratcommon.ModeEarlyBird
-	InMemoryEarlyBirdAtomic  InMemoryMode = stratcommon.ModeEarlyBirdAtomic
-)
+// knownStrategies lists all valid strategy names accepted in PackConfig.Strategy.
+// An empty string resolves to base_exec (write-to-temp).
+var knownStrategies = map[string]bool{
+	"":                  true, // resolves to base_exec
+	"off":               true,
+	"base_exec":         true,
+	"auto":              true,
+	"self_injection":    true,
+	"process_hollowing": true,
+	"memfd":             true,
+}
 
 // PackConfig rappresenta la configurazione per il packing
 type PackConfig struct {
@@ -43,8 +42,8 @@ type PackConfig struct {
 	PaddingSizeMax int  // Dimensione massima padding (bytes)
 
 	// Execution mode
-	InMemoryMode InMemoryMode // off, auto, memfd, process_hollowing
-	CleanupTemp  bool         // Rimuove file temporanei dopo esecuzione
+	Strategy    string // execution strategy: "", "base_exec", "self_injection", "process_hollowing", "memfd", "auto"
+	CleanupTemp bool   // remove temp files after execution
 
 	// Output
 	OutputPath string // Path file packed (se vuoto, sovrascrive originale)
@@ -66,7 +65,7 @@ func DefaultConfig() *PackConfig {
 		RandomPadding:        true,
 		PaddingSizeMin:       512,
 		PaddingSizeMax:       4096,
-		InMemoryMode:         InMemoryOff,
+		Strategy:             "",
 		CleanupTemp:          true,
 		Verbose:              false,
 		Params:               "",
@@ -145,12 +144,8 @@ func (c *PackConfig) setOption(key, value string) error {
 		c.RandomPadding = parseBool(value)
 	case "params":
 		c.Params = stripOuterQuotes(value)
-	case "inmemory", "inmem":
-		mode, err := parseInMemoryMode(value)
-		if err != nil {
-			return err
-		}
-		c.InMemoryMode = mode
+	case "inmemory", "inmem", "strategy":
+		c.Strategy = strings.ToLower(strings.TrimSpace(value))
 	case "cleanup":
 		c.CleanupTemp = parseBool(value)
 	case "verbose", "v":
@@ -164,12 +159,12 @@ func (c *PackConfig) setOption(key, value string) error {
 
 // Validate valida la configurazione
 func (c *PackConfig) Validate() error {
-	// Valida algoritmo compressione
+	// Valida compressione
 	validComp := map[string]bool{
-		"xz": true, "lzma": true, "none": true,
+		"xz": true, "zlib": true, "none": true,
 	}
 	if !validComp[c.CompressionAlgorithm] {
-		return fmt.Errorf("invalid compression algorithm: %s (valid: xz, lzma, none)", c.CompressionAlgorithm)
+		return fmt.Errorf("invalid compression algorithm: %s (valid: xz, zlib, none)", c.CompressionAlgorithm)
 	}
 
 	// Valida livello compressione
@@ -195,8 +190,11 @@ func (c *PackConfig) Validate() error {
 		return fmt.Errorf("padding min (%d) cannot be greater than max (%d)", c.PaddingSizeMin, c.PaddingSizeMax)
 	}
 
-	if !c.InMemoryMode.Valid() {
-		return fmt.Errorf("invalid in-memory mode: %s (valid: off, auto, memfd, process_hollowing, atomic_bombing, process_doppelganging, transacted_hollowing, early_bird, early_bird_atomic_bombing, self_injection, nt_syscall_reflective, reflective_loader)", c.InMemoryMode)
+	if !knownStrategies[c.Strategy] {
+		// Try to resolve via registry for extensibility.
+		if _, err := strategies.Resolve(c.Strategy, ""); err != nil {
+			return fmt.Errorf("invalid strategy: %s (valid: base_exec, auto, self_injection, process_hollowing, memfd)", c.Strategy)
+		}
 	}
 
 	if strings.ContainsRune(c.Params, '\x00') {
@@ -228,16 +226,12 @@ func (c *PackConfig) String() string {
 	}
 	sb.WriteString("\n")
 
-	sb.WriteString(fmt.Sprintf("  In-memory execution: %s\n", c.InMemoryMode))
+	sb.WriteString(fmt.Sprintf("  Strategy: %s\n", c.Strategy))
 	if c.Params != "" {
 		sb.WriteString(fmt.Sprintf("  Params: %s\n", c.Params))
 	}
 
 	return sb.String()
-}
-
-func parseInMemoryMode(value string) (InMemoryMode, error) {
-	return stratcommon.Parse(value)
 }
 
 func stripOuterQuotes(value string) string {

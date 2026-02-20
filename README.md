@@ -64,7 +64,7 @@ pack (-p)
 | `-l=file|data=…,password=…` | Appends an overlay payload after the executable image. | Same data/password rules as section insertion. |
 | `-ei=name=…|index=N[,password=…][,destination=PATH]` | Extracts an inserted section by name or index (0-based). | One of `name` or `index` is mandatory. Output defaults to `<input>.extracted`. |
 | `-el[=password=…][,destination=PATH]` | Extracts the overlay payload. | Output defaults to `<input>.extracted`. |
-| `-p=key=value,.` | Packs the executable with compression, encryption, polymorphism, and in-memory strategies. | See **Feature Details -> Pack** for every option (compression, encryption, padding, junk density, in-memory modes such as `memfd`, `process_hollowing`, `atomic_bombing`, `params`, cleanup, verbosity, etc.). |
+| `-p=key=value,.` | Packs the executable with compression, encryption, polymorphism, and in-memory strategies. | See **Feature Details -> Pack** for every option (compression, encryption, padding, junk density, in-memory modes such as `memfd`, `process_hollowing`, `self_injection`, `params`, cleanup, verbosity, etc.). |
 
 ## Feature Details
 ### Analyze (`-a`)
@@ -149,7 +149,7 @@ Flow (ASCII, ELF)
 The packer rewrites the binary into a self-extracting Go stub plus encrypted payload.
 
 **Compression & Encryption**
-- `compression=xz|lzma|none` (alias `comp`) and `level=0-9` (ignored when compression is `none`).
+- `compression=xz|zlib|none` (alias `comp`) and `level=0-9` (ignored when compression is `none`).
 - `encryption=xor|aes-256-gcm|chacha20|none` (aliases `encrypt`, `encr`). AES/ChaCha automatically create keys/nonces when none are provided. Accepted aliases for algorithms: `aes`, `aes-gcm`, `aes256` → `aes-256-gcm`; `chacha`, `chacha20poly1305` → `chacha20`.
 
 **Polymorphism & Noise**
@@ -160,18 +160,11 @@ The packer rewrites the binary into a self-extracting Go stub plus encrypted pay
 - Enabling polymorphism increases the stub size roughly in proportion to the density/mutation flags above; leave it disabled (or set low density) when you need the smallest stub.
 
 **Execution & Telemetry**
-- `inmemory=off|auto|memfd|process_hollowing|atomic_bombing|process_doppelganging|transacted_hollowing|early_bird|early_bird_atomic_bombing|self_injection|nt_syscall_reflective|reflective_loader` (alias `inmem`)
-  - `auto` selects `memfd` on Linux and the safest architecture-aware Windows strategy (PE32/PE32+ binaries keep their native loaders).
-  - `memfd` (`auto` on Linux) uses `memfd_create` + `fexecve` to run without touching disk; it falls back to temp files if the syscall is unavailable.
-  - `process_hollowing` (Windows) spawns a suspended process, calls `NtUnmapViewOfSection`, writes the payload with `WriteProcessMemory`, fixes the context, and resumes the thread.
-  - `atomic_bombing` splits the payload into atoms, reconstructs it via a hidden window callback, then injects it with the APC-based reflective loader.
-  - `process_doppelganging` performs a hollowing-style swap while using a synthesized section/transaction; currently implemented with the hardened hollowing path.
-  - `transacted_hollowing` executes via a transacted source and hollowing mechanics; currently implemented with the hardened hollowing path.
-  - `early_bird` maps the payload into a suspended sacrificial process and queues the entry point as an APC (Early Bird) before the original image runs.
-  - `early_bird_atomic_bombing` performs the same Early Bird APC launch but stages the payload through atom strings (useful for comparing telemetry vs. the classic atom flow).
-  - `nt_syscall_reflective` disables ETW/AMSI, locks the OS thread, disables GC, pins the payload buffer, allocates executable memory with `NtAllocateVirtualMemory`, and launches it with `NtCreateThreadEx` (no sacrificial process).
-  - `self_injection` reflectively maps the payload inside the current process (supports both PE32 and PE32+), fixes relocations/imports, and calls the entry point directly.
-  - `reflective_loader` is an extremely small loader (inspired by go-loader/Doge-MemX) that pins/reflects the payload inside the current process and launches it via `NtCreateThreadEx` after disabling GC/OS thread migration.
+- `inmemory=off|auto|memfd|process_hollowing|self_injection` (alias `inmem`)
+  - `auto` selects `memfd` on Linux and `process_hollowing` on Windows.
+  - `memfd` (Linux only, selected by `auto`): uses `memfd_create` + `fexecve` to run without touching disk; falls back to temp file if the syscall is unavailable.
+  - `process_hollowing` (Windows only): spawns a suspended sacrificial process, calls `NtUnmapViewOfSection`, writes the payload with `WriteProcessMemory`, fixes the thread context, and resumes execution.
+  - `self_injection` (Windows only): pins a copy of the payload, patches ETW/AMSI, allocates executable memory with `NtAllocateVirtualMemory`, maps the PE image (PE32 and PE32+), resolves imports and relocations, and launches the entry point via `NtCreateThreadEx` inside the current process. Falls back to temp file on failure.
 - `params="ascii command"` appends a default command line when the payload is executed. These arguments run before user-supplied CLI args, so you can bake in sequences like `-sn 127.0.0.1 -oN output.txt`. Strings with spaces should be quoted.
 - `cleanup=true/false` deletes temporary files when not running in-memory.
 - `verbose=true/false` (alias `v`) prints the pack configuration before building the stub.
@@ -184,29 +177,12 @@ During packing, technique tags are emitted in the CLI result (e.g., `stub_varian
 
 | OS | Mode | Behavior |
 |----|------|----------|
-| Linux | `off` | Writes decrypted payload to a temp file and executes it. |
-| Linux | `auto` / `memfd` | Uses `memfd_create` + `fexecve` for fileless execution, falls back to temp file if the syscall fails. |
-| Windows | `off` | Writes to `%TEMP%`, runs via normal process creation, then cleans up when `cleanup=true`. |
-| Windows | `auto` / `process_hollowing` | Spawns a sacrificial process, unmaps it, and injects the payload before resuming the thread. |
-| Windows | `atomic_bombing` | Splits the payload into atom-encoded chunks, rebuilds it via a hidden window, and delivers the bytes through the APC-based injector. |
-| Windows | `process_doppelganging` | Transaction-based hollowing flow (currently uses the hardened hollowing runtime). |
-| Windows | `transacted_hollowing` | Hollowing using a transacted source (currently uses the hardened hollowing runtime). |
-| Windows | `early_bird` | Suspended-process injection that maps the packed payload and queues the entry point as an APC before the original image resumes. |
-| Windows | `early_bird_atomic_bombing` | Uses the Early Bird APC technique to queue the payload entry point before the sacrificial process resumes, offering a stealthier APC path. |
-| Windows | `self_injection` | Reflectively maps the payload inside the current process (available for both PE32 and PE32+). |
-| Windows | `nt_syscall_reflective` | Disables ETW/AMSI, pins the payload buffer, allocates executable memory via `NtAllocateVirtualMemory`, and spawns with `NtCreateThreadEx` (no child processes). |
-| Windows | `reflective_loader` | Minimal reflective loader (no sacrificial process). Disables GC, pins the payload buffer, and launches it inside the current process via `NtCreateThreadEx`. |
+| Any | `off` / `base_exec` | Writes the decrypted payload to a temp file and executes it. Temp file is removed when `cleanup=true`. |
+| Linux | `auto` / `memfd` | Uses `memfd_create` + `fexecve` for fileless execution; falls back to temp file if the syscall is unavailable. |
+| Windows | `auto` / `process_hollowing` | Spawns a suspended sacrificial process, unmaps its image via `NtUnmapViewOfSection`, writes the payload and fixes the thread context, then resumes execution. |
+| Windows | `self_injection` | Pins the payload in the current process, patches ETW + AMSI, allocates executable memory via `NtAllocateVirtualMemory`, maps the PE image (PE32 and PE32+), resolves imports/relocations, and launches via `NtCreateThreadEx`. Falls back to temp file on failure. |
 
 Regardless of mode, the stub compiler includes only the routines required for the resolved architecture/strategy, so unused loaders never ship in the final binary. Compression/encryption/padding operate solely on the payload blob; polymorphism is the only option that physically enlarges the stub itself.
-
-### Automatic UAC Bypass
-Every Windows stub attempts the well-known *fodhelper* elevation sequence before unpacking:
-1. Query the current user with `NetUserGetInfo` to ensure the account has local-admin privileges (no always-on UAC prompts).
-2. Create `HKCU\Software\Classes\ms-settings\shell\open\command`, set the default value to the packed stub path, and add an empty `DelegateExecute`.
-3. Launch `fodhelper.exe` hidden via `cmd.exe /C fodhelper`. Because `fodhelper` auto-runs the registered handler with high integrity, the stub is relaunched elevated.
-4. Clean up the registry keys and exit the original process.
-
-If elevation fails (non-admin user, UAC constraints, etc.) the stub simply continues in the current integrity level. All in-memory strategies benefit from elevation when available (memory allocation APIs succeed more often and suspended-process creation avoids access-denied errors).
 
 ## Examples
 ### Analyze
@@ -241,12 +217,12 @@ gosstrip -el=password=overlaypass beacon.bin overlay_dump.bin
 ```bash
 gosstrip -s -c -o -r=pattern='UPX!' -i=name=.intel,data=SECRET \
         -l=file=loot.bin,password=stash \
-        -p=compression=lzma,encryption=chacha20,polymorphic=true,inmemory=memfd \
+        -p=compression=xz,encryption=chacha20,polymorphic=true,inmemory=memfd \
         agent.bin agent.packed
 ```
 
 ## Manual Pack Verification
-`test/manual_pack_flow.ps1` builds PE/ELF fixtures, runs analyze→pack→analyze for each supported in-memory mode (`process_hollowing`, `atomic_bombing`, `memfd`, etc.), executes the resulting binaries, and captures the console output. When additional fixtures or parameterized commands are needed you can point the script at them via the `GOSSTRIP_PACK_PARAMS_*` environment variables (fixture path, arguments, expected output). On Windows the harness automatically uses `gosstrip.exe`; launching the CLI without the `.exe` suffix triggers the “Choose an app” dialog, so keep the extension when running binaries directly.
+`test/manual_pack_flow.ps1` builds PE/ELF fixtures, runs analyze→pack→analyze for each supported in-memory mode (`process_hollowing`, `self_injection`, `memfd`, etc.), executes the resulting binaries, and captures the console output. When additional fixtures or parameterized commands are needed you can point the script at them via the `GOSSTRIP_PACK_PARAMS_*` environment variables (fixture path, arguments, expected output). On Windows the harness automatically uses `gosstrip.exe`; launching the CLI without the `.exe` suffix triggers the “Choose an app” dialog, so keep the extension when running binaries directly.
 
 ## FAQ
 **Does `force=true` break binaries?**  Force modes deliberately remove safety checks (e.g., stripping relocations). Use them only when a broken output is acceptable for research.
@@ -260,9 +236,67 @@ gosstrip -s -c -o -r=pattern='UPX!' -i=name=.intel,data=SECRET \
 **Where are operation logs stored?**  CLI matrix runs write to `test/logs/cli_matrix_<timestamp>/...`, and the pack matrix harness writes to `test/logs/pack_matrix_<timestamp>/...`.
 
 ## Tests
-- `go test ./...` (unit tests, fixture builders, pack matrix unit harness)
-- `bash test/cli_matrix.sh` (compiles PE/ELF fixtures, runs analyze→strip→compact→obfuscate→regex→insert→overlay→extract flows for default/force and fill zero/random)
-- `pwsh test/pack_matrix.ps1` (builds platform CLIs, packs every compression/encryption/in-memory combination, then executes the packed binaries; requires `x86_64-w64-mingw32-gcc`, `gcc`, and WSL for ELF execution on Windows)
+
+### Quick run
+```bash
+go test ./...
+```
+Runs all unit tests, fixture builders, and the pack matrix unit harness.
+
+### Build test fixtures (Windows PE + Linux ELF)
+
+Before running integration tests you need the compiled test binaries.
+
+**Windows PE payloads** (MinGW or MSVC required):
+```powershell
+cd testfiles-generic
+.\build_all_payloads.ps1              # builds all Windows EXEs (MinGW + MSVC + Go)
+.\build_all_payloads.ps1 -MinGWOnly   # MinGW only
+.\build_all_payloads.ps1 -MSVCOnly    # MSVC only
+.\build_all_payloads.ps1 -GoOnly      # Go EXEs only
+```
+
+**Linux ELF payloads** (requires WSL with `gcc`/`g++`; Go cross-compiles from the Windows host):
+```powershell
+.\build_all_payloads.ps1 -Linux       # builds all Linux ELFs into out/linux/
+.\build_all_payloads.ps1 -Linux -GoOnly  # Linux + Windows Go only (no C/C++ needed)
+```
+
+Outputs land in:
+- `testfiles-generic/*.exe` — Windows PE executables
+- `testfiles-generic/out/linux/` — Linux ELF executables (picked up automatically by `TestCLIFixtureMatrix`)
+- `testfiles-generic/out/linux/so/` — Linux shared objects (`.so`), not used in execution tests
+
+### Go integration tests — fixture matrix
+```bash
+# All fixture matrix tests (NoInPlaceMutation + ExecutesAfterSCO)
+go test ./test/... -v -run TestCLIFixtureMatrix -timeout 300s
+
+# Only check binaries survive all flag combinations (no execution)
+go test ./test/... -v -run TestCLIFixtureMatrix_NoInPlaceMutation
+
+# Strip+compact+obfuscate then actually execute via WSL / native OS
+go test ./test/... -v -run TestCLIFixtureMatrix_ExecutesAfterSCO
+```
+`TestCLIFixtureMatrix_NoInPlaceMutation` covers every discovered fixture × 7 flag combos (`-s`, `-c`, `-o`, `-s -c`, `-s -o`, `-c -o`, `-s -c -o`) and verifies the original file is never mutated in-place.
+`TestCLIFixtureMatrix_ExecutesAfterSCO` applies `-s -c -o`, then actually executes all non-UPX ELF binaries (via WSL on Windows) and PE binaries natively.
+
+Fixtures are discovered automatically from:
+- `testfiles/prebuilt/win/` — prebuilt PE fixtures
+- `testfiles/prebuilt/linux/` — prebuilt ELF fixtures
+- `testfiles-generic/out/linux/` — locally compiled ELF payloads (ignored when the directory doesn't exist)
+
+### CLI matrix script (full PE/ELF pipeline)
+```bash
+bash test/cli_matrix.sh
+```
+Compiles PE/ELF fixtures and runs `analyze(deep) → strip(fill=zero/random) → compact → obfuscate → regex → insert → overlay → extract` in default and force modes. Logs land in `test/logs/cli_matrix_<timestamp>/`.
+
+### Pack matrix
+```powershell
+pwsh test/pack_matrix.ps1
+```
+Builds platform CLIs, packs every compression/encryption/in-memory combination, then executes the packed binaries. Requires `x86_64-w64-mingw32-gcc`, `gcc`, and WSL for ELF execution on Windows. Logs land in `test/logs/pack_matrix_<timestamp>/`.
 
 Review the generated logs—especially analyzer summaries at the start and end—to catch regressions before shipping changes.
 
@@ -286,16 +320,18 @@ Flow (ASCII)
 | `pack/` | Compression, encryption, polymorphic stub compiler, in-memory strategies. |
 | `test/` | Cross-platform integration tests, CLI matrix, pack matrix, fixture builders. |
 | `docs/` | Technique deep dives (stripping, compaction, obfuscation, packing, etc.). |
-| `testfiles/` | Small C/Go sources compiled during tests. |
+| `testfiles/` | Prebuilt PE and ELF fixtures used by integration tests. |
+| `testfiles-generic/` | C, C++, and Go sources for re-compilable PE/ELF test payloads. Run `build_all_payloads.ps1` (with `-Linux` for ELF via WSL) to populate `out/linux/` and the root directory. |
 
 ```
 gosstrip/
 |-- main.go
-|-- perw/     (PE utilities)
-|-- elfrw/    (ELF utilities)
-|-- pack/     (packer + stubs)
-|-- test/     (integration + scripts)
-|-- docs/     (technique guides)
-`-- testfiles/
+|-- perw/              (PE utilities)
+|-- elfrw/             (ELF utilities)
+|-- pack/              (packer + stubs)
+|-- test/              (integration + scripts)
+|-- docs/              (technique guides)
+|-- testfiles/         (prebuilt PE/ELF fixtures)
+`-- testfiles-generic/ (C/C++/Go sources + build script)
 ```
 Use `docs/` for methodology deep dives and `AGENTS.md` for contributor workflow expectations.

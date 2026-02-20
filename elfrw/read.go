@@ -489,6 +489,14 @@ func (e *ELFFile) parseSectionHeader(base uint64, index uint16, stringTableData 
 		info = uint64(endian.Uint32(e.RawData[base+ELF32_SH_INFO : base+ELF32_SH_INFO+4]))
 		alignment = uint64(endian.Uint32(e.RawData[base+ELF32_SH_ADDRALIGN : base+ELF32_SH_ADDRALIGN+4]))
 	}
+	// Read sh_entsize — entry size for fixed-size entry tables (dynsym, rela, rel, symtab).
+	// Must be preserved and written back by serializeHeaders; zeroing it corrupts the dynamic linker.
+	var entSize uint64
+	if e.Is64Bit {
+		entSize = endian.Uint64(e.RawData[base+ELF64_SH_ENTSIZE : base+ELF64_SH_ENTSIZE+8])
+	} else {
+		entSize = uint64(endian.Uint32(e.RawData[base+ELF32_SH_ENTSIZE : base+ELF32_SH_ENTSIZE+4]))
+	}
 	name := fmt.Sprintf("raw_section_%d", index)
 	if stringTableData != nil && nameOffset < uint64(len(stringTableData)) {
 		end := nameOffset
@@ -508,6 +516,7 @@ func (e *ELFFile) parseSectionHeader(base uint64, index uint16, stringTableData 
 		Type:      sectionType,
 		Flags:     flags,
 		Alignment: alignment,
+		EntSize:   entSize,
 		Link:      uint32(link),
 		Info:      uint32(info),
 	}
@@ -562,15 +571,24 @@ func (e *ELFFile) parseSectionsFromELF() ([]Section, error) {
 		}
 
 		flags := parseFlags(header.Flags)
+		// For SHF_COMPRESSED sections the Go elf package sets Size to the
+		// *uncompressed* size and FileSize to the actual on-disk (compressed)
+		// size. All file-offset arithmetic (bounds, overlap, entropy) must use
+		// the on-disk size; use FileSize when available.
+		onDiskSize := header.FileSize
+		if onDiskSize == 0 {
+			onDiskSize = header.Size
+		}
 		section := Section{
 			Name:      name,
 			Offset:    int64(header.Offset),
-			Size:      int64(header.Size),
+			Size:      int64(onDiskSize),
 			Address:   header.Addr,
 			Index:     i,
 			Type:      uint32(header.Type),
 			Flags:     flags,
 			Alignment: header.Addralign,
+			EntSize:   header.Entsize,
 			Link:      header.Link,
 			Info:      header.Info,
 		}

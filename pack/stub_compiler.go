@@ -2,95 +2,136 @@ package pack
 
 import (
 	"bytes"
+	_ "embed"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
+
+	"gosstrip/pack/strategies"
 )
 
-// CompileStub compila il template stub Go in un binario eseguibile
-func CompileStub(config *PackConfig, metadata *PayloadMetadata, payload []byte) ([]byte, error) {
-	// Determina OS/Arch target
-	targetOS := "linux"
-	targetArch := runtime.GOARCH
-	stubSource := GetELFStubSource()
+//go:embed strategies/runtime/pe_base_runtime.go
+var peBaseGoSource string
 
-	if strings.Contains(config.OutputPath, ".exe") || strings.Contains(config.OutputPath, "windows") {
-		targetOS = "windows"
-		arch := metadata.StubArch
-		if arch == "" {
-			arch = "amd64"
+//go:embed strategies/runtime/elf_base_runtime.go
+var elfBaseGoSource string
+
+// GetPEBaseSource returns the PE stub base runtime source with the
+// //go:build ignore tag stripped, ready to write to a temp directory.
+func GetPEBaseSource() string {
+	return strategies.StripBuildIgnoreTag(peBaseGoSource)
+}
+
+// GetELFBaseSource returns the ELF stub base runtime source with the
+// //go:build ignore tag stripped, ready to write to a temp directory.
+func GetELFBaseSource() string {
+	return strategies.StripBuildIgnoreTag(elfBaseGoSource)
+}
+
+// CompileStub compiles the base runtime + selected strategy into a self-contained
+// stub binary, then appends the encrypted payload and metadata.
+//
+// The compilation uses a two-file approach inside a temp directory:
+//   - stub_base.go    – the PE or ELF base runtime (crypto, decompress, executeFromTemp, …)
+//   - stub_strategy.go – the selected strategy (executeStrategy entry point)
+//
+// Both files share package main, so they resolve each other's symbols freely.
+// An optional third file (stub_poly.go) carries polymorphic junk code.
+func CompileStub(config *PackConfig, metadata *PayloadMetadata, payload []byte) ([]byte, error) {
+	// ── Determine target triple ───────────────────────────────────────────────
+	targetOS := metadata.TargetOS
+	if targetOS == "" {
+		// fall back to output-path heuristic for backward compatibility
+		if strings.Contains(config.OutputPath, ".exe") || strings.Contains(config.OutputPath, "windows") {
+			targetOS = "windows"
+		} else {
+			targetOS = "linux"
 		}
-		targetArch = arch
-		stubSource = GetPEStubSource(arch, metadata.InMemoryMode)
-	} else {
-		targetArch = runtime.GOARCH
+	}
+	targetArch := metadata.StubArch
+	if targetArch == "" {
+		targetArch = "amd64"
 	}
 
-	// Crea directory temporanea per build
+	// ── Resolve strategy source ───────────────────────────────────────────────
+	strat, err := strategies.Resolve(metadata.Strategy, targetOS)
+	if err != nil {
+		return nil, fmt.Errorf("strategy resolve: %w", err)
+	}
+	strategySource, err := strat.RuntimeSource(targetArch)
+	if err != nil {
+		return nil, fmt.Errorf("strategy runtime source: %w", err)
+	}
+
+	// ── Select base runtime ───────────────────────────────────────────────────
+	var baseSource string
+	if targetOS == "windows" {
+		baseSource = GetPEBaseSource()
+	} else {
+		baseSource = GetELFBaseSource()
+	}
+
+	// ── Create temp build directory ───────────────────────────────────────────
 	tmpDir, err := os.MkdirTemp("", "stub-build-*")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp dir: %w", err)
 	}
-	defer func(path string) {
-		_ = os.RemoveAll(path)
-	}(tmpDir)
+	defer os.RemoveAll(tmpDir)
 
-	// Scrivi stub source (con eventuale iniezione di variante polimorfica)
-	stubPath := filepath.Join(tmpDir, "stub.go")
+	// ── Write source files ────────────────────────────────────────────────────
+	if err := os.WriteFile(filepath.Join(tmpDir, "stub_base.go"), []byte(baseSource), 0644); err != nil {
+		return nil, fmt.Errorf("failed to write stub_base.go: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "stub_strategy.go"), []byte(strategySource), 0644); err != nil {
+		return nil, fmt.Errorf("failed to write stub_strategy.go: %w", err)
+	}
 
-	// Integra generatore di varianti avanzato nel codice stub se abilitato
+	// Polymorphic junk variant injected as a third file.
 	if config.PolymorphicStub {
 		gen := NewStubTemplateGenerator()
 		variant := gen.GenerateVariant(randomInt(1_000_000))
-		// Prova ad estrarre il nome della funzione generata per ancorarla ed evitare DCE
-		funcName := extractFirstFuncName(variant.SourceCode)
+		code := variant.SourceCode
+		funcName := extractFirstFuncName(code)
+		var polySource string
 		if funcName != "" {
-			anchor := "\n\n// === Polymorphic variant injection (auto-generated) ===\n" +
-				variant.SourceCode +
-				"\n\n// Anchor the variant to prevent dead-code elimination\n" +
-				"func init() {\n" +
+			polySource = "package main\n\n" +
+				"// === Polymorphic variant (auto-generated) ===\n" +
+				code +
+				"\n\nfunc init() {\n" +
 				"\t_ = 0\n" +
-				"\tbuf := []byte{0} // dummy buffer\n" +
+				"\tbuf := []byte{0}\n" +
 				"\t" + funcName + "(buf, byte(0))\n" +
 				"}\n"
-			stubSource += anchor
 		} else {
-			// In caso non si riesca ad estrarre il nome, includi comunque il codice (potrebbe ancora influire sull'hash)
-			stubSource += "\n\n// === Polymorphic variant (unanchored) ===\n" + variant.SourceCode + "\n"
+			polySource = "package main\n\n// === Polymorphic variant ===\n" + code + "\n"
+		}
+		if err := os.WriteFile(filepath.Join(tmpDir, "stub_poly.go"), []byte(polySource), 0644); err != nil {
+			return nil, fmt.Errorf("failed to write stub_poly.go: %w", err)
 		}
 	}
 
-	if err := os.WriteFile(stubPath, []byte(stubSource), 0644); err != nil {
-		return nil, fmt.Errorf("failed to write stub source: %w", err)
-	}
-
-	// Scrivi go.mod
-	goModPath := filepath.Join(tmpDir, "go.mod")
-	goModContent := `module stub
-go 1.20
-
-require (
-	github.com/ulikunitz/xz v0.5.11
-	golang.org/x/crypto v0.43.0
-)
-`
-	if err := os.WriteFile(goModPath, []byte(goModContent), 0644); err != nil {
+	// ── Write go.mod ─────────────────────────────────────────────────────────
+	goModContent := "module stub\ngo 1.24\n\nrequire (\n\tgithub.com/ulikunitz/xz v0.5.15\n\tgolang.org/x/crypto v0.47.0\n)\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(goModContent), 0644); err != nil {
 		return nil, fmt.Errorf("failed to write go.mod: %w", err)
 	}
 
-	// Scarica dipendenze con go mod tidy
+	// ── Download dependencies ─────────────────────────────────────────────────
 	modTidy := exec.Command("go", "mod", "tidy")
 	modTidy.Dir = tmpDir
 	var modErr bytes.Buffer
 	modTidy.Stderr = &modErr
+	modTidy.Env = append(os.Environ(),
+		fmt.Sprintf("GOOS=%s", targetOS),
+		fmt.Sprintf("GOARCH=%s", targetArch),
+	)
 	if err := modTidy.Run(); err != nil {
-		return nil, fmt.Errorf("failed to tidy modules: %w\nStderr: %s", err, modErr.String())
+		return nil, fmt.Errorf("go mod tidy: %w\n%s", err, modErr.String())
 	}
 
-	// Compila lo stub
+	// ── Compile stub ─────────────────────────────────────────────────────────
 	outputPath := filepath.Join(tmpDir, "stub")
 	if targetOS == "windows" {
 		outputPath += ".exe"
@@ -98,14 +139,13 @@ require (
 
 	ldflags := "-s -w"
 	if targetOS == "windows" && metadata.StubWindowsGUI {
-		// Build as GUI subsystem only when the original payload targets the GUI subsystem
 		ldflags += " -H=windowsgui"
 	}
 
 	cmd := exec.Command("go", "build",
-		"-ldflags", ldflags, // Strip symbols and set subsystem
+		"-ldflags", ldflags,
 		"-o", outputPath,
-		stubPath,
+		".",
 	)
 	cmd.Dir = tmpDir
 	cmd.Env = append(os.Environ(),
@@ -115,30 +155,23 @@ require (
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("failed to compile stub: %w\nStderr: %s", err, stderr.String())
+		return nil, fmt.Errorf("compile stub: %w\n%s", err, stderr.String())
 	}
 
-	// Leggi il binario compilato
+	// ── Read compiled binary ──────────────────────────────────────────────────
 	stubBinary, err := os.ReadFile(outputPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read compiled stub: %w", err)
 	}
 
-	// NON applichiamo più trasformazioni polimorfiche a livello binario
-	// perché possono corrompere il binario ELF/PE compilato.
-	// Le trasformazioni vengono applicate solo in GenerateStub (aggiungendo dati dopo il codice).
-
-	// Serializza metadata
+	// ── Assemble final output: stub + payload + metadata + metadata-size ──────
 	metadataBytes := serializeMetadataForStub(metadata)
 
-	// Appendi: [stub binary][encrypted payload][metadata][metadata size]
 	result := stubBinary
 	result = append(result, payload...)
 	result = append(result, metadataBytes...)
 
-	// Scrivi metadata size (uint64, little-endian)
 	sizeBuf := make([]byte, 8)
 	for i := 0; i < 8; i++ {
 		sizeBuf[i] = byte(uint64(len(metadataBytes)) >> (i * 8))
@@ -146,7 +179,8 @@ require (
 	result = append(result, sizeBuf...)
 
 	if config.Verbose {
-		fmt.Printf("   Compiled stub: %d bytes (%s/%s)\n", len(stubBinary), targetOS, targetArch)
+		fmt.Printf("   Compiled stub: %d bytes (%s/%s, strategy: %s)\n",
+			len(stubBinary), targetOS, targetArch, strat.Name())
 		fmt.Printf("   Appended payload: %d bytes\n", len(payload))
 		fmt.Printf("   Appended metadata: %d bytes\n", len(metadataBytes))
 		fmt.Printf("   Final packed size: %d bytes\n", len(result))
@@ -155,36 +189,39 @@ require (
 	return result, nil
 }
 
-// serializeMetadataForStub serializza i metadata in formato binario per lo stub
+// serializeMetadataForStub serializes payload metadata into the binary format
+// expected by the stub's parseMetadata() function at runtime.
+//
+// Format (little-endian):
+//
+//	[8]OriginalSize + [8]CompressedSize + [8]EncryptedSize +
+//	[16]CompressionAlgo + [16]EncryptionAlgo +
+//	[4]KeyLen + Key + [4]NonceLen + Nonce +
+//	[1]UseInMemory + [16]Strategy +
+//	[4]ParamsLen + Params
 func serializeMetadataForStub(m *PayloadMetadata) []byte {
 	result := make([]byte, 0, 128)
 
-	// Sizes (3 x uint64 = 24 bytes)
 	result = appendUint64(result, m.OriginalSize)
 	result = appendUint64(result, m.CompressedSize)
 	result = appendUint64(result, m.EncryptedSize)
 
-	// Algorithms (2 x 16 bytes = 32 bytes)
 	result = appendFixedString(result, m.CompressionAlgo, 16)
 	result = appendFixedString(result, m.EncryptionAlgo, 16)
 
-	// Key (4 bytes size + N bytes data)
 	result = appendUint32(result, uint32(len(m.EncryptionKey)))
 	result = append(result, m.EncryptionKey...)
 
-	// Nonce (4 bytes size + M bytes data)
 	result = appendUint32(result, uint32(len(m.EncryptionNonce)))
 	result = append(result, m.EncryptionNonce...)
 
-	// InMemory flag (1 byte) + mode (16 bytes)
 	if m.UseInMemory {
 		result = append(result, 1)
 	} else {
 		result = append(result, 0)
 	}
-	result = appendFixedString(result, string(m.InMemoryMode), 16)
+	result = appendFixedString(result, m.Strategy, 16)
 
-	// User params (length + bytes)
 	if len(m.UserParams) > 0 {
 		result = appendUint32(result, uint32(len(m.UserParams)))
 		result = append(result, []byte(m.UserParams)...)
@@ -195,28 +232,24 @@ func serializeMetadataForStub(m *PayloadMetadata) []byte {
 	return result
 }
 
-// extractFirstFuncName attempts to find the first function name declared in the provided Go source.
-// It looks for a pattern starting with "func " and extracts the identifier before the opening parenthesis.
+// extractFirstFuncName attempts to find the first function name in Go source.
 func extractFirstFuncName(src string) string {
 	idx := strings.Index(src, "func ")
 	if idx == -1 {
 		return ""
 	}
-	start := idx + len("func ")
-	// skip optional receiver: look for first identifier followed by '('; if next char is '(', it's a receiver
-	// We implement a simple scan: if the first non-space after 'func ' is '(', skip the receiver '(...)' then read name
-	i := start
+	i := idx + len("func ")
 	for i < len(src) && (src[i] == ' ' || src[i] == '\n' || src[i] == '\t') {
 		i++
 	}
 	if i < len(src) && src[i] == '(' {
-		// skip receiver
 		depth := 1
 		i++
 		for i < len(src) && depth > 0 {
-			if src[i] == '(' {
+			switch src[i] {
+			case '(':
 				depth++
-			} else if src[i] == ')' {
+			case ')':
 				depth--
 			}
 			i++
@@ -225,7 +258,6 @@ func extractFirstFuncName(src string) string {
 			i++
 		}
 	}
-	// now i at start of name
 	j := i
 	for j < len(src) {
 		c := src[j]

@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"gosstrip/common"
@@ -21,6 +22,21 @@ func runSimpleAnalysis(t *testing.T, run func() (*common.AnalysisResult, error))
 	return result
 }
 
+func isStubCompileError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	// pack.Pack wraps stub compilation errors with fairly stable phrasing.
+	// We treat these as environment/toolchain limitations rather than product regressions.
+	if strings.Contains(msg, "compile stub") {
+		return true
+	}
+	if strings.Contains(msg, "failed to compile stub") {
+		return true
+	}
+	return false
+}
 func assertAnalysisLooksComprehensive(t *testing.T, result *common.AnalysisResult, stage string) {
 	t.Helper()
 	if result == nil {
@@ -146,7 +162,7 @@ func runELFBinaryExpect(t *testing.T, path, expected string) {
 			t.Fatalf("failed to resolve ELF path: %v", err)
 		}
 		cmd := fmt.Sprintf("'%s'", toWSLPath(abs))
-		if err := wslRunExpect(expected, cmd); err != nil {
+		if err := wslRunExpect(cmd, expected); err != nil {
 			t.Fatalf("failed to run ELF via WSL: %v", err)
 		}
 	default:

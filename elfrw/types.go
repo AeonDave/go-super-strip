@@ -45,6 +45,7 @@ type Section struct {
 	Link              uint32
 	Info              uint32
 	Alignment         uint64
+	EntSize           uint64 // sh_entsize: fixed entry size for typed tables (dynsym, rela, etc.)
 	IsAlloc           bool
 	ExecutionCritical bool
 	common.CommonSectionInfo
@@ -68,10 +69,11 @@ type Segment struct {
 }
 
 type SectionInfo struct {
-	Name      string
-	Offset    int64
-	Size      int64
-	Alignment uint64
+	Name        string
+	Offset      int64
+	Size        int64
+	Alignment   uint64
+	SectionType uint32 // ELF section type (e.g. SHT_NOBITS)
 	common.CommonSectionInfo
 }
 
@@ -296,6 +298,8 @@ const (
 	ELF64_SH_LINK      = 40 // Section link (64-bit)
 	ELF64_SH_INFO      = 44 // Section info (64-bit)
 	ELF64_SH_ADDRALIGN = 48 // Section alignment (64-bit)
+	ELF32_SH_ENTSIZE   = 36 // Section entry size (32-bit)
+	ELF64_SH_ENTSIZE   = 56 // Section entry size (64-bit)
 
 	// Dynamic entry sizes and offsets
 	ELF32_DYN_SIZE = 8  // 32-bit dynamic entry size (4 bytes tag + 4 bytes value)

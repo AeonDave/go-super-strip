@@ -31,11 +31,12 @@ func (e *ELFFile) AddOverlay(dataOrFile string, password string) *common.Operati
 	if err := e.rebuildSectionHeaderTable(); err != nil {
 		return common.NewSkipped(fmt.Sprintf("failed to rebuild section headers: %v", err))
 	}
+	wrapped := common.WrapOverlayWithTrailer(finalContent)
 	overlayOffset := int64(len(e.RawData))
-	e.RawData = append(e.RawData, finalContent...)
+	e.RawData = append(e.RawData, wrapped...)
 	e.HasOverlay = true
 	e.OverlayOffset = overlayOffset
-	e.OverlaySize = int64(len(finalContent))
+	e.OverlaySize = int64(len(wrapped))
 
 	message := "Added overlay data"
 	if password != "" {
@@ -86,5 +87,8 @@ func (e *ELFFile) ExtractOverlay() ([]byte, error) {
 	overlayData := make([]byte, overlayEnd-e.OverlayOffset)
 	copy(overlayData, e.RawData[e.OverlayOffset:overlayEnd])
 
+	if unwrapped, found := common.UnwrapOverlayTrailer(overlayData); found {
+		return unwrapped, nil
+	}
 	return overlayData, nil
 }

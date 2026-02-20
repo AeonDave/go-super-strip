@@ -521,6 +521,8 @@ func (p *PEFile) ObfuscateExecutablePadding(force bool) *common.OperationResult 
 	if len(p.Sections) == 0 {
 		return common.NewSkipped("no sections to obfuscate")
 	}
+	language, _ := p.detectLanguageAndCompiler()
+	allowRunScramble := force || !strings.EqualFold(language, "Go")
 	nopPatterns := [][]byte{
 		{0x90},
 		{0x66, 0x90},
@@ -558,7 +560,7 @@ func (p *PEFile) ObfuscateExecutablePadding(force bool) *common.OperationResult 
 			}
 		}
 
-		if !force {
+		if !allowRunScramble {
 			continue
 		}
 		loadedSize := section.Size
@@ -607,7 +609,11 @@ func (p *PEFile) ObfuscateExecutablePadding(force bool) *common.OperationResult 
 		messages = append(messages, fmt.Sprintf("randomized tail padding in %d executable sections", totalTail))
 	}
 	if totalRuns > 0 {
-		messages = append(messages, fmt.Sprintf("scrambled %d executable padding runs (force)", totalRuns))
+		mode := "default"
+		if force {
+			mode = "force"
+		}
+		messages = append(messages, fmt.Sprintf("scrambled %d executable padding runs (%s)", totalRuns, mode))
 	}
 	return common.NewApplied(strings.Join(messages, "; "), totalTail+totalRuns)
 }

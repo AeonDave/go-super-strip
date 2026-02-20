@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"gosstrip/common"
+	"sort"
 	"strings"
 )
 
@@ -39,6 +40,7 @@ func (e *ELFFile) buildDeepReport() *common.AnalysisResult {
 			Offset:            s.Offset,
 			Size:              s.Size,
 			Alignment:         s.Alignment,
+			SectionType:       uint32(s.Type),
 			CommonSectionInfo: s.CommonSectionInfo,
 		}
 	}
@@ -65,6 +67,85 @@ func analyzeSectionAnomalies(sections []SectionInfo, fileSize int64) []string {
 		return false
 	}
 
+	// Build a file-offset-sorted slice of non-debug, non-empty sections for
+	// structural checks (overlap, gaps).  The section-header table order is
+	// not guaranteed to match file order (Go binaries routinely place .note.*
+	// and .symtab before debug sections in the SHT but after them in the
+	// file), so sequential i-1 comparisons produce false positives.
+	type offsetEntry struct {
+		name   string
+		offset int64
+		size   int64
+	}
+	var sortedNonDebug []offsetEntry
+	for _, s := range sections {
+		// Exclude debug sections and NOBITS sections (BSS, .tbss, etc.) — they
+		// have no file data so including them in file-offset comparisons creates
+		// phantom gaps and false overlap reports.
+		if !isDebugSection(s.Name) && s.Size > 0 && s.SectionType != SHT_NOBITS {
+			sortedNonDebug = append(sortedNonDebug, offsetEntry{s.Name, s.Offset, s.Size})
+		}
+	}
+	sort.Slice(sortedNonDebug, func(i, j int) bool { return sortedNonDebug[i].offset < sortedNonDebug[j].offset })
+
+	// Overlap check on sorted non-debug sections.
+	for j := 1; j < len(sortedNonDebug); j++ {
+		prev := sortedNonDebug[j-1]
+		cur := sortedNonDebug[j]
+		if cur.offset < prev.offset+prev.size {
+			issues = append(issues, fmt.Sprintf("%s Section '%s' overlaps '%s' (file offsets 0x%X < 0x%X)",
+				common.SymbolWarn, cur.name, prev.name, cur.offset, prev.offset+prev.size))
+		}
+	}
+
+	// Large-gap check: build merged file coverage from ALL non-NOBITS sections
+	// (including debug). A gap between consecutive non-debug sections is only
+	// reported if no other section (e.g. a block of .debug_* data) bridges
+	// the intervening bytes, avoiding false positives in Go binaries where
+	// large debug segments sit between .data and .symtab.
+	type coverInterval struct{ start, end int64 }
+	var allNonNobits []coverInterval
+	for _, s := range sections {
+		if s.Size > 0 && s.SectionType != SHT_NOBITS {
+			allNonNobits = append(allNonNobits, coverInterval{s.Offset, s.Offset + s.Size})
+		}
+	}
+	sort.Slice(allNonNobits, func(i, j int) bool { return allNonNobits[i].start < allNonNobits[j].start })
+	// Merge overlapping/adjacent intervals into a continuous coverage map.
+	var merged []coverInterval
+	for _, iv := range allNonNobits {
+		if len(merged) == 0 || iv.start > merged[len(merged)-1].end {
+			merged = append(merged, iv)
+		} else if iv.end > merged[len(merged)-1].end {
+			merged[len(merged)-1].end = iv.end
+		}
+	}
+	// Report truly uncovered stretches > 64 KB; annotate with nearest non-debug names.
+	for j := 1; j < len(merged); j++ {
+		gap := merged[j].start - merged[j-1].end
+		if gap > 64*1024 {
+			leftName, rightName := "", ""
+			for _, nd := range sortedNonDebug {
+				if nd.offset+nd.size <= merged[j-1].end {
+					leftName = nd.name
+				}
+			}
+			for _, nd := range sortedNonDebug {
+				if nd.offset >= merged[j].start && rightName == "" {
+					rightName = nd.name
+					break
+				}
+			}
+			var msg string
+			if leftName != "" && rightName != "" {
+				msg = common.SymbolWarn + " Large uncovered gap (" + formatSizeELF(gap) + ") between '" + leftName + "' and '" + rightName + "'"
+			} else {
+				msg = fmt.Sprintf("%s Large uncovered gap (%s) at file offset 0x%X", common.SymbolWarn, formatSizeELF(gap), merged[j-1].end)
+			}
+			issues = append(issues, msg)
+		}
+	}
+
 	for i, s := range sections {
 		// Skip all checks for debug sections
 		if isDebugSection(s.Name) {
@@ -84,11 +165,6 @@ func analyzeSectionAnomalies(sections []SectionInfo, fileSize int64) []string {
 		// Check for empty or invalid section names
 		if i != SHT_NULL && (len(s.Name) == 0 || s.Name == "\x00") {
 			issues = append(issues, common.SymbolWarn+" Section with empty or invalid name")
-		}
-
-		// Check for overlapping sections
-		if i > 0 && s.Offset < sections[i-1].Offset+sections[i-1].Size {
-			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' overlaps previous section")
 		}
 
 		// Check for suspicious section names
@@ -138,15 +214,6 @@ func analyzeSectionAnomalies(sections []SectionInfo, fileSize int64) []string {
 		// Check for unusual section order
 		if i > 0 && isWrongSectionOrderELF(sections[i-1].Name, s.Name) {
 			issues = append(issues, common.SymbolWarn+" Section '"+s.Name+"' appears after '"+sections[i-1].Name+"' (unusual order)")
-		}
-
-		// Check for large gaps between sections
-		if i > 0 {
-			prevEnd := sections[i-1].Offset + sections[i-1].Size
-			gap := s.Offset - prevEnd
-			if gap > 64*1024 { // Gap > 64KB
-				issues = append(issues, common.SymbolWarn+" Large gap ("+formatSizeELF(gap)+") between '"+sections[i-1].Name+"' and '"+s.Name+"'")
-			}
 		}
 
 		// Check for sections with unusual permissions
@@ -533,25 +600,32 @@ func (e *ELFFile) printELFHeaders() {
 	// Check 3: Segment/file bounds sanity
 	checks++
 	if len(e.Segments) > 0 {
-		// Check each segment bounds and overlaps
+		// Check each segment's bounds against the file size.
 		type rng struct{ start, end int64 }
-		var ranges []rng
 		for _, seg := range e.Segments {
 			if seg.FileSize == 0 {
 				continue
 			}
-			start := int64(seg.Offset)
 			end := int64(seg.Offset + seg.FileSize)
 			if end > e.FileSize {
 				issues = append(issues, fmt.Sprintf("Segment Bounds:   ❌ %s exceeds file size", getSegmentTypeName(seg.Type)))
 				failures++
 			}
-			ranges = append(ranges, rng{start, end})
 		}
-		if len(ranges) > 1 {
-			for i := 1; i < len(ranges); i++ {
-				if ranges[i].start < ranges[i-1].end {
-					warnings = append(warnings, "Segments:         ⚠️ Overlapping file ranges detected")
+		// Only compare LOAD segments against each other: PHDR and NOTE segments
+		// are routinely mapped inside the first LOAD (which starts at offset 0),
+		// so comparing them in PHT order produces false-positive overlaps.
+		var loadRanges []rng
+		for _, seg := range e.Segments {
+			if seg.Type == PT_LOAD && seg.FileSize > 0 {
+				loadRanges = append(loadRanges, rng{int64(seg.Offset), int64(seg.Offset + seg.FileSize)})
+			}
+		}
+		sort.Slice(loadRanges, func(i, j int) bool { return loadRanges[i].start < loadRanges[j].start })
+		if len(loadRanges) > 1 {
+			for i := 1; i < len(loadRanges); i++ {
+				if loadRanges[i].start < loadRanges[i-1].end {
+					warnings = append(warnings, "Segments:         ⚠️ Overlapping LOAD file ranges detected")
 					failures++
 					break
 				}
@@ -580,21 +654,49 @@ func (e *ELFFile) printELFHeaders() {
 		}
 	}
 
-	// Check 5: Sections order/overlap and bounds
+	// Check 5: Sections order/overlap and bounds.
+	// Sort by file offset so that out-of-SHT-order placements (common in Go
+	// binaries where .note.* sections appear early in the file but late in the
+	// section header table) are not mis-reported as overlaps.
 	checks++
 	if len(e.Sections) > 0 {
-		prevEnd := int64(0)
+		type secEntry struct {
+			name   string
+			offset int64
+			size   int64
+			typ    uint32
+		}
+		var sorted []secEntry
 		for _, s := range e.Sections {
-			end := s.Offset + s.Size
 			if s.Type != SHT_NOBITS && s.Size > 0 {
-				if s.Offset < prevEnd {
-					issues = append(issues, fmt.Sprintf("Sections:         ❌ Overlap at section '%s' (file offsets)", s.Name))
-					failures++
-				}
+				sorted = append(sorted, secEntry{s.Name, s.Offset, s.Size, s.Type})
+			}
+		}
+		sort.Slice(sorted, func(i, j int) bool { return sorted[i].offset < sorted[j].offset })
+
+		overlap := false
+		overlapSecs := ""
+		prevEnd := int64(0)
+		for _, s := range sorted {
+			end := s.offset + s.size
+			if s.offset < prevEnd && !overlap {
+				overlap = true
+				overlapSecs = s.name
+			}
+			if end > prevEnd {
 				prevEnd = end
 			}
-			if s.Type != SHT_NOBITS && end > e.FileSize {
-				issues = append(issues, fmt.Sprintf("Section Bounds:   ❌ Section '%s' exceeds file size", s.Name))
+		}
+		if overlap {
+			issues = append(issues, fmt.Sprintf("Sections:         ❌ Overlapping file ranges (first: '%s')", overlapSecs))
+			failures++
+		}
+
+		boundsViolation := false
+		for _, s := range sorted {
+			if s.offset+s.size > e.FileSize && !boundsViolation {
+				boundsViolation = true
+				issues = append(issues, fmt.Sprintf("Section Bounds:   ❌ Section '%s' exceeds file size", s.name))
 				failures++
 			}
 		}
@@ -811,6 +913,7 @@ func (e *ELFFile) printSectionAnomalies() {
 			Offset:            s.Offset,
 			Size:              s.Size,
 			Alignment:         s.Alignment,
+			SectionType:       uint32(s.Type),
 			CommonSectionInfo: s.CommonSectionInfo,
 		}
 	}
@@ -899,6 +1002,7 @@ func (e *ELFFile) buildSimpleReport() *common.AnalysisResult {
 			Offset:            section.Offset,
 			Size:              section.Size,
 			Alignment:         section.Alignment,
+			SectionType:       uint32(section.Type),
 			CommonSectionInfo: section.CommonSectionInfo,
 		}
 	}

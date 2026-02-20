@@ -31,7 +31,7 @@ func buildPEFixture() {
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	output := filepath.Join(tmpDir, "simple.exe")
-	cmd := exec.Command("go", "build", "-o", output, filepath.Join("..", "testfiles", "simple_go.go"))
+	cmd := exec.Command("go", "build", "-o", output, filepath.Join("..", "testfiles", "src", "go_sensor_aggregator.go"))
 	cmd.Env = append(os.Environ(),
 		"GOOS=windows",
 		"GOARCH="+runtime.GOARCH,
@@ -71,7 +71,7 @@ func buildELFFixture() {
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	output := filepath.Join(tmpDir, "simple")
-	cmd := exec.Command("go", "build", "-o", output, filepath.Join("..", "testfiles", "simple_go.go"))
+	cmd := exec.Command("go", "build", "-o", output, filepath.Join("..", "testfiles", "src", "go_sensor_aggregator.go"))
 	cmd.Env = append(os.Environ(),
 		"GOOS=linux",
 		"GOARCH="+runtime.GOARCH,
@@ -109,7 +109,7 @@ func buildGoPEBinary(t *testing.T, outName string) string {
 	t.Helper()
 	tmpDir := t.TempDir()
 	output := filepath.Join(tmpDir, outName)
-	cmd := exec.Command("go", "build", "-o", output, filepath.Join("..", "testfiles", "simple_go.go"))
+	cmd := exec.Command("go", "build", "-o", output, filepath.Join("..", "testfiles", "src", "go_sensor_aggregator.go"))
 	cmd.Env = os.Environ()
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("go build failed: %v\n%s", err, string(out))
@@ -152,6 +152,22 @@ func wslRun(cmd string) error {
 		return fmt.Errorf("WSL command failed: %v\n%s", err, string(out))
 	}
 	return nil
+}
+
+func wslHasTool(tool string) bool {
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	if !hasWSL() {
+		return false
+	}
+	// Treat any WSL/distro failure as "tool unavailable" so callers can t.Skip.
+	cmd := exec.Command("wsl.exe", "bash", "-lc", "command -v "+tool+" >/dev/null 2>&1")
+	cmd.Env = os.Environ()
+	if err := cmd.Run(); err != nil {
+		return false
+	}
+	return true
 }
 
 func wslRunExpect(cmd string, expected string) error {

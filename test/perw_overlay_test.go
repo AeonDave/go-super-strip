@@ -25,13 +25,12 @@ func TestOverlayPE_AppendsData(t *testing.T) {
 		t.Fatalf("expected overlay operation to apply successfully, got result: %#v", result)
 	}
 
-	updated, err := os.ReadFile(tempPath)
+	extracted, err := perw.ExtractOverlay(tempPath)
 	if err != nil {
-		t.Fatalf("failed to read modified file: %v", err)
+		t.Fatalf("failed to extract overlay: %v", err)
 	}
-
-	if !bytes.HasSuffix(updated, []byte(overlayString)) {
-		t.Fatalf("expected file to end with overlay data %q", overlayString)
+	if !bytes.Equal(extracted, []byte(overlayString)) {
+		t.Fatalf("expected extracted overlay %q, got %q", overlayString, extracted)
 	}
 }
 
@@ -64,13 +63,12 @@ func TestOverlayPE_AppendsFileContents(t *testing.T) {
 		t.Fatalf("expected overlay operation to apply successfully, got: %#v", result)
 	}
 
-	updated, err := os.ReadFile(tempPath)
+	extracted, err := perw.ExtractOverlay(tempPath)
 	if err != nil {
-		t.Fatalf("failed to read modified file: %v", err)
+		t.Fatalf("failed to extract overlay: %v", err)
 	}
-
-	if !bytes.HasSuffix(updated, payload) {
-		t.Fatalf("expected file to end with overlay payload %x", payload)
+	if !bytes.Equal(extracted, payload) {
+		t.Fatalf("expected extracted overlay %x, got %x", payload, extracted)
 	}
 }
 
@@ -82,19 +80,17 @@ func TestOverlayPE_AcceptsHexLiteral(t *testing.T) {
 		t.Fatalf("failed to decode expected payload: %v", err)
 	}
 
-	beforeSize := fileSizePE(t, tempPath)
 	result := perw.OverlayPE(tempPath, payload, "")
 	if result == nil || !result.Applied {
 		t.Fatalf("expected overlay operation to apply, got: %#v", result)
 	}
 
-	data, err := os.ReadFile(tempPath)
+	extracted, err := perw.ExtractOverlay(tempPath)
 	if err != nil {
-		t.Fatalf("failed to read modified file: %v", err)
+		t.Fatalf("failed to extract overlay: %v", err)
 	}
-	suffix := data[beforeSize:]
-	if !bytes.Equal(suffix, expected) {
-		t.Fatalf("expected file to end with %x", expected)
+	if !bytes.Equal(extracted, expected) {
+		t.Fatalf("expected extracted overlay %x, got %x", expected, extracted)
 	}
 }
 
@@ -103,18 +99,16 @@ func TestOverlayPE_AppendsEncryptedString(t *testing.T) {
 	payload := "overlay-config"
 	password := "pass123"
 
-	beforeSize := fileSizePE(t, tempPath)
 	result := perw.OverlayPE(tempPath, payload, password)
 	if result == nil || !result.Applied {
 		t.Fatalf("expected overlay operation to apply, got: %#v", result)
 	}
 
-	data, err := os.ReadFile(tempPath)
+	extracted, err := perw.ExtractOverlay(tempPath)
 	if err != nil {
-		t.Fatalf("failed to read modified file: %v", err)
+		t.Fatalf("failed to extract overlay: %v", err)
 	}
-	suffix := data[beforeSize:]
-	recovered, err := common.ProcessExtractedData(suffix, password)
+	recovered, err := common.ProcessExtractedData(extracted, password)
 	if err != nil {
 		t.Fatalf("failed to decrypt overlay: %v", err)
 	}

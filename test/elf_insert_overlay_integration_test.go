@@ -1,3 +1,6 @@
+//go:build integration
+// +build integration
+
 package test
 
 import (
@@ -16,6 +19,9 @@ func buildELFInWSL(t *testing.T, outName string) string {
 	}
 	if !hasWSL() {
 		t.Skip("WSL not available; skipping ELF integration tests")
+	}
+	if !wslHasTool("gcc") {
+		t.Skip("WSL is available but gcc is not installed in the distro; skipping ELF integration tests")
 	}
 	td := t.TempDir()
 	outWin := filepath.Join(td, outName)

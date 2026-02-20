@@ -6,9 +6,9 @@ This document explains how we validate every CLI feature (analyze, strip, compac
 
 | Layer | Purpose | Entry Point |
 |-------|---------|-------------|
-| Unit tests | Validate individual helpers (section classifiers, header writers, regex scrubbers). | `go test ./perw ./elfrw ./pack ./common` |
+| Unit tests | Validate individual helpers (section classifiers, header writers, regex scrubbers). | `go test ./...` |
 | Integration tests | Exercise the CLI on compiled fixtures, ensuring operations run in canonical order and binaries remain valid. | `go test ./test` |
-| Regression scripts | Produce human-readable logs for manual inspection and keep a corpus of before/after analyzer output. | `test/cli_matrix.sh`, `test_polymorphism.sh` |
+| Regression scripts | Produce human-readable logs for manual inspection and keep a corpus of before/after analyzer output. | `test/cli_matrix.sh`, `test/pack_matrix.ps1` |
 
 Always run `go test ./...` before opening a PR. Use the scripts when you need to inspect real binaries or compare analyzer output between commits.
 
@@ -18,9 +18,9 @@ Always run `go test ./...` before opening a PR. Use the scripts when you need to
 
 - `-a`: analyzer simple mode (ensures PE/ELF detection and table output are stable).
 - `-s`, `-c`, `-o`: individual operation coverage, verifying “Completed operations: …” appears and no corruption occurs.
-- `-i`, `-l`: sector insertion & overlay payload tests ensure data appears on disk.
+- `-i`, `-l`: section insertion & overlay payload tests ensure data appears on disk.
 - `-r`: regex stage removes injected markers via both inline lists (`pattern=PIPELINE_REGEX_TARGET`) and file-based pattern sets (`pattern=/tmp/patterns.txt`), with `fill=random` exercising the override parsing.
-- `-ei`: sector extraction validates that data inserted during the test run can be recovered by name and index (with and without passwords).
+- `-ei`: section extraction validates that data inserted during the test run can be recovered by name and index (with and without passwords).
 - `-el`: overlay extraction confirms ASCII/hex/file overlays (including encrypted payloads) round-trip correctly.
 - `-p`: packer pipeline builds a stub and checks for the expected prefix.
 
@@ -33,7 +33,7 @@ Fixtures compile on the fly. The ELF path uses WSL’s `gcc` when running on Win
 1. `analyze → obfuscate → analyze`
 2. `analyze → strip(fill=zero|random) → compact → obfuscate → regex(pattern=file) → analyze`
 
-All command transcripts (stdout/stderr plus timestamps) land in `tests/logs/cli_matrix_<timestamp>/`. Use these logs to diff analyzer output or to archive regression evidence (e.g., unexpected warnings after changing compact).
+All command transcripts (stdout/stderr plus timestamps) land in `test/logs/cli_matrix_<timestamp>/`. Use these logs to diff analyzer output or to archive regression evidence (e.g., unexpected warnings after changing compact).
 
 Usage:
 
@@ -43,20 +43,25 @@ bash test/cli_matrix.sh
 
 Ensure `x86_64-w64-mingw32-gcc`, `gcc`, and (on Windows) `wsl.exe` are available.
 
-## 4. Polymorphism Script
+## 4. Pack Matrix Script
 
-`test_polymorphism.sh` focuses on the packer’s polymorphic stub. It:
+`test/pack_matrix.ps1` (Windows PowerShell) exhaustively validates the packer's polymorphic stubs:
 
-- Builds N packed binaries, checks hash uniqueness, and optionally executes them with a timeout.
-- Compares polymorphic vs. non-polymorphic hash counts.
+- Builds Windows and Linux `gosstrip` binaries, then compiles fresh C fixtures.
+- Drives `analyze(mode=deep) → pack(options) → analyze(mode=deep) → execute` across every compression/encryption/in-memory combination, alternating `polymorphic`, `padding`, `junk_density`, `verbose`, `cleanup`, and `mutation` toggles.
+- Checks hash uniqueness across polymorphic builds to confirm each stub is distinct.
 - Reports performance data (build time, average pack time, size deltas).
+- Logs land under `test/logs/pack_matrix_<timestamp>/` and must be reviewed whenever packer logic changes.
 
-Run it when touching `pack/` or `testfiles/simple_c`. Quick mode (10 builds) is sufficient for CI; full mode (50 builds) is available for thorough audits.
+Run it when touching `pack/` or `testfiles/`:
 
-```bash
-./test_polymorphism.sh quick
-./test_polymorphism.sh full
+```powershell
+pwsh test/pack_matrix.ps1
 ```
+
+Ensure `x86_64-w64-mingw32-gcc`, `gcc`, and `wsl.exe` are available (ELF execution uses WSL on Windows).
+
+For quick manual investigations without running the full matrix, use `test/manual_pack_flow.ps1` to exercise individual pack option combinations against hand-picked fixtures.
 
 ## 5. Manual Fixture Validation
 

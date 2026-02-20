@@ -4,15 +4,6 @@ import (
 	"fmt"
 )
 
-// Packer è l'interfaccia comune per tutti i packer (ELF/PE)
-type Packer interface {
-	// Pack comprime e cifra l'eseguibile
-	Pack(inputPath string, config *PackConfig) (*PackResult, error)
-
-	// GetFileType ritorna il tipo di file ("ELF" o "PE")
-	GetFileType() string
-}
-
 // PackResult contiene i risultati del packing
 type PackResult struct {
 	OriginalSize     int64
@@ -90,12 +81,13 @@ type PayloadMetadata struct {
 	EncryptionKey   []byte
 	EncryptionNonce []byte
 	PaddingOffsets  []int
-	UseInMemory     bool // Esecuzione in-memory (memfd_create/process hollowing)
-	InMemoryMode    InMemoryMode
+	UseInMemory     bool   // true when strategy runs payload in-memory (not base_exec)
+	Strategy        string // execution strategy name: "base_exec", "self_injection", "process_hollowing", "memfd", …
 	UserParams      string
 	Checksum        [32]byte
 	StubArch        string // "amd64" or "386" for PE stubs
 	StubWindowsGUI  bool   // true when the original payload targets the Windows GUI subsystem
+	TargetOS        string // "windows" or "linux" — drives stub selection in CompileStub
 }
 
 // PolymorphicStub rappresenta uno stub polimorfico generato

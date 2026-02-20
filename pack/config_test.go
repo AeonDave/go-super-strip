@@ -23,8 +23,8 @@ func TestDefaultConfig(t *testing.T) {
 		t.Error("Expected polymorphic stub to be enabled by default")
 	}
 
-	if config.InMemoryMode != InMemoryOff {
-		t.Error("Expected in-memory mode to default to 'off'")
+	if config.Strategy != "" {
+		t.Errorf("Expected strategy to default to empty string, got '%s'", config.Strategy)
 	}
 }
 
@@ -47,7 +47,7 @@ func TestParseOptions_Compression(t *testing.T) {
 		wantErr  bool
 	}{
 		{"comp=xz", "xz", false},
-		{"comp=lzma", "lzma", false},
+		{"comp=zlib", "zlib", false},
 		{"comp=none", "none", false},
 		{"compression=xz", "xz", false},
 	}
@@ -160,13 +160,13 @@ func TestParseOptions_Bool(t *testing.T) {
 }
 
 func TestParseOptions_Multiple(t *testing.T) {
-	config, err := ParseOptions("comp=lzma,encr=chacha20,level=9,poly=false,inmemory=auto")
+	config, err := ParseOptions("comp=zlib,encr=chacha20,level=9,poly=false,strategy=auto")
 	if err != nil {
 		t.Fatalf("ParseOptions failed: %v", err)
 	}
 
-	if config.CompressionAlgorithm != "lzma" {
-		t.Errorf("Expected lzma, got %s", config.CompressionAlgorithm)
+	if config.CompressionAlgorithm != "zlib" {
+		t.Errorf("Expected zlib, got %s", config.CompressionAlgorithm)
 	}
 	if config.EncryptionAlgorithm != "chacha20" {
 		t.Errorf("Expected chacha20, got %s", config.EncryptionAlgorithm)
@@ -177,8 +177,8 @@ func TestParseOptions_Multiple(t *testing.T) {
 	if config.PolymorphicStub {
 		t.Error("Expected polymorphic to be false")
 	}
-	if config.InMemoryMode != InMemoryAuto {
-		t.Errorf("Expected inmemory auto, got %s", config.InMemoryMode)
+	if config.Strategy != "auto" {
+		t.Errorf("Expected strategy auto, got %s", config.Strategy)
 	}
 }
 
@@ -252,46 +252,59 @@ func TestValidateConfig(t *testing.T) {
 	}
 }
 
-func TestParseOptions_InMemoryMode(t *testing.T) {
-	t.Run("auto mode", func(t *testing.T) {
+func TestParseOptions_Strategy(t *testing.T) {
+	t.Run("auto strategy", func(t *testing.T) {
+		config, err := ParseOptions("strategy=auto")
+		if err != nil {
+			t.Fatalf("ParseOptions failed: %v", err)
+		}
+		if config.Strategy != "auto" {
+			t.Fatalf("expected strategy auto, got %s", config.Strategy)
+		}
+	})
+	t.Run("explicit memfd", func(t *testing.T) {
+		config, err := ParseOptions("strategy=memfd")
+		if err != nil {
+			t.Fatalf("ParseOptions failed: %v", err)
+		}
+		if config.Strategy != "memfd" {
+			t.Fatalf("expected strategy memfd, got %s", config.Strategy)
+		}
+	})
+	t.Run("explicit process hollowing", func(t *testing.T) {
+		config, err := ParseOptions("strategy=process_hollowing")
+		if err != nil {
+			t.Fatalf("ParseOptions failed: %v", err)
+		}
+		if config.Strategy != "process_hollowing" {
+			t.Fatalf("expected strategy process_hollowing, got %s", config.Strategy)
+		}
+	})
+	t.Run("self injection", func(t *testing.T) {
+		config, err := ParseOptions("strategy=self_injection")
+		if err != nil {
+			t.Fatalf("ParseOptions failed: %v", err)
+		}
+		if config.Strategy != "self_injection" {
+			t.Fatalf("expected strategy self_injection, got %s", config.Strategy)
+		}
+	})
+	t.Run("base_exec (off/default)", func(t *testing.T) {
+		config, err := ParseOptions("strategy=off")
+		if err != nil {
+			t.Fatalf("ParseOptions failed: %v", err)
+		}
+		if config.Strategy != "off" {
+			t.Fatalf("expected strategy off, got %s", config.Strategy)
+		}
+	})
+	t.Run("inmemory alias accepted", func(t *testing.T) {
 		config, err := ParseOptions("inmemory=auto")
 		if err != nil {
 			t.Fatalf("ParseOptions failed: %v", err)
 		}
-		if config.InMemoryMode != InMemoryAuto {
-			t.Fatalf("expected auto mode, got %s", config.InMemoryMode)
-		}
-	})
-	t.Run("explicit memfd", func(t *testing.T) {
-		config, err := ParseOptions("inmemory=memfd")
-		if err != nil {
-			t.Fatalf("ParseOptions failed: %v", err)
-		}
-		if config.InMemoryMode != InMemoryMemfd {
-			t.Fatalf("expected memfd, got %s", config.InMemoryMode)
-		}
-	})
-	t.Run("explicit process hollowing", func(t *testing.T) {
-		config, err := ParseOptions("inmemory=process_hollowing")
-		if err != nil {
-			t.Fatalf("ParseOptions failed: %v", err)
-		}
-		if config.InMemoryMode != InMemoryProcessHollowing {
-			t.Fatalf("expected process hollowing, got %s", config.InMemoryMode)
-		}
-	})
-	t.Run("explicit atomic bombing", func(t *testing.T) {
-		config, err := ParseOptions("inmemory=atomic_bombing")
-		if err != nil {
-			t.Fatalf("ParseOptions failed: %v", err)
-		}
-		if config.InMemoryMode != InMemoryAtomicBombing {
-			t.Fatalf("expected atomic_bombing, got %s", config.InMemoryMode)
-		}
-	})
-	t.Run("invalid mode", func(t *testing.T) {
-		if _, err := ParseOptions("inmemory=strategy1"); err == nil {
-			t.Fatal("expected error for invalid in-memory strategy")
+		if config.Strategy != "auto" {
+			t.Fatalf("expected strategy auto via inmemory alias, got %s", config.Strategy)
 		}
 	})
 

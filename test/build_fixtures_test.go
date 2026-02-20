@@ -9,12 +9,15 @@ import (
 	"testing"
 )
 
+const testStubPrefix = "gosstrip-test-stub"
+
 func buildGoFixture(t *testing.T, targetOS, baseName string) string {
-	return buildFixtureFromSource(t, targetOS, baseName, "./testfiles/simple_go.go")
+	return buildFixtureFromSource(t, targetOS, baseName, "./testfiles/src/go_sensor_aggregator.go")
 }
 
 func buildProbeFixture(t *testing.T, targetOS, baseName string) string {
-	return buildFixtureFromSource(t, targetOS, baseName, "./testfiles/probe_payload.go")
+	// Historically this used a dedicated probe. We now reuse the sensor aggregator fixture.
+	return buildFixtureFromSource(t, targetOS, baseName, "./testfiles/src/go_sensor_aggregator.go")
 }
 
 func buildFixtureFromSource(t *testing.T, targetOS, baseName, source string) string {
