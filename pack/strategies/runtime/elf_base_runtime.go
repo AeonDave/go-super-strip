@@ -1,110 +1,92 @@
-package pack
+//go:build ignore
 
-import (
-	"strings"
-
-	linstrat "gosstrip/pack/strategies/linux"
-)
-
-const elfMemfdPlaceholder = "{{MEMFD_IMPL}}"
-
-// ELFStubTemplate contiene il template base per lo stub ELF
-// Questo codice verrà compilato e iniettato con il payload compresso/cifrato
-
-const ELFStubSource = `
 package main
 
 import (
 	"bytes"
+	"compress/zlib"
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/binary"
 	"io"
 	"os"
 	"os/exec"
-	"runtime"
 	"strings"
 	"syscall"
 	"unsafe"
-	
+
 	"github.com/ulikunitz/xz"
 	"golang.org/x/crypto/chacha20poly1305"
 )
 
+// elfEmbeddedArgs holds the combined arguments forwarded to the unpacked payload.
 var elfEmbeddedArgs []string
 
 func main() {
-	// 1. Leggi metadata e payload dalla fine del file
 	exePath, err := os.Executable()
 	if err != nil {
 		os.Exit(1)
 	}
-	
+
 	f, err := os.Open(exePath)
 	if err != nil {
 		os.Exit(1)
 	}
 	defer f.Close()
-	
-	// Leggi i metadata dalla fine del file
-	// Formato: [payload][metadata][metadata_size:8]
+
 	stat, _ := f.Stat()
 	fileSize := stat.Size()
-	
-	// Leggi metadata size (ultimi 8 bytes)
+
+	// Read metadata size (last 8 bytes).
 	f.Seek(fileSize-8, 0)
 	var metadataSize uint64
 	binary.Read(f, binary.LittleEndian, &metadataSize)
-	
-	// Leggi metadata
+
+	// Read metadata.
 	metadataOffset := fileSize - 8 - int64(metadataSize)
 	f.Seek(metadataOffset, 0)
 	metadataBytes := make([]byte, metadataSize)
 	f.Read(metadataBytes)
-	
-	// Parse metadata
-	metadata := parseMetadata(metadataBytes)
-	
-	// Leggi payload encrypted
-	payloadOffset := metadataOffset - int64(metadata.EncryptedSize)
+	m := parseMetadata(metadataBytes)
+
+	// Read encrypted payload.
+	payloadOffset := metadataOffset - int64(m.EncryptedSize)
 	f.Seek(payloadOffset, 0)
-	encryptedPayload := make([]byte, metadata.EncryptedSize)
+	encryptedPayload := make([]byte, m.EncryptedSize)
 	f.Read(encryptedPayload)
 	f.Close()
-	
-	// 2. Decifra payload
-	decrypted, err := decrypt(encryptedPayload, metadata.Key, metadata.Nonce, metadata.EncryptionAlgo)
-	if err != nil {
-		os.Exit(1)
-	}
-	
-	// 3. Decomprimi
-	decompressed, err := decompress(decrypted, metadata.CompressionAlgo)
-	if err != nil {
-		os.Exit(1)
-	}
-	
-	// 3.5 Rimuovi eventuale padding casuale usando OriginalSize
-	payload := trimToOriginal(decompressed, metadata.OriginalSize)
 
-	configuredArgs := parseUserParams(metadata.UserParams)
+	decrypted, err := decrypt(encryptedPayload, m.Key, m.Nonce, m.EncryptionAlgo)
+	if err != nil {
+		os.Exit(1)
+	}
+
+	decompressed, err := decompress(decrypted, m.CompressionAlgo)
+	if err != nil {
+		os.Exit(1)
+	}
+
+	payload := trimToOriginal(decompressed, m.OriginalSize)
+
+	configuredArgs := parseUserParams(m.UserParams)
 	elfEmbeddedArgs = combineArgs(configuredArgs, os.Args[1:])
-	
-	// 4. Esegui
-	mode := strings.ToLower(strings.TrimSpace(metadata.InMemoryMode))
+
+	mode := strings.ToLower(strings.TrimSpace(m.InMemoryMode))
 	switch mode {
 	case "memfd", "auto":
-		executeInMemory(payload)
-	case "", "off":
+		executeStrategy(payload)
+	case "", "off", "base_exec":
 		executeFromTemp(payload)
 	default:
-		if metadata.UseInMemory {
-			executeInMemory(payload)
+		if m.UseInMemory {
+			executeStrategy(payload)
 		} else {
 			executeFromTemp(payload)
 		}
 	}
 }
+
+// ---------- Metadata ----------
 
 type Metadata struct {
 	OriginalSize    uint64
@@ -122,30 +104,32 @@ type Metadata struct {
 func parseMetadata(data []byte) *Metadata {
 	r := bytes.NewReader(data)
 	m := &Metadata{}
-	
+
 	binary.Read(r, binary.LittleEndian, &m.OriginalSize)
 	binary.Read(r, binary.LittleEndian, &m.CompressedSize)
 	binary.Read(r, binary.LittleEndian, &m.EncryptedSize)
-	
+
 	compAlgo := make([]byte, 16)
 	r.Read(compAlgo)
 	m.CompressionAlgo = string(bytes.TrimRight(compAlgo, "\x00"))
-	
+
 	encAlgo := make([]byte, 16)
 	r.Read(encAlgo)
 	m.EncryptionAlgo = string(bytes.TrimRight(encAlgo, "\x00"))
-	
+
 	var keySize, nonceSize uint32
 	binary.Read(r, binary.LittleEndian, &keySize)
-	m.Key = make([]byte, keySize)
-	r.Read(m.Key)
-	
+	if keySize > 0 {
+		m.Key = make([]byte, keySize)
+		r.Read(m.Key)
+	}
 	binary.Read(r, binary.LittleEndian, &nonceSize)
-	m.Nonce = make([]byte, nonceSize)
-	r.Read(m.Nonce)
-	
-	inMem, _ := r.ReadByte()
-	m.UseInMemory = (inMem == 1)
+	if nonceSize > 0 {
+		m.Nonce = make([]byte, nonceSize)
+		r.Read(m.Nonce)
+	}
+	b, _ := r.ReadByte()
+	m.UseInMemory = b == 1
 	modeRaw := make([]byte, 16)
 	r.Read(modeRaw)
 	m.InMemoryMode = string(bytes.TrimRight(modeRaw, "\x00"))
@@ -156,11 +140,11 @@ func parseMetadata(data []byte) *Metadata {
 		r.Read(paramBuf)
 		m.UserParams = string(paramBuf)
 	}
-	
 	return m
 }
 
-// decrypt decifra il payload
+// ---------- Crypto ----------
+
 func decrypt(data, key, nonce []byte, algo string) ([]byte, error) {
 	switch algo {
 	case "xor":
@@ -178,7 +162,7 @@ func decrypt(data, key, nonce []byte, algo string) ([]byte, error) {
 
 func decryptXOR(data, key []byte) []byte {
 	result := make([]byte, len(data))
-	for i := 0; i < len(data); i++ {
+	for i := range data {
 		result[i] = data[i] ^ key[i%len(key)]
 	}
 	return result
@@ -204,7 +188,8 @@ func decryptChaCha(data, key, nonce []byte) ([]byte, error) {
 	return aead.Open(nil, nonce, data, nil)
 }
 
-// decompress decomprime il payload
+// ---------- Decompression ----------
+
 func decompress(data []byte, algo string) ([]byte, error) {
 	switch algo {
 	case "xz", "lzma":
@@ -213,6 +198,13 @@ func decompress(data []byte, algo string) ([]byte, error) {
 			return nil, err
 		}
 		return io.ReadAll(r)
+	case "zlib":
+		r, err := zlib.NewReader(bytes.NewReader(data))
+		if err != nil {
+			return nil, err
+		}
+		defer r.Close()
+		return io.ReadAll(r)
 	case "none":
 		return data, nil
 	default:
@@ -220,18 +212,7 @@ func decompress(data []byte, algo string) ([]byte, error) {
 	}
 }
 
-func removePadding(data []byte, offsets []int) []byte {
-	if len(offsets) == 0 {
-		return data
-	}
-	// Implementazione semplificata
-	return data
-}
-
-// trimToOriginal ritaglia il buffer decompresso alla dimensione originale del payload.
-// Quando il padding casuale è abilitato, i byte di padding vengono aggiunti prima e dopo
-// il contenuto originale. Possiamo ricostruire l'originale prendendo la slice centrale
-// di lunghezza originalSize.
+// trimToOriginal slices the decompressed buffer back to the original payload size.
 func trimToOriginal(data []byte, originalSize uint64) []byte {
 	if originalSize == 0 {
 		return data
@@ -242,39 +223,39 @@ func trimToOriginal(data []byte, originalSize uint64) []byte {
 	}
 	if total > originalSize {
 		extra := total - originalSize
-		front := int(extra / 2)
-		start := front
+		start := int(extra / 2)
 		end := start + int(originalSize)
-		if start >= 0 && end <= len(data) && end >= start {
+		if start >= 0 && end <= len(data) {
 			return data[start:end]
 		}
 	}
-	// Fallback se le dimensioni sono inattese
 	return data
 }
 
-` + elfMemfdPlaceholder + `
+// ---------- Execution ----------
 
-// executeFromTemp esegue il payload da file temporaneo
+// executeFromTemp writes the payload to a temporary executable and runs it.
+// This is the default (base_exec) strategy and the fallback for in-memory strategies.
 func executeFromTemp(payload []byte) {
 	tmp, err := os.CreateTemp("", ".tmp-*")
 	if err != nil {
 		os.Exit(1)
 	}
 	tmpPath := tmp.Name()
-	
 	tmp.Write(payload)
 	tmp.Chmod(0755)
 	tmp.Close()
-	
+
 	cmd := exec.Command(tmpPath, elfEmbeddedArgs...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
-	
 	cmd.Run()
+
 	os.Remove(tmpPath)
 }
+
+// ---------- Argument helpers ----------
 
 func parseUserParams(raw string) []string {
 	raw = strings.TrimSpace(raw)
@@ -309,14 +290,12 @@ func combineArgs(configured, runtimeArgs []string) []string {
 	if len(configured) == 0 && len(runtimeArgs) == 0 {
 		return nil
 	}
-	args := make([]string, 0, len(configured)+len(runtimeArgs))
-	args = append(args, configured...)
-	args = append(args, runtimeArgs...)
-	return args
+	out := make([]string, 0, len(configured)+len(runtimeArgs))
+	out = append(out, configured...)
+	out = append(out, runtimeArgs...)
+	return out
 }
-`
 
-// GetELFStubSource ritorna il codice sorgente dello stub ELF
-func GetELFStubSource() string {
-	return strings.Replace(ELFStubSource, elfMemfdPlaceholder, linstrat.MemfdRuntime, 1)
-}
+// Ensure syscall and unsafe are used (memfd_create strategy uses them directly).
+var _ = syscall.Exec
+var _ = unsafe.Pointer(nil)
