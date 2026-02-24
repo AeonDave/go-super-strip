@@ -2,7 +2,7 @@ package strategies
 
 import _ "embed"
 
-//go:embed runtime/memfd_runtime.go
+//go:embed memfd_runtime.go
 var memfdSource string
 
 type memfdStrategy struct{}

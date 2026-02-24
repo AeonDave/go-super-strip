@@ -5,10 +5,10 @@ import (
 	"fmt"
 )
 
-//go:embed runtime/self_injection_amd64_runtime.go
+//go:embed self_injection_amd64_runtime.go
 var selfInjectionAMD64Source string
 
-//go:embed runtime/self_injection_386_runtime.go
+//go:embed self_injection_386_runtime.go
 var selfInjection386Source string
 
 type selfInjectionStrategy struct{}

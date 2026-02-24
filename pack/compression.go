@@ -5,18 +5,11 @@ import (
 	"compress/zlib"
 	"fmt"
 	"io"
-
-	"github.com/ulikunitz/xz"
-	"github.com/ulikunitz/xz/lzma"
 )
 
 // CompressPayload comprime il payload secondo la configurazione
 func CompressPayload(data []byte, config *PackConfig) ([]byte, error) {
 	switch config.CompressionAlgorithm {
-	case "xz":
-		return compressXZ(data, config.CompressionLevel)
-	case "lzma":
-		return compressLZMA(data, config.CompressionLevel)
 	case "zlib":
 		return compressZlib(data, config.CompressionLevel)
 	case "none":
@@ -29,10 +22,6 @@ func CompressPayload(data []byte, config *PackConfig) ([]byte, error) {
 // DecompressPayload decomprime il payload
 func DecompressPayload(data []byte, algorithm string) ([]byte, error) {
 	switch algorithm {
-	case "xz":
-		return decompressXZ(data)
-	case "lzma":
-		return decompressLZMA(data)
 	case "zlib":
 		return decompressZlib(data)
 	case "none":
@@ -42,89 +31,7 @@ func DecompressPayload(data []byte, algorithm string) ([]byte, error) {
 	}
 }
 
-// compressXZ comprime con XZ/LZMA
-func compressXZ(data []byte, level int) ([]byte, error) {
-	var buf bytes.Buffer
-
-	// Configura writer XZ
-	config := xz.WriterConfig{
-		DictCap: 1 << uint(20+level), // 1MB - 512MB based on level
-	}
-
-	w, err := config.NewWriter(&buf)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create xz writer: %w", err)
-	}
-
-	if _, err := w.Write(data); err != nil {
-		return nil, fmt.Errorf("failed to write data: %w", err)
-	}
-
-	if err := w.Close(); err != nil {
-		return nil, fmt.Errorf("failed to close xz writer: %w", err)
-	}
-
-	return buf.Bytes(), nil
-}
-
-// decompressXZ decomprime XZ/LZMA
-func decompressXZ(data []byte) ([]byte, error) {
-	r, err := xz.NewReader(bytes.NewReader(data))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create xz reader: %w", err)
-	}
-
-	decompressed, err := io.ReadAll(r)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decompress: %w", err)
-	}
-
-	return decompressed, nil
-}
-
-// compressLZMA comprime con LZMA raw stream (non XZ container).
-func compressLZMA(data []byte, level int) ([]byte, error) {
-	var buf bytes.Buffer
-
-	cfg := lzma.WriterConfig{
-		DictCap: 1 << uint(20+level), // 1 MB – 512 MB secondo il livello
-	}
-	if err := cfg.Verify(); err != nil {
-		return nil, fmt.Errorf("invalid lzma config: %w", err)
-	}
-
-	w, err := cfg.NewWriter(&buf)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create lzma writer: %w", err)
-	}
-
-	if _, err := w.Write(data); err != nil {
-		return nil, fmt.Errorf("failed to write lzma data: %w", err)
-	}
-
-	if err := w.Close(); err != nil {
-		return nil, fmt.Errorf("failed to close lzma writer: %w", err)
-	}
-
-	return buf.Bytes(), nil
-}
-
-// decompressLZMA decomprime uno stream LZMA raw.
-func decompressLZMA(data []byte) ([]byte, error) {
-	r, err := lzma.NewReader(bytes.NewReader(data))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create lzma reader: %w", err)
-	}
-
-	decompressed, err := io.ReadAll(r)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decompress lzma: %w", err)
-	}
-
-	return decompressed, nil
-}
-
-// compressZlib comprime con zlib (fallback se xz non disponibile)
+// compressZlib comprime con zlib.
 func compressZlib(data []byte, level int) ([]byte, error) {
 	var buf bytes.Buffer
 

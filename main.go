@@ -15,7 +15,7 @@ import (
 	"strings"
 )
 
-const defaultPackOptions = "compression=lzma,level=9,encryption=chacha20"
+const defaultPackOptions = "compression=zlib,level=9,encryption=chacha20"
 
 type feature string
 

@@ -5,19 +5,19 @@ This document describes the `-p` packer, its options, and how the polymorphic st
 ## 1. CLI Grammar
 
 ```
--p=compression=xz,encryption=aes-256-gcm,polymorphic=true,inmemory=auto
+-p=compression=zlib,encryption=aes-256-gcm,polymorphic=true,inmemory=auto
 ```
 
 Options (comma-separated key/value pairs):
 
 | Option | Values | Description |
 |--------|--------|-------------|
-| `compression` | `xz`, `lzma`, `zlib`, `none` | Algorithm used before encryption. |
+| `compression` | `zlib`, `none` | Algorithm used before encryption. |
 | `encryption` | `aes-256-gcm`, `chacha20`, `none` | Protects payload at rest. |
 | `polymorphic` | `true/false` | Picks a random stub variant and randomizes control flow. |
 | `inmemory` | `off`, `auto`, `memfd`, `process_hollowing`, `atomic_bombing`, `early_bird`, `early_bird_atomic_bombing`, `process_doppelganging`, `transacted_hollowing`, `self_injection`, `nt_syscall_reflective`, `reflective_loader` | Linux supports `memfd`; Windows exposes the full set. `auto` picks the safest strategy per platform and payload architecture (32-bit payloads default to `self_injection`). |
 | `padding` | `true/false` | Adds junk data to the stub. |
-| `level` | `1-9` | Compression effort (xz/lzma only). |
+| `level` | `0-9` | Compression effort (zlib only). |
 
 Packing mutates the working file unless an explicit `<output>` path is supplied.
 

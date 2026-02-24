@@ -1,7 +1,6 @@
 package pack
 
 import (
-	"bytes"
 	_ "embed"
 	"fmt"
 	"os"
@@ -12,10 +11,10 @@ import (
 	"gosstrip/pack/strategies"
 )
 
-//go:embed strategies/runtime/pe_base_runtime.go
+//go:embed strategies/pe_base_runtime.go
 var peBaseGoSource string
 
-//go:embed strategies/runtime/elf_base_runtime.go
+//go:embed strategies/elf_base_runtime.go
 var elfBaseGoSource string
 
 // GetPEBaseSource returns the PE stub base runtime source with the
@@ -113,7 +112,7 @@ func CompileStub(config *PackConfig, metadata *PayloadMetadata, payload []byte) 
 	}
 
 	// ── Write go.mod ─────────────────────────────────────────────────────────
-	goModContent := "module stub\ngo 1.24\n\nrequire (\n\tgithub.com/ulikunitz/xz v0.5.15\n\tgolang.org/x/crypto v0.47.0\n)\n"
+	goModContent := "module stub\ngo 1.24\n\nrequire (\n\tgolang.org/x/crypto v0.47.0\n)\n"
 	if err := os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(goModContent), 0644); err != nil {
 		return nil, fmt.Errorf("failed to write go.mod: %w", err)
 	}
@@ -121,14 +120,14 @@ func CompileStub(config *PackConfig, metadata *PayloadMetadata, payload []byte) 
 	// ── Download dependencies ─────────────────────────────────────────────────
 	modTidy := exec.Command("go", "mod", "tidy")
 	modTidy.Dir = tmpDir
-	var modErr bytes.Buffer
-	modTidy.Stderr = &modErr
 	modTidy.Env = append(os.Environ(),
+		"GOWORK=off",
+		"CGO_ENABLED=0",
 		fmt.Sprintf("GOOS=%s", targetOS),
 		fmt.Sprintf("GOARCH=%s", targetArch),
 	)
-	if err := modTidy.Run(); err != nil {
-		return nil, fmt.Errorf("go mod tidy: %w\n%s", err, modErr.String())
+	if out, err := modTidy.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("go mod tidy: %w\n%s", err, string(out))
 	}
 
 	// ── Compile stub ─────────────────────────────────────────────────────────
@@ -143,20 +142,20 @@ func CompileStub(config *PackConfig, metadata *PayloadMetadata, payload []byte) 
 	}
 
 	cmd := exec.Command("go", "build",
+		"-trimpath",
 		"-ldflags", ldflags,
 		"-o", outputPath,
 		".",
 	)
 	cmd.Dir = tmpDir
 	cmd.Env = append(os.Environ(),
+		"GOWORK=off",
+		"CGO_ENABLED=0",
 		fmt.Sprintf("GOOS=%s", targetOS),
 		fmt.Sprintf("GOARCH=%s", targetArch),
 	)
-
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("compile stub: %w\n%s", err, stderr.String())
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("compile stub: %w\n%s", err, string(out))
 	}
 
 	// ── Read compiled binary ──────────────────────────────────────────────────

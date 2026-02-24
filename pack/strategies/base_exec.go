@@ -2,7 +2,7 @@ package strategies
 
 import _ "embed"
 
-//go:embed runtime/base_exec_runtime.go
+//go:embed base_exec_runtime.go
 var baseExecSource string
 
 type baseExecStrategy struct{}

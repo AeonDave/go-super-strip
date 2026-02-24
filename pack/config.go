@@ -17,12 +17,20 @@ var knownStrategies = map[string]bool{
 	"self_injection":    true,
 	"process_hollowing": true,
 	"memfd":             true,
+	// Compatibility aliases (currently share runtime code with existing strategies).
+	"atomic_bombing":            true,
+	"early_bird":                true,
+	"early_bird_atomic_bombing": true,
+	"process_doppelganging":     true,
+	"transacted_hollowing":      true,
+	"nt_syscall_reflective":     true,
+	"reflective_loader":         true,
 }
 
 // PackConfig rappresenta la configurazione per il packing
 type PackConfig struct {
 	// Compressione
-	CompressionAlgorithm string // "xz", "lzma", "none"
+	CompressionAlgorithm string // "zlib", "none"
 	CompressionLevel     int    // 0-9 (0=veloce, 9=massima compressione)
 
 	// Cifratura
@@ -54,7 +62,7 @@ type PackConfig struct {
 // DefaultConfig ritorna una configurazione di default
 func DefaultConfig() *PackConfig {
 	return &PackConfig{
-		CompressionAlgorithm: "xz",
+		CompressionAlgorithm: "zlib",
 		CompressionLevel:     6,
 		EncryptionAlgorithm:  "aes-256-gcm",
 		PolymorphicStub:      true,
@@ -161,10 +169,10 @@ func (c *PackConfig) setOption(key, value string) error {
 func (c *PackConfig) Validate() error {
 	// Valida compressione
 	validComp := map[string]bool{
-		"xz": true, "zlib": true, "none": true,
+		"zlib": true, "none": true,
 	}
 	if !validComp[c.CompressionAlgorithm] {
-		return fmt.Errorf("invalid compression algorithm: %s (valid: xz, zlib, none)", c.CompressionAlgorithm)
+		return fmt.Errorf("invalid compression algorithm: %s (valid: zlib, none)", c.CompressionAlgorithm)
 	}
 
 	// Valida livello compressione

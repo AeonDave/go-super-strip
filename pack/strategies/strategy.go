@@ -97,9 +97,17 @@ func Resolve(name, platform string) (Strategy, error) {
 // runtime source files so they are excluded from the host module's compilation.
 // The returned string is a valid Go source file ready to be written to disk.
 func StripBuildIgnoreTag(src string) string {
-	const tag = "//go:build ignore\n\n"
-	if strings.HasPrefix(src, tag) {
-		return src[len(tag):]
+	// Note: on Windows, repositories are often checked out with CRLF line endings.
+	// The embedded runtime sources must have the build tag stripped regardless.
+	const (
+		tagLF   = "//go:build ignore\n\n"
+		tagCRLF = "//go:build ignore\r\n\r\n"
+	)
+	if strings.HasPrefix(src, tagCRLF) {
+		return src[len(tagCRLF):]
+	}
+	if strings.HasPrefix(src, tagLF) {
+		return src[len(tagLF):]
 	}
 	return src
 }

@@ -5,10 +5,10 @@ import (
 	"fmt"
 )
 
-//go:embed runtime/process_hollowing_amd64_runtime.go
+//go:embed process_hollowing_amd64_runtime.go
 var processHollowingAMD64Source string
 
-//go:embed runtime/process_hollowing_386_runtime.go
+//go:embed process_hollowing_386_runtime.go
 var processHollowing386Source string
 
 type processHollowingStrategy struct{}

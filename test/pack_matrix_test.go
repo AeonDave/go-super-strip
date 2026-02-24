@@ -18,7 +18,7 @@ func TestPEPackingMatrix(t *testing.T) {
 	t.Setenv("GOSSTRIP_TEST_STUB", "")
 
 	fixture := buildProbeFixture(t, "windows", "probe.exe")
-	compressions := []string{"xz", "lzma", "none"}
+	compressions := []string{"zlib", "none"}
 	encryption := []string{"aes-256-gcm", "chacha20", "none"}
 	inmemory := []string{
 		"off",
@@ -58,7 +58,7 @@ func TestELFPackingMatrix(t *testing.T) {
 	t.Setenv("GOSSTRIP_TEST_STUB", "")
 
 	fixture := buildProbeFixture(t, "linux", "probe")
-	compressions := []string{"xz", "lzma", "none"}
+	compressions := []string{"zlib", "none"}
 	encryption := []string{"aes-256-gcm", "chacha20", "none"}
 	inmemory := []string{"off", "auto", "memfd"}
 

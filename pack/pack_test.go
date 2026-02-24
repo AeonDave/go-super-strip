@@ -76,56 +76,6 @@ func TestCompressPayload_None(t *testing.T) {
 	}
 }
 
-func TestCompressPayload_XZ(t *testing.T) {
-	config := DefaultConfig()
-	config.CompressionAlgorithm = "xz"
-	config.CompressionLevel = 6
-
-	data := bytes.Repeat([]byte("test data "), 100)
-	compressed, err := CompressPayload(data, config)
-
-	if err != nil {
-		t.Fatalf("CompressPayload failed: %v", err)
-	}
-
-	if len(compressed) >= len(data) {
-		t.Logf("Warning: compressed size %d >= original %d (data may not be compressible)", len(compressed), len(data))
-	}
-
-	// Test decompression
-	decompressed, err := DecompressPayload(compressed, config.CompressionAlgorithm)
-	if err != nil {
-		t.Fatalf("DecompressPayload failed: %v", err)
-	}
-
-	if !bytes.Equal(decompressed, data) {
-		t.Error("Decompressed data doesn't match original")
-	}
-}
-
-func TestCompressPayload_LZMA(t *testing.T) {
-	config := DefaultConfig()
-	config.CompressionAlgorithm = "lzma"
-	config.CompressionLevel = 6
-
-	data := bytes.Repeat([]byte("test data "), 100)
-	compressed, err := CompressPayload(data, config)
-
-	if err != nil {
-		t.Fatalf("CompressPayload failed: %v", err)
-	}
-
-	// Test decompression
-	decompressed, err := DecompressPayload(compressed, config.CompressionAlgorithm)
-	if err != nil {
-		t.Fatalf("DecompressPayload failed: %v", err)
-	}
-
-	if !bytes.Equal(decompressed, data) {
-		t.Error("Decompressed data doesn't match original")
-	}
-}
-
 func TestCompressPayload_Zlib(t *testing.T) {
 	config := DefaultConfig()
 	config.CompressionAlgorithm = "zlib"

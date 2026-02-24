@@ -149,7 +149,7 @@ Flow (ASCII, ELF)
 The packer rewrites the binary into a self-extracting Go stub plus encrypted payload.
 
 **Compression & Encryption**
-- `compression=xz|zlib|none` (alias `comp`) and `level=0-9` (ignored when compression is `none`).
+- `compression=zlib|none` (alias `comp`) and `level=0-9` (ignored when compression is `none`).
 - `encryption=xor|aes-256-gcm|chacha20|none` (aliases `encrypt`, `encr`). AES/ChaCha automatically create keys/nonces when none are provided. Accepted aliases for algorithms: `aes`, `aes-gcm`, `aes256` → `aes-256-gcm`; `chacha`, `chacha20poly1305` → `chacha20`.
 
 **Polymorphism & Noise**
@@ -217,7 +217,7 @@ gosstrip -el=password=overlaypass beacon.bin overlay_dump.bin
 ```bash
 gosstrip -s -c -o -r=pattern='UPX!' -i=name=.intel,data=SECRET \
         -l=file=loot.bin,password=stash \
-        -p=compression=xz,encryption=chacha20,polymorphic=true,inmemory=memfd \
+        -p=compression=zlib,encryption=chacha20,polymorphic=true,inmemory=memfd \
         agent.bin agent.packed
 ```
 
