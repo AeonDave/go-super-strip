@@ -6,7 +6,6 @@ import (
 
 	"gosstrip/common"
 	"gosstrip/elfrw"
-	"gosstrip/pack"
 )
 
 func TestELFPipelineOperations(t *testing.T) {
@@ -52,18 +51,6 @@ func TestELFPipelineOperations(t *testing.T) {
 	requireApplied(t, "overlay", elfrw.OverlayELF(elfPath, overlayPayload, ""))
 	ensureBytesPresence(t, elfPath, overlayPayload, "overlay append", true)
 	assertAnalysisLooksComprehensive(t, analyze(), "post-overlay analyze")
-
-	runELFBinary(t, elfPath)
-
-	packOpts := "compression=zlib,encryption=chacha20,polymorphic=true,padding=true,inmemory=auto"
-	if err := pack.Pack(elfPath, packOpts, elfPath); err != nil {
-		if isStubCompileError(err) {
-			t.Skipf("pack skipped (stub compile failed): %v", err)
-		}
-		t.Fatalf("pack.Pack failed: %v", err)
-	}
-
-	assertAnalysisLooksComprehensive(t, analyze(), "post-pack analyze")
 
 	runELFBinary(t, elfPath)
 }

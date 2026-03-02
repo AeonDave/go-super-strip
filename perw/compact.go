@@ -418,7 +418,7 @@ func (p *PEFile) sectionRemoval(force bool, keepResources bool) (*common.Operati
 	// IMPORTANT: Skip overlay trimming for packed binaries - packers like UPX store
 	// compressed data in the overlay region that extends beyond the last section.
 	trimmedOverlay := int64(0)
-	if err2 == nil && !p.IsPacked {
+	if err2 == nil && force && !p.IsPacked {
 		// Read Security directory entry (index 4)
 		var dataDirsBase int64
 		if p.Is64Bit {

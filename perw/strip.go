@@ -81,7 +81,7 @@ func (p *PEFile) StripByPattern(pattern *regexp.Regexp, fillMode FillMode, force
 		totalMatches++
 	}
 
-	if totalMatches > 0 {
+	if totalMatches > 0 && force {
 		p.trimZeroTailBeyond(p.maxSectionDataEnd())
 	}
 
@@ -748,6 +748,19 @@ type sectionRange struct {
 func (p *PEFile) buildProtectedRegexRanges() []sectionRange {
 	ranges := make([]sectionRange, 0, 8)
 
+	// Preserve DOS/NT headers and section table in safe mode.
+	// Accidental regex hits here can invalidate offsets/sizes and break loading.
+	headersEnd := int(p.sizeOfHeaders)
+	if headersEnd <= 0 {
+		headersEnd = 0x600 // conservative fallback for common PE header span
+	}
+	if headersEnd > len(p.RawData) {
+		headersEnd = len(p.RawData)
+	}
+	if headersEnd > 0 {
+		ranges = append(ranges, sectionRange{start: 0, end: headersEnd})
+	}
+
 	// Protect a small window around the entrypoint stub (executed loader code).
 	if epRVA, err := p.GetEntryPoint(); err == nil && epRVA != 0 {
 		if phys, err := p.rvaToPhysical(uint64(epRVA)); err == nil {
@@ -818,6 +831,24 @@ func (p *PEFile) buildProtectedRegexRanges() []sectionRange {
 func (p *PEFile) buildProtectedRegexRangesForPattern(pattern *regexp.Regexp) []sectionRange {
 	// Start with the default protected ranges.
 	ranges := p.buildProtectedRegexRanges()
+
+	// In safe mode, protect overlay bytes for broad/default rules. Keep explicit
+	// literal user patterns flexible so callers can intentionally scrub a known
+	// tail marker they added.
+	if !isLikelyLiteralPattern(pattern) && p.HasOverlay && p.OverlaySize > 0 {
+		start := int(p.OverlayOffset)
+		end := start + int(p.OverlaySize)
+		if start < 0 {
+			start = 0
+		}
+		if end > len(p.RawData) {
+			end = len(p.RawData)
+		}
+		if start < end {
+			ranges = append(ranges, sectionRange{start: start, end: end})
+		}
+	}
+
 	// For UPX header patterns, allow matches inside packed payload to restore previous behavior.
 	// We still protect entrypoint and import ranges.
 	if isUPXHeaderPattern(pattern) {
@@ -880,6 +911,15 @@ func isUPXHeaderPattern(pattern *regexp.Regexp) bool {
 	return false
 }
 
+func isLikelyLiteralPattern(pattern *regexp.Regexp) bool {
+	if pattern == nil {
+		return false
+	}
+	s := pattern.String()
+	// If no regex metacharacters are present, this is effectively a literal token.
+	return !strings.ContainsAny(s, `.^$*+?()[]{}|\\`)
+}
+
 func rangesOverlap(ranges []sectionRange, start, end int) bool {
 	for _, r := range ranges {
 		if start < r.end && end > r.start {
@@ -935,25 +975,13 @@ func (p *PEFile) fixCOFFHeaderAfterStripping() error {
 	if symbolTableOffset == 0 && numberOfSymbols == 0 {
 		return nil
 	}
-	stringTableCorrupted := false
-	if symbolTableOffset > 0 && numberOfSymbols > 0 {
-		stringTableOffset := int64(symbolTableOffset) + int64(numberOfSymbols)*18
-		if stringTableOffset+4 > int64(len(p.RawData)) {
-			stringTableCorrupted = true
-		} else {
-			stringTableSize := binary.LittleEndian.Uint32(p.RawData[stringTableOffset : stringTableOffset+4])
-			if stringTableOffset+int64(stringTableSize) > int64(len(p.RawData)) {
-				stringTableCorrupted = true
-			}
-		}
+	// Symbol/string table payload has been stripped from section data; keeping COFF
+	// pointers can leave the image in an inconsistent state for strict parsers.
+	if err := WriteAtOffset(p.RawData, coffHeaderOffset+8, uint32(0)); err != nil {
+		return err
 	}
-	if stringTableCorrupted {
-		if err := WriteAtOffset(p.RawData, coffHeaderOffset+8, uint32(0)); err != nil {
-			return err
-		}
-		if err := WriteAtOffset(p.RawData, coffHeaderOffset+12, uint32(0)); err != nil {
-			return err
-		}
+	if err := WriteAtOffset(p.RawData, coffHeaderOffset+12, uint32(0)); err != nil {
+		return err
 	}
 	return nil
 }

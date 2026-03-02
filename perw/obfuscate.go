@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"gosstrip/common"
 	"strings"
-	"time"
 )
 
 const (
@@ -57,11 +56,10 @@ func (p *PEFile) ObfuscateAll(force bool) *common.OperationResult {
 	pipeline.AddStep("executable padding", func() (*common.OperationResult, error) {
 		return p.ObfuscateExecutablePadding(force), nil
 	})
-	if force {
-		pipeline.AddStep("debug directory", func() (*common.OperationResult, error) {
-			return p.InjectDebugDirectoryNoise(), nil
-		})
-	}
+	// InjectDebugDirectoryNoise removed: injecting fake CodeView RSDS records with
+	// random GUIDs and fabricated PDB paths creates detectable anomalies. AV/EDR
+	// engines check RSDS GUID consistency and flag synthetic debug entries.
+	// Debug directory stripping (in strip.go) is sufficient.
 
 	if err := pipeline.Execute(result); err != nil {
 		return common.NewSkipped(fmt.Sprintf("failed to obfuscate PE: %v", err))
@@ -92,18 +90,11 @@ func (p *PEFile) ObfuscateSectionNames() *common.OperationResult {
 		return common.NewSkipped("no sections found")
 	}
 
-	realisticNames := []string{
-		".text", ".data", ".rdata", ".pdata", ".rsrc", ".reloc",
-		".idata", ".edata", ".tls", ".debug", ".bss", ".const",
-		".code", ".init", ".fini", ".rodata", ".ctors", ".dtors",
-		".xdata", ".sdata", ".udata", ".vdata", ".zdata", ".ndata",
-		".cinit", ".dinit", ".mdata", ".tdata", ".edata2", ".rdata2",
-		".bdata", ".idata2", ".pdata2", ".sinit", ".fdata", ".gdata",
-		".hdata", ".idata3", ".reloc2", ".rsrc2", ".debug2", ".tls2",
-	}
-
-	var renamedSections []string
-	usedNames := make(map[string]bool)
+	// Wipe section names to NULL bytes (Astral-PE approach).
+	// This removes identifiable section names without introducing synthetic names
+	// that could be fingerprinted by AV/EDR heuristics. NULL-named sections are
+	// valid per the PE specification and are produced by several legitimate tools.
+	var wipedSections []string
 
 	for i := 0; i < offsets.NumberOfSections; i++ {
 		sectionHeaderOffset := offsets.FirstSectionHdr + int64(i*PE_SECTION_HEADER_SIZE)
@@ -118,50 +109,26 @@ func (p *PEFile) ObfuscateSectionNames() *common.OperationResult {
 			originalName = p.Sections[i].Name
 		}
 
-		var newName string
-		for attempts := 0; attempts < 10; attempts++ {
-			randBytes, err := common.GenerateRandomBytes(1)
-			if err != nil {
-				return common.NewSkipped(fmt.Sprintf("failed to generate random name for section %d: %v", i, err))
-			}
-
-			candidateName := realisticNames[randBytes[0]%byte(len(realisticNames))]
-			if !usedNames[candidateName] {
-				newName = candidateName
-				usedNames[candidateName] = true
-				break
-			}
+		// Zero the section name field
+		for b := int64(0); b < PE_SECTION_NAME_SIZE; b++ {
+			p.RawData[sectionNameOffset+b] = 0
 		}
-
-		if newName == "" {
-			randBytes, err := common.GenerateRandomBytes(5)
-			if err != nil {
-				return common.NewSkipped(fmt.Sprintf("failed to generate random name for section %d: %v", i, err))
-			}
-			for j := range randBytes {
-				randBytes[j] = 'a' + (randBytes[j] % 26)
-			}
-			newName = "." + string(randBytes[:4+int(randBytes[4]%4)])
-		}
-
-		newNameBytes := make([]byte, PE_SECTION_NAME_SIZE)
-		copy(newNameBytes, newName)
-		copy(p.RawData[sectionNameOffset:sectionNameOffset+PE_SECTION_NAME_SIZE], newNameBytes)
 
 		// Update internal structure
 		if i < len(p.Sections) {
-			p.Sections[i].Name = strings.TrimRight(string(newNameBytes), "\x00")
+			p.Sections[i].Name = ""
 		}
 
 		if originalName != "" {
-			renamedSections = append(renamedSections, fmt.Sprintf("%s→%s", originalName, newName))
-		} else {
-			renamedSections = append(renamedSections, newName)
+			wipedSections = append(wipedSections, fmt.Sprintf("%s→(null)", originalName))
 		}
 	}
 
-	message := fmt.Sprintf("renamed %d sections: %s", len(renamedSections), strings.Join(renamedSections, ", "))
-	return common.NewApplied(message, len(renamedSections))
+	if len(wipedSections) == 0 {
+		return common.NewSkipped("no section names to wipe")
+	}
+	message := fmt.Sprintf("wiped %d section names: %s", len(wipedSections), strings.Join(wipedSections, ", "))
+	return common.NewApplied(message, len(wipedSections))
 }
 
 func (p *PEFile) ObfuscateSectionPadding() *common.OperationResult {
@@ -189,11 +156,12 @@ func (p *PEFile) ObfuscateSectionPadding() *common.OperationResult {
 }
 
 func (p *PEFile) ObfuscateRuntimeStrings() *common.OperationResult {
-	stringReplacements := map[string]string{
-		"fprintf":   "foutput",   // 7 byte -> 7 byte
-		"printf":    "output",    // 6 byte -> 6 byte
-		"libgcc2.c": "libsys2.c", // 9 byte -> 9 byte
-		"WinMain":   "AppMain",   // 7 byte -> 7 byte
+	// Zero-fill identifiable runtime strings instead of replacing them with fixed
+	// substitutions (e.g. fprintf→foutput). Fixed replacements create a unique
+	// fingerprint for this tool that AV vendors can signature. Zeroing is safer
+	// and what standard strippers do.
+	targetStrings := []string{
+		"fprintf", "printf", "libgcc2.c", "WinMain",
 	}
 
 	modifications := 0
@@ -206,21 +174,18 @@ func (p *PEFile) ObfuscateRuntimeStrings() *common.OperationResult {
 		}
 
 		data, err := p.ReadBytes(section.Offset, int(section.Size))
-		if err != nil || len(data) < 3 { // min len for \x00s\x00
+		if err != nil || len(data) < 3 {
 			continue
 		}
 
 		sectionModified := false
-		for original, replacement := range stringReplacements {
-			originalBytes := []byte(original)
-			replacementBytes := []byte(replacement)
+		for _, target := range targetStrings {
+			targetBytes := []byte(target)
+			zeroBytes := make([]byte, len(targetBytes))
 
-			if len(originalBytes) != len(replacementBytes) {
-				continue
-			}
-
-			searchPattern := append(append([]byte{0}, originalBytes...), 0)
-			replacementPattern := append(append([]byte{0}, replacementBytes...), 0)
+			// Search for null-terminated occurrences: \x00target\x00
+			searchPattern := append(append([]byte{0}, targetBytes...), 0)
+			replacementPattern := append(append([]byte{0}, zeroBytes...), 0)
 
 			if bytes.Contains(data, searchPattern) {
 				tempData := bytes.ReplaceAll(data, searchPattern, replacementPattern)
@@ -239,10 +204,10 @@ func (p *PEFile) ObfuscateRuntimeStrings() *common.OperationResult {
 	}
 
 	if modifications == 0 {
-		return common.NewSkipped("nessuna stringa di runtime mirata trovata per l'offuscamento")
+		return common.NewSkipped("no runtime strings found for obfuscation")
 	}
 
-	message := fmt.Sprintf("offuscati %d tipi di stringhe nelle sezioni: %s", modifications, strings.Join(modifiedSections, ", "))
+	message := fmt.Sprintf("zeroed %d runtime string patterns in sections: %s", modifications, strings.Join(modifiedSections, ", "))
 	return common.NewApplied(message, modifications)
 }
 
@@ -256,25 +221,25 @@ func (p *PEFile) ObfuscateHeaderMetadata(force bool) *common.OperationResult {
 	if err := p.validateOffset(timeStampOffset, 4); err != nil {
 		return common.NewSkipped("TimeDateStamp field not accessible")
 	}
-	tsBytes, err := common.GenerateRandomBytes(4)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to generate timestamp: %v", err))
-	}
-	tsValue := binary.LittleEndian.Uint32(tsBytes)
-	_ = WriteAtOffset(p.RawData, timeStampOffset, tsValue)
+	// Zero the timestamp instead of randomizing. Zeroed timestamps are common in
+	// deterministic/release builds and don't trigger ML-based anomaly detectors
+	// that flag unrealistic random values. Astral-PE uses the same approach.
+	_ = WriteAtOffset(p.RawData, timeStampOffset, uint32(0))
 
 	linkerMajor := offsets.OptionalHeader + 2
 	linkerMinor := offsets.OptionalHeader + 3
 	if err := p.validateOffset(linkerMajor, 2); err != nil {
 		return common.NewSkipped("linker version fields not accessible")
 	}
-	linkBytes, _ := common.GenerateRandomBytes(2)
-	_ = WriteAtOffset(p.RawData, linkerMajor, linkBytes[0])
-	_ = WriteAtOffset(p.RawData, linkerMinor, linkBytes[1])
+	// Zero linker version instead of randomizing. Random values like 237.42 don't
+	// correspond to any real toolchain and create statistical anomalies in ML
+	// classifiers trained on legitimate PE field distributions.
+	_ = WriteAtOffset(p.RawData, linkerMajor, byte(0))
+	_ = WriteAtOffset(p.RawData, linkerMinor, byte(0))
 
 	var messages []string
-	messages = append(messages, fmt.Sprintf("randomized PE timestamp to 0x%X", tsValue))
-	messages = append(messages, fmt.Sprintf("set linker version to %d.%d", linkBytes[0], linkBytes[1]))
+	messages = append(messages, "zeroed PE timestamp")
+	messages = append(messages, "zeroed linker version")
 
 	is64 := p.Is64Bit
 	if force {
@@ -423,95 +388,12 @@ func (p *PEFile) shuffleThunkArray(rva uint32, entrySize int) bool {
 	return true
 }
 
+// InjectDebugDirectoryNoise is deprecated and now always returns a skip result.
+// Injecting fake CodeView RSDS records with random GUIDs and fabricated PDB paths
+// creates detectable anomalies that AV/EDR engines flag. Debug directory stripping
+// (via StripAll) is the preferred approach.
 func (p *PEFile) InjectDebugDirectoryNoise() *common.OperationResult {
-	offsets, err := p.calculateOffsets()
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to calculate offsets: %v", err))
-	}
-	debugDirOffset := offsets.OptionalHeader + directoryOffsets.debug[p.Is64Bit]
-	if err := p.validateOffset(debugDirOffset, 8); err != nil {
-		return common.NewSkipped("debug directory not accessible")
-	}
-	dirRVA := binary.LittleEndian.Uint32(p.RawData[debugDirOffset:])
-	dirSize := binary.LittleEndian.Uint32(p.RawData[debugDirOffset+4:])
-	const entrySize = 28
-	if dirRVA == 0 || dirSize < entrySize {
-		return common.NewSkipped("debug directory absent")
-	}
-	var existing [][]byte
-	if phys, err := p.rvaToPhysical(uint64(dirRVA)); err == nil {
-		maxBytes := int(dirSize / entrySize * entrySize)
-		if int(phys)+maxBytes <= len(p.RawData) {
-			for i := 0; i < maxBytes; i += entrySize {
-				entry := append([]byte(nil), p.RawData[int(phys)+i:int(phys)+i+entrySize]...)
-				existing = append(existing, entry)
-			}
-		}
-	}
-
-	cvRecord := p.buildCodeViewRecord()
-	recordOffset := uint32(len(p.RawData))
-	p.RawData = append(p.RawData, cvRecord...)
-	for len(p.RawData)%4 != 0 {
-		p.RawData = append(p.RawData, 0)
-	}
-
-	recordRVA, err := p.physicalToRVA(recordOffset)
-	if err != nil {
-		return common.NewSkipped("debug directory unavailable (cannot map CodeView RVA)")
-	}
-
-	desc := make([]byte, entrySize)
-	timeStamp := uint32(time.Now().Unix())
-	binary.LittleEndian.PutUint32(desc[4:], timeStamp)
-	binary.LittleEndian.PutUint16(desc[8:], 0)
-	binary.LittleEndian.PutUint16(desc[10:], 0)
-	binary.LittleEndian.PutUint32(desc[12:], IMAGE_DEBUG_TYPE_CODEVIEW)
-	binary.LittleEndian.PutUint32(desc[16:], uint32(len(cvRecord)))
-	binary.LittleEndian.PutUint32(desc[20:], recordRVA)
-	binary.LittleEndian.PutUint32(desc[24:], recordOffset)
-
-	newEntries := append(existing, desc)
-	dirBlock := make([]byte, len(newEntries)*entrySize)
-	for i, e := range newEntries {
-		copy(dirBlock[i*entrySize:(i+1)*entrySize], e)
-	}
-	dirOffset := uint32(len(p.RawData))
-	p.RawData = append(p.RawData, dirBlock...)
-
-	dirRVA, err = p.physicalToRVA(dirOffset)
-	if err != nil {
-		return common.NewSkipped("debug directory unavailable (cannot map RVA)")
-	}
-	binary.LittleEndian.PutUint32(p.RawData[debugDirOffset:], dirRVA)
-	binary.LittleEndian.PutUint32(p.RawData[debugDirOffset+4:], uint32(len(dirBlock)))
-
-	return common.NewApplied("injected fake CodeView debug directory entry", 1)
-}
-
-func (p *PEFile) buildCodeViewRecord() []byte {
-	var buf bytes.Buffer
-	buf.Write([]byte{'R', 'S', 'D', 'S'})
-	guidBytes, _ := common.GenerateRandomBytes(16)
-	buf.Write(guidBytes)
-	ageBytes, _ := common.GenerateRandomBytes(4)
-	buf.Write(ageBytes)
-	buf.WriteString(fmt.Sprintf("C:\\builds\\%s\\fake_%s.pdb", randomAscii(6), randomAscii(8)))
-	buf.WriteByte(0)
-	for buf.Len()%4 != 0 {
-		buf.WriteByte(0)
-	}
-	return buf.Bytes()
-}
-
-func randomAscii(n int) string {
-	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
-	randomBytes, _ := common.GenerateRandomBytes(n)
-	out := make([]byte, n)
-	for i := 0; i < n; i++ {
-		out[i] = alphabet[int(randomBytes[i])%len(alphabet)]
-	}
-	return string(out)
+	return common.NewSkipped("debug directory noise injection disabled (creates detectable anomalies)")
 }
 
 func (p *PEFile) ObfuscateExecutablePadding(force bool) *common.OperationResult {

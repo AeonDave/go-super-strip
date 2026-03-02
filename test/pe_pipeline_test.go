@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"gosstrip/common"
-	"gosstrip/pack"
 	"gosstrip/perw"
 )
 
@@ -53,18 +52,6 @@ func TestPEPipelineOperations(t *testing.T) {
 	requireApplied(t, "overlay", perw.OverlayPE(pePath, overlayPayload, ""))
 	ensureBytesPresence(t, pePath, overlayPayload, "overlay append", true)
 	assertAnalysisLooksComprehensive(t, analyze(), "post-overlay analyze")
-
-	runPEBinary(t, pePath)
-
-	packOpts := "compression=zlib,encryption=aes-256-gcm,polymorphic=true,padding=true,inmemory=auto"
-	if err := pack.Pack(pePath, packOpts, pePath); err != nil {
-		if isStubCompileError(err) {
-			t.Skipf("pack skipped (stub compile failed): %v", err)
-		}
-		t.Fatalf("pack.Pack failed: %v", err)
-	}
-
-	assertAnalysisLooksComprehensive(t, analyze(), "post-pack analyze")
 
 	runPEBinary(t, pePath)
 }

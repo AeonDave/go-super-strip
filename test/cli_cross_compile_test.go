@@ -171,17 +171,6 @@ func TestCLIOptionsOnCompiledFixtures(t *testing.T) {
 			},
 		},
 		{
-			Name: "pack",
-			Args: []string{"-p=compression=none,encryption=none,polymorphic=false,padding=false"},
-			Verify: func(t *testing.T, fixture compiledFixture, binaryPath string, output string) {
-				assertContains(t, output, "• pack:")
-				data := readFile(t, binaryPath)
-				if !bytes.HasPrefix(data, []byte(testStubPrefix)) {
-					t.Fatalf("expected packed stub to start with %q, got %q", testStubPrefix, data[:min(16, len(data))])
-				}
-			},
-		},
-		{
 			Name: "pipeline",
 			Args: []string{
 				"-s",
@@ -464,7 +453,7 @@ func buildCSource(t *testing.T, baseName, targetOS string) string {
 
 func copyBinary(t *testing.T, src string) string {
 	t.Helper()
-	dstDir, err := os.MkdirTemp("", "gosstrip-pack-matrix-")
+	dstDir, err := os.MkdirTemp("", "gosstrip-cli-matrix-")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}

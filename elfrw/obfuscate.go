@@ -40,6 +40,8 @@ func getPAddrOffset(is64bit bool) uint64 {
 	return ELF32_P_PADDR // p_paddr offset in 32-bit program header
 }
 
+// generateSyntheticSectionName is retained for backward compatibility but no longer
+// used by default. Section name obfuscation now wipes names to empty strings.
 func generateSyntheticSectionName(used map[string]bool) (string, error) {
 	const maxAttempts = 64
 	for attempts := 0; attempts < maxAttempts; attempts++ {
@@ -121,8 +123,11 @@ func (e *ELFFile) obfuscateSectionNames() *common.OperationResult {
 		return common.NewSkipped("no sections found to obfuscate")
 	}
 
-	var renamedSectionsLog []string
-	usedNames := make(map[string]bool)
+	// Wipe section names to empty strings instead of generating synthetic hex names
+	// like .sec0a1b2c which are immediately identifiable as obfuscated. Empty/null
+	// section names are valid per the ELF specification and resemble the output of
+	// aggressive strip tools (e.g. sstrip removes the section header table entirely).
+	var wipedSectionsLog []string
 
 	for i := range e.Sections {
 		if e.Sections[i].Index == SHT_NULL {
@@ -135,25 +140,21 @@ func (e *ELFFile) obfuscateSectionNames() *common.OperationResult {
 		if oldName == "" {
 			continue
 		}
-		newName, err := generateSyntheticSectionName(usedNames)
-		if err != nil {
-			return common.NewSkipped(fmt.Sprintf("failed to generate section alias for %s: %v", oldName, err))
-		}
-		e.Sections[i].Name = newName
-		renamedSectionsLog = append(renamedSectionsLog, fmt.Sprintf("%s→%s", oldName, newName))
+		e.Sections[i].Name = ""
+		wipedSectionsLog = append(wipedSectionsLog, fmt.Sprintf("%s→(null)", oldName))
 	}
 
-	if len(renamedSectionsLog) == 0 {
+	if len(wipedSectionsLog) == 0 {
 		return common.NewSkipped("no section names were changed")
 	}
 	if err := e.rebuildSectionHeaderTable(); err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to rebuild section header table after renaming: %v", err))
+		return common.NewSkipped(fmt.Sprintf("failed to rebuild section header table after wiping names: %v", err))
 	}
 	e.clearNameOffsetCache()
-	result := common.NewApplied(fmt.Sprintf("renamed %d sections", len(renamedSectionsLog)), len(renamedSectionsLog))
+	result := common.NewApplied(fmt.Sprintf("wiped %d section names", len(wipedSectionsLog)), len(wipedSectionsLog))
 	result.SetCategory("SECTIONS")
-	for _, renamed := range renamedSectionsLog {
-		result.AddDetail(fmt.Sprintf("renamed section: %s", renamed), 1, false)
+	for _, wiped := range wipedSectionsLog {
+		result.AddDetail(fmt.Sprintf("wiped section: %s", wiped), 1, false)
 	}
 	return result
 }
@@ -212,13 +213,12 @@ func (e *ELFFile) obfuscateSectionPadding() *common.OperationResult {
 func (e *ELFFile) obfuscateReservedHeaderFields() *common.OperationResult {
 	var modifiedFields []string
 
-	// Randomize e_ident[9:16] (padding) — safe to alter.
-	randBytes, err := common.GenerateRandomBytes(7)
-	if err != nil {
-		return common.NewSkipped(fmt.Sprintf("failed to generate random header bytes: %v", err))
-	}
-	copy(e.RawData[9:16], randBytes)
-	modifiedFields = append(modifiedFields, "header padding")
+	// Zero e_ident[9:16] (EI_PAD) instead of randomizing. Standard tools write
+	// zeros here. Random bytes in reserved fields are a tampering indicator for
+	// AV/EDR heuristics that check ELF header consistency.
+	zeros := make([]byte, 7)
+	copy(e.RawData[9:16], zeros)
+	modifiedFields = append(modifiedFields, "header padding (zeroed)")
 
 	// Normalize e_flags to 0 (do not randomize). Randomizing processor flags can break loaders.
 	var flagsOffset int
@@ -1130,12 +1130,11 @@ func (e *ELFFile) symbolEntrySize() int64 {
 }
 
 func (e *ELFFile) obfuscateRuntimeStrings() *common.OperationResult {
-	stringReplacements := map[string]string{
-		"fprintf":   "foutput",   // 7 byte -> 7 byte
-		"printf":    "output",    // 6 byte -> 6 byte
-		"libgcc.so": "libsys.so", // 9 byte -> 9 byte
-		"main":      "entry",     // 4 byte -> 5 byte (padding with null)
-		"__libc_":   "__std_",    // 7 byte -> 6 byte (padding with null)
+	// Zero-fill identifiable runtime strings instead of replacing them with fixed
+	// substitutions (e.g. fprintf→foutput). Fixed replacements create a unique
+	// fingerprint for this tool. Zeroing is safer and standard.
+	targetStrings := []string{
+		"fprintf", "printf", "libgcc.so", "main", "__libc_",
 	}
 	modifications := 0
 	var modifiedSections []string
@@ -1157,16 +1156,14 @@ func (e *ELFFile) obfuscateRuntimeStrings() *common.OperationResult {
 		}
 
 		sectionModified := false
-		for original, replacement := range stringReplacements {
-			originalBytes := []byte(original)
-			replacementBytes := []byte(replacement)
-			if len(replacementBytes) < len(originalBytes) {
-				replacementBytes = append(replacementBytes, make([]byte, len(originalBytes)-len(replacementBytes))...)
-			} else if len(replacementBytes) > len(originalBytes) {
-				continue
-			}
-			searchPattern := append(append([]byte{0}, originalBytes...), 0)
-			replacementPattern := append(append([]byte{0}, replacementBytes...), 0)
+		for _, target := range targetStrings {
+			targetBytes := []byte(target)
+			zeroBytes := make([]byte, len(targetBytes))
+
+			// Search for null-terminated occurrences: \x00target\x00
+			searchPattern := append(append([]byte{0}, targetBytes...), 0)
+			replacementPattern := append(append([]byte{0}, zeroBytes...), 0)
+
 			if bytes.Contains(sectionData, searchPattern) {
 				tempData := bytes.ReplaceAll(sectionData, searchPattern, replacementPattern)
 				if !bytes.Equal(sectionData, tempData) {
@@ -1175,8 +1172,9 @@ func (e *ELFFile) obfuscateRuntimeStrings() *common.OperationResult {
 					sectionModified = true
 				}
 			}
-			if bytes.Contains(sectionData, originalBytes) {
-				tempData := bytes.ReplaceAll(sectionData, originalBytes, replacementBytes)
+			// Also match non-null-terminated occurrences
+			if bytes.Contains(sectionData, targetBytes) {
+				tempData := bytes.ReplaceAll(sectionData, targetBytes, zeroBytes)
 				if !bytes.Equal(sectionData, tempData) {
 					sectionData = tempData
 					modifications++
@@ -1193,7 +1191,7 @@ func (e *ELFFile) obfuscateRuntimeStrings() *common.OperationResult {
 	if modifications == 0 {
 		return common.NewSkipped("no runtime strings found for obfuscation")
 	}
-	message := fmt.Sprintf("obfuscated %d string patterns in sections: %s", modifications, strings.Join(modifiedSections, ", "))
+	message := fmt.Sprintf("zeroed %d string patterns in sections: %s", modifications, strings.Join(modifiedSections, ", "))
 	result := common.NewApplied(message, modifications)
 	result.SetCategory("PATTERNS")
 	return result

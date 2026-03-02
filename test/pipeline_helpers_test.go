@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 
 	"gosstrip/common"
@@ -20,22 +19,6 @@ func runSimpleAnalysis(t *testing.T, run func() (*common.AnalysisResult, error))
 		t.Fatalf("analysis failed: %v", err)
 	}
 	return result
-}
-
-func isStubCompileError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	// pack.Pack wraps stub compilation errors with fairly stable phrasing.
-	// We treat these as environment/toolchain limitations rather than product regressions.
-	if strings.Contains(msg, "compile stub") {
-		return true
-	}
-	if strings.Contains(msg, "failed to compile stub") {
-		return true
-	}
-	return false
 }
 func assertAnalysisLooksComprehensive(t *testing.T, result *common.AnalysisResult, stage string) {
 	t.Helper()

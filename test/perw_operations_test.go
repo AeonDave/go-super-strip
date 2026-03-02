@@ -367,6 +367,57 @@ func TestCompactPE_ForceRelocDisablesASLR(t *testing.T) {
 	}
 }
 
+func TestCompactPE_SafeModePreservesOverlay(t *testing.T) {
+	pePath := copyPEFixture(t, "simple.exe")
+	payload := "OVERLAY_RUNTIME_PAYLOAD_MARKER_12345"
+	requireApplied(t, "overlay", perw.OverlayPE(pePath, payload, ""))
+
+	before, err := perw.ExtractOverlay(pePath)
+	if err != nil {
+		t.Fatalf("failed to extract overlay before compact: %v", err)
+	}
+
+	result := perw.CompactPE(pePath, false, true)
+	if result == nil || !result.Applied {
+		t.Fatalf("expected safe compact to apply, got %#v", result)
+	}
+
+	after, err := perw.ExtractOverlay(pePath)
+	if err != nil {
+		t.Fatalf("expected overlay to remain after safe compact: %v", err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("overlay payload changed after safe compact")
+	}
+}
+
+func TestStripPE_SafeModePreservesOverlayBytes(t *testing.T) {
+	pePath := copyPEFixture(t, "simple.exe")
+	payload := "golang.org/x/sys go1.25.7 OVERLAY_REGEX_TARGET"
+	requireApplied(t, "overlay", perw.OverlayPE(pePath, payload, ""))
+
+	beforeRaw, err := os.ReadFile(pePath)
+	if err != nil {
+		t.Fatalf("failed to read file before strip: %v", err)
+	}
+
+	result := perw.StripPE(pePath, false, nil)
+	if result == nil || !result.Applied {
+		t.Fatalf("expected strip to apply, got %#v", result)
+	}
+
+	afterRaw, err := os.ReadFile(pePath)
+	if err != nil {
+		t.Fatalf("failed to read file after strip: %v", err)
+	}
+	if len(afterRaw) < len(beforeRaw) {
+		t.Fatalf("strip unexpectedly truncated file: before=%d after=%d", len(beforeRaw), len(afterRaw))
+	}
+	if !bytes.Contains(afterRaw, []byte(payload)) {
+		t.Fatalf("expected overlay payload bytes to remain after strip")
+	}
+}
+
 func TestInsertPE_AddsSection(t *testing.T) {
 	pePath := copyPEFixture(t, "simple.exe")
 	sectionName := common.SanitizeSectionName(".custom")

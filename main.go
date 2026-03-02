@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"gosstrip/common"
 	"gosstrip/elfrw"
-	"gosstrip/pack"
 	"gosstrip/perw"
 	"io"
 	"os"
@@ -14,8 +13,6 @@ import (
 	"strconv"
 	"strings"
 )
-
-const defaultPackOptions = "compression=zlib,level=9,encryption=chacha20"
 
 type feature string
 
@@ -28,7 +25,6 @@ const (
 	featureOverlay        feature = "overlay"
 	featureExtract        feature = "extract"
 	featureOverlayExtract feature = "extractoverlay"
-	featurePack           feature = "pack"
 )
 
 var canonicalOrder = []feature{
@@ -40,7 +36,6 @@ var canonicalOrder = []feature{
 	featureOverlay,
 	featureExtract,
 	featureOverlayExtract,
-	featurePack,
 }
 
 type analyzeCommand struct {
@@ -61,7 +56,6 @@ type pipelineCommand struct {
 	Overlay        *OverlayOptions
 	Extract        *ExtractSectionOptions
 	ExtractOverlay *ExtractOverlayOptions
-	Pack           *PackOptions
 }
 
 type StripOptions struct {
@@ -108,12 +102,6 @@ type ExtractSectionOptions struct {
 type ExtractOverlayOptions struct {
 	Password    string
 	Destination string
-}
-
-// PackOptions stores the CLI pack string plus the parsed configuration.
-type PackOptions struct {
-	Options string
-	Config  *pack.PackConfig
 }
 
 func main() {
@@ -222,8 +210,6 @@ func featureByName(name string) (feature, bool) {
 		return featureExtract, true
 	case "el", "extractoverlay":
 		return featureOverlayExtract, true
-	case "p", "pack":
-		return featurePack, true
 	default:
 		return "", false
 	}
@@ -369,12 +355,6 @@ func parsePipeline(args []string) (*pipelineCommand, error) {
 				return nil, err
 			}
 			cmd.Extract = opts
-		case featurePack:
-			opts, err := parsePack(opt)
-			if err != nil {
-				return nil, err
-			}
-			cmd.Pack = opts
 		}
 
 		if feat != featureRegex {
@@ -694,21 +674,6 @@ func parseExtractSection(opt string) (*ExtractSectionOptions, error) {
 	}, nil
 }
 
-func parsePack(opt string) (*PackOptions, error) {
-	optionString := strings.TrimSpace(opt)
-	if optionString == "" {
-		optionString = defaultPackOptions
-	}
-	cfg, err := pack.ParseOptions(optionString)
-	if err != nil {
-		return nil, err
-	}
-	if err := cfg.Validate(); err != nil {
-		return nil, err
-	}
-	return &PackOptions{Options: optionString, Config: cfg}, nil
-}
-
 type optionMap map[string][]string
 
 func parseKeyValueOptions(spec string) (optionMap, error) {
@@ -802,9 +767,6 @@ func (cmd *pipelineCommand) operationsCount() int {
 		count++
 	}
 	if cmd.ExtractOverlay != nil {
-		count++
-	}
-	if cmd.Pack != nil {
 		count++
 	}
 	return count
@@ -940,11 +902,6 @@ func runPipeline(cmd *pipelineCommand) error {
 	if cmd.ExtractOverlay != nil {
 		session.addStep("extract-overlay", func() (*common.OperationResult, error) {
 			return runExtractOverlay(workingPath, cmd.InputPath, cmd.ExtractOverlay, isPE)
-		})
-	}
-	if cmd.Pack != nil {
-		session.addStep("pack", func() (*common.OperationResult, error) {
-			return runPack(workingPath, cmd.Pack)
 		})
 	}
 
@@ -1126,21 +1083,6 @@ func runExtractOverlay(path, inputPath string, opts *ExtractOverlayOptions, isPE
 	return result, nil
 }
 
-func runPack(path string, opts *PackOptions) (*common.OperationResult, error) {
-	if opts == nil || opts.Config == nil {
-		return nil, fmt.Errorf("pack options not provided")
-	}
-	cfgCopy := *opts.Config
-	if err := pack.PackWithConfig(path, &cfgCopy, path); err != nil {
-		return nil, common.WrapStageError("pack", err)
-	}
-	result := common.NewApplied("pack completed", 1)
-	if opts.Options != "" {
-		result.AddDetail(fmt.Sprintf("options: %s", opts.Options), 0, false)
-	}
-	return result, nil
-}
-
 func boolPtr(v bool) *bool {
 	return &v
 }
@@ -1222,7 +1164,6 @@ func printUsage() {
 	fmt.Println("  -l=file=bin             Append overlay")
 	fmt.Println("  -ei=name=.sec[,index=0][,password=pass] Extract a section to disk")
 	fmt.Println("  -el[=password=pass]     Extract overlay payload")
-	fmt.Println("  -p=opt1=val1,...        Pack executable")
 	fmt.Println()
 	fmt.Println("Analyze (-a), extract-section (-ei), and extract-overlay (-el) can be invoked standalone just like any other stage.")
 	fmt.Println()
